@@ -1,9 +1,9 @@
-# 🎬 Pai AI Movie Studio (v2.2) — $0 Free Local & Cloud-Accelerated Pipeline
+# 🎬 Pai AI Movie Studio (v2.3) — $0 Free Local & Cloud-Accelerated Pipeline
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Google Colab](https://img.shields.io/badge/Google%20Colab-T4%20GPU%20(Free)-orange.svg)](https://colab.research.google.com/github/paipai1999/pai-ai-movie-studio/blob/main/AI_Movie_Translate_Colab.ipynb)
 [![Kaggle](https://img.shields.io/badge/Kaggle-Dual%20T4%2030GB%20VRAM-blue.svg)](https://github.com/paipai1999/pai-ai-movie-studio/blob/main/AI_Movie_Translate_Kaggle.ipynb)
-[![Tests](https://img.shields.io/badge/Tests-77%2F77%20Passed%20(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-184%2F184%20Passed%20(100%25)-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 An autonomous, production-grade AI studio designed to automatically translate movies, short dramas, anime, and YouTube videos into natural **Colloquial Spoken Burmese** (စကားပြောဟန်) or English, synthesize lifelike **Multi-Voice Dubbing (Male/Female)**, and render viral, ready-to-publish videos equipped with **9:16 Facebook Reels / TikTok Canvas**, **Styled Myanmar ASS Subtitles**, **Vision AI Subtitle Blur Protection**, **Anti-Copyright Shields**, and **High-CTR Thumbnails**.
@@ -60,16 +60,27 @@ Keep Gemini credentials and YouTube session cookies outside the project director
 ```powershell
 # Set environment variables in Windows PowerShell:
 $env:GEMINI_API_KEYS="KEY_1,KEY_2,KEY_3"
-$env:MOVIE_COOKIES_PATH="C:\Users\wcp18\AppData\Local\MovieTranslate\cookies.txt"
-$env:WEB_UI_TOKEN="your-secure-password-here"
-$env:WEB_UI_ALLOWED_ORIGINS="http://127.0.0.1:5000,http://localhost:5000"
+$env:MOVIE_COOKIES_PATH="C:\Users\<you>\AppData\Local\MovieTranslate\cookies.txt"
+$env:WEB_UI_PASSWORD="your-secure-password-here"      # or WEB_UI_TOKEN
+$env:WEB_UI_ALLOWED_ORIGINS="https://studio.example.com"   # optional: extra browser origins
 
 # Launch Web UI Server:
 python web_ui.py
 ```
 
-* API keys are masked in logs, stored securely in memory, and sent directly to Google via request headers rather than URL query parameters.
-* Rotate any keys that were previously placed in public templates.
+**Secure by default**
+
+| Topic | Behaviour |
+| :--- | :--- |
+| **Bind address** | `127.0.0.1` on a PC (only this machine). Colab / Kaggle / Docker (`0.0.0.0`) bind publicly. |
+| **No password + public bind** | A random one-time access token is generated and printed in the console. The API is never served anonymously. |
+| **Cross-site requests** | CORS allows only the local dashboard origins. In anonymous mode, `POST`/`DELETE` calls carrying a foreign `Origin` are rejected (`403`), and `Host` headers are validated against DNS-rebinding. |
+| **Password mode** | Constant-time comparison, `POST /api/login` form (token never in a URL), session cookie stores a SHA-256 digest (HttpOnly, SameSite, `Secure` over HTTPS), brute-force throttle (10 failures / minute). |
+| **API keys** | Sent in the `x-goog-api-key` header only. The API returns masked keys (`AIzaSy...abcd`) – raw keys are never echoed. Keys supplied via `GEMINI_API_KEYS` are **never written** into `config.json`. |
+| **Paths** | Project names and delete targets are sanitised and confined to `outputs/`, `movies/`, `temp/`. A root folder itself can never be deleted by the API, and nothing is deleted while a job is running. |
+| **Uploads** | `MAX_UPLOAD_MB` (default 16384) caps video uploads; cookie files are capped at 1 MB. |
+
+* Rotate any keys that were previously placed in public templates or shared notebooks.
 
 ---
 
@@ -88,8 +99,9 @@ docker compose logs -f
 docker compose down
 ```
 
-* **Dashboard Access:** Open [http://localhost:5000](http://localhost:5000)
-* **Windows 1-Click:** Select Option `[7] Run in Docker Container` from `Start_Studio.bat`.
+* **Dashboard Access:** Open [http://localhost:5000](http://localhost:5000) (published on `127.0.0.1` only; edit `docker-compose.yml` and set `WEB_UI_PASSWORD` to expose it on your LAN).
+* **Secrets are never baked into the image:** `config.json`, `cookies.txt` and `.env` are excluded by `.dockerignore` and mounted as volumes instead.
+* **Windows 1-Click:** Select Option `[8] Run Pai AI Studio in Docker Container` from `Start_Studio.bat`.
 * **Volumes & Storage:** `movies/`, `outputs/`, `temp/`, and `config.json` are automatically mounted to your host machine.
 
 ---
@@ -167,29 +179,37 @@ The following real-world benchmark was measured on a full 15-minute movie recap 
 pai-ai-movie-studio/
 ├── hardsub_engine.py          ← Engine 3: 100% Original Audio & Burmese Hardsub Studio
 ├── subtitle_engine.py         ← Engine 2: YouTube to Burmese Subtitle & Transcript Studio
-├── main.py                    ← Engine 1 CLI & Unified Multi-Engine Dispatcher
-├── web_ui.py                  ← FastAPI Web Dashboard with 3-Engine Graphical Interface
+├── main.py                    ← CLI: build_parser() + single / batch / download run modes
+├── web_ui.py                  ← FastAPI app: middleware, REST endpoints, queue dispatcher
 │
-├── Start_Studio.bat          ← Master 1-Click Studio Launcher (Web UI & All 3 Engines)
+├── Start_Studio.bat           ← Master 1-Click Studio Launcher (Web UI & All 3 Engines)
 │
 ├── core/                      ← Centralized Media & Subtitle Processing Package
-│   ├── anti_copyright.py      ← Platform video & audio anti-copyright filter graphs
-│   ├── subtitle_builder.py    ← ASS & SRT subtitle generators, styling presets & syllable wrap
+│   ├── anti_copyright.py      ← Platform video & audio filter graphs
+│   ├── subtitle_builder.py    ← ASS & SRT generators, style presets (single source: brain.config)
+│   ├── paths.py               ← Project-name sanitising & "stay inside this folder" path helpers
+│   ├── whisper_settings.py    ← One Whisper model / device / beam policy for all three engines
 │   └── video_blur.py          ← Vision AI bounding box calculation & FFmpeg boxblur filters
 │
-├── services/                  ← Job Management & Background Dispatching
-│   ├── job_manager.py         ← In-memory job state, process trees, and SSE log queues
-│   └── queue_manager.py       ← Persistent FIFO queue worker & batch coordinator
+├── services/                  ← Web UI runtime (no FastAPI code inside)
+│   ├── job_manager.py         ← Thread-safe in-memory job registry (status / phase / retention)
+│   ├── queue_manager.py       ← FIFO queue state (persisted in SQLite, restored after a restart)
+│   ├── job_runtime.py         ← stdout capture, single job lifecycle helper, the 5 pipeline workers
+│   ├── process_registry.py    ← Which ffmpeg / demucs processes belong to which job (job-scoped Stop)
+│   ├── schemas.py             ← Pydantic request models
+│   └── security.py            ← Auth, same-origin, DNS-rebinding and bind-address policy
 │
 ├── agents/                    ← Specialized Agentic Pipeline Modules
-│   ├── master.py              ← Engine 1 orchestrator (Phases 1–7) & hardware management
-│   ├── downloader_agent.py    ← Multi-platform downloader (YouTube, DramaBox, ReelShort)
+│   ├── master.py              ← Engine 1 orchestrator: one method per phase, resume integrity
+│   ├── downloader_agent.py    ← Multi-platform downloader + shared cookie discovery
 │   ├── video_agent.py         ← Video metadata: FPS, duration, resolution (OpenCV & FFprobe)
-│   ├── audio_agent.py         ← Audio extract + Fast Whisper STT + Demucs separation
-│   ├── writer_agent.py        ← 1:1 Dialogue Translation (Gemini 3.5 Flash) + Action Bridge
+│   ├── audio_agent.py         ← Audio extract + Faster-Whisper STT + Demucs separation
+│   ├── writer_agent.py        ← Dialogue translation: smoothing → keyframes → batch prompts → fallback
 │   ├── seo_agent.py           ← Viral Title, Description, Tags, and Hashtags generator
-│   ├── voice_agent.py         ← Multi-Voice TTS (Thiha Male / Nilar Female) & Time Stretch
-│   ├── video_merger_agent.py  ← Single-Pass Merger, Audio Ducking, NVENC/QSV Hardware Encoder
+│   ├── voice_agent.py         ← Multi-Voice TTS, time-stretch, per-clip content manifest
+│   ├── video_merger_agent.py  ← Final-render facade (VideoMergerAgent = mixins from agents/merger/)
+│   ├── merger/                ← encoder · media_utils · plan · voiceover · background_audio ·
+│   │                            single_pass · subtitles · vision_blur · reels · intro_outro · legacy_moviepy
 │   ├── thumbnail_agent.py     ← High-CTR Golden Yellow Top-Center Thumbnail Generator
 │   └── qa_agent.py            ← Sync score & language naturalness QA review
 │
@@ -197,20 +217,28 @@ pai-ai-movie-studio/
 │   ├── memory.py              ← Pydantic shared state (MovieState with atomic JSON persistence)
 │   ├── planner.py             ← Overnight Batch Processor with auto API key rotation
 │   ├── prompts.py             ← LLM prompt templates (Dialogue, SEO, QA, Persona translation)
-│   ├── config.py              ← config.json loader with Gemini 3.5 Flash defaults
-│   ├── gemini_client.py       ← Gemini API client with safe parsing & 8-model fallback rotation
-│   ├── sqlite_store.py        ← SQLite local database for multi-engine state & job logs
+│   ├── config.py              ← config.json loader (env keys are never written back to disk)
+│   ├── gemini_client.py       ← Gemini API client: key rotation, model fallback, interruptible waits
+│   ├── sqlite_store.py        ← SQLite: movie state, jobs + persisted queue, atomic quota tracker
+│   ├── diagnostics.py         ← log_suppressed(): ignored errors become visible with PAI_DEBUG=1
 │   └── burmese_utils.py       ← Burmese syllable regex, number-to-words, acronym transliteration
 │
 ├── templates/
 │   └── index.html             ← Modern Glassmorphic Web UI with Theater Cinema Player
 │
+├── tests/                     ← 184 unit / regression tests (pytest)
+├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
+│
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
 ├── AI_Movie_Translate_Kaggle.ipynb ← Official Kaggle One-Click Dual T4 Dedicated GPU Notebook
-├── config.json                ← Active runtime configuration (API keys, branding, models)
+├── config.json                ← Active runtime configuration (git-ignored)
 ├── config.example.json        ← Default configuration template
-├── cookies.txt                ← Netscape cookie file for YouTube anti-bot bypass
-├── requirements.txt           ← Python package dependencies
+├── cookies.txt                ← Netscape cookie file for YouTube anti-bot bypass (git-ignored)
+├── requirements.txt           ← Runtime dependencies (ranges)
+├── requirements.lock.txt      ← Exact versions of a verified working install (reproducible)
+├── requirements-dev.txt       ← Runtime + pytest / test client
+├── requirements-ci.txt        ← Lightweight set for CI (no torch / demucs / f5-tts)
+├── LICENSE                    ← MIT License
 ├── assets/                    ← Reference voice samples, cookies, Padauk font, and branding
 ├── movies/                    ← Place source video files here
 ├── outputs/                   ← Generated final videos, thumbnails, scripts, and logs
@@ -227,7 +255,7 @@ pai-ai-movie-studio/
 git clone https://github.com/paipai1999/pai-ai-movie-studio.git
 cd pai-ai-movie-studio
 
-# Create Python virtual environment (Python 3.8+ required)
+# Create Python virtual environment (Python 3.10+ required)
 python -m venv .venv
 
 # Activate virtual environment
@@ -256,6 +284,14 @@ Copy `config.example.json` to `config.json` and add your free Gemini API keys:
 }
 ```
 *(Get free API keys with high rate limits from [Google AI Studio](https://aistudio.google.com).)*
+
+**Speech-to-text quality** (`config.json` → `pipeline`):
+```json
+{ "pipeline": { "whisper_model": "auto", "whisper_beam_size": 1 } }
+```
+`"auto"` selects `medium` on a CUDA GPU and `base` on CPU for **all three engines**. Use `large-v3` for the best
+Chinese / Korean / Japanese accuracy, and `whisper_beam_size: 5` for more accurate (≈2-3× slower) transcripts.
+A GPU that fails to initialise falls back to CPU int8 automatically.
 
 ---
 
@@ -323,16 +359,33 @@ python hardsub_engine.py "https://youtu.be/..." --name "Marvel_Hardsub" --source
 
 Run the automated test suite to verify system integrity:
 ```powershell
-.venv\Scripts\python.exe -m unittest discover tests
+pip install -r requirements-dev.txt     # full environment
+# or, for a quick check without the GPU / speech stack:
+pip install -r requirements-ci.txt
+.venv\Scripts\pytest -v
 ```
-*Current test suite status:* **77 / 77 Tests Passed (100% OK)** covering:
-* Memory state serialization & deserialization
-* Gemini client protobuf & REST fallback parsing
-* QAAgent scene ID collision prevention & auto-rewrites
-* HardsubEngine & SubtitleEngine timestamp conversions and filter construction
-* Job queue lifecycle, cancellation, and thread safety
+Set `PAI_DEBUG=1` to print every error the pipelines deliberately ignore (temp-file cleanup, optional features ...).
+
+*Current test suite status:* **184 / 184 Tests Passed (100% OK)** covering:
+* Memory state serialization & SQLite persistence
+* Gemini client protobuf & REST fallback rotation
+* Dual script storytelling engine & Burmese digit/acronym transliteration
+* QAAgent scene ID collision prevention, auto-rewrites & language preservation
+* HardsubEngine & SubtitleEngine timestamp conversions, blur filters & QC reports
+* Job queue lifecycle, sequential execution, emergency cancellation & thread safety
+* Web API security (CORS, same-origin policy, token masking, authentication & report previews)
+* Security hardening: path traversal, delete-root protection, key echo/persistence, cancel isolation
+* Resume integrity: stale script/voiceover invalidation, per-clip voice manifest, STT failure guard
+* Job runtime: lifecycle (done / error / cancelled), persisted queue restore, per-job process registry
+* Merger package: facade surface, plan-based merge orchestration, MoviePy fallback, filtergraph invariants
 
 ---
 
+## ⚖️ Responsible Use & Copyright
+This software processes video that you provide. **You are responsible for having the rights** (ownership, licence, or the
+creator's permission) to translate, dub, subtitle and republish that content. The "anti-copyright shield" options are
+image/audio transformations; they do not grant any rights, and re-uploading content you do not own can still violate
+copyright law and platform terms (Content ID matches, strikes, account termination). Use them only on content you may lawfully modify.
+
 ## 📄 License
-This project is licensed under the MIT License — free for personal, educational, and commercial content production.
+This project is licensed under the MIT License (see [LICENSE](LICENSE)) — free for personal, educational, and commercial content production.

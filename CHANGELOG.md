@@ -4,6 +4,45 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.3.1] — Security & Reliability Hardening
+
+### 🔐 Security
+- **Same-origin by default:** CORS no longer defaults to `*`; foreign-origin `POST`/`DELETE` are rejected in anonymous mode; `Host` is validated against DNS-rebinding on loopback binds.
+- **Authentication:** constant-time secret comparison, `POST /api/login` + `/api/auth/status`, digest-only session cookie, login throttle, auto-generated token when the server is exposed without a password.
+- **API keys:** `/api/keys/save` never returns raw keys, masks must carry both ends (no wildcard resolution), keys from `GEMINI_API_KEYS` are never persisted to `config.json`, health-check sends keys in a header (not the URL).
+- **Path safety:** `HardsubEngine`/`SubtitleEngine` project names are sanitised (`core/paths.py`), `_safe_child_path` rejects the root folder (`/api/delete/outputs/%2e` could wipe `outputs/`), deletes are refused while a job runs, local inputs must be media files.
+- **Docker:** `.dockerignore` excludes `config.json`, `cookies.txt`, databases; compose publishes on `127.0.0.1`; image health-check added.
+- **Frontend:** file / project / queue names are HTML-escaped (and JS-escaped for inline handlers).
+
+### 🐞 Fixes
+- Cancelling a *queued* job no longer stops the running job or kills its ffmpeg (per-job cancel semantics).
+- Hardsub: pressing Stop no longer triggers a second full CPU re-render.
+- Resume: audio path is propagated from the Phase 2/3 worker; changing style / language / hint / voice invalidates the cached script and voiceover; voice clips are validated per clip through a content manifest; Whisper failure now fails the job instead of "completing" without narration.
+- `drama_novel` / `audio_drama` style is honoured by Engine 1 (previously silently downgraded to `recap`).
+- Cookies uploaded in the dashboard are now used by Engine 2 and Engine 3 as well.
+- Hardsub failures are reported as `error` (not `done`); ZIP download honours `job_id`; F5-TTS crash on scenes starting at `0.0s`, speaker-clip lookup case bug.
+- Health-check no longer blocks the event loop; quota reservation is atomic under concurrency; schema creation is serialised.
+- Gemini rate-limit waits are interruptible by Stop.
+
+### 🧹 Maintenance
+- Five duplicated job workers replaced by one lifecycle helper (-200 lines); dead `services/` code removed; subtitle presets have a single source of truth; pyflakes clean.
+- `requirements-dev.txt` split (pytest, test client); `LICENSE` file added; Python 3.10+ documented; 46 new regression tests (146 total).
+
+### 🚀 Reliability & Structure (second pass)
+- **Persistent queue:** queued jobs are stored in SQLite and restored when the server restarts (jobs that were mid-render are marked `interrupted`).
+- **Job-scoped Stop:** every ffmpeg / demucs / helper process is registered to its job (`services/process_registry.py`, PID + creation-time safe); Stop kills exactly that job's process tree.
+- **Whisper policy:** `whisper_model: "auto"` (medium on GPU, base on CPU) + `whisper_beam_size`, shared by Engines 1-3 with GPU→CPU fallback.
+- **Render safety net:** a failed FFmpeg single pass now falls back to the MoviePy compositor and fails the job loudly when no video exists (previously it silently reported success).
+- **Refactors (behaviour-preserving, verified against the previous code with differential tests):**
+  - `video_merger_agent.py` 2,727 → 176 lines + `agents/merger/` package (11 modules, `MergePlan` dataclass)
+  - `web_ui.py` 3,239 → ~2,470 lines (+ `services/job_runtime.py`, `services/schemas.py`)
+  - `MasterAgent.run_pipeline` / `__init__`, `WriterAgent.generate_script`, `main.main` split into one method per step
+- **Diagnostics:** 110 silent `except: pass` handlers now call `log_suppressed()` (visible with `PAI_DEBUG=1`).
+- **Tooling:** GitHub Actions workflow (pyflakes + pytest), `requirements-ci.txt` (no GPU stack), `requirements.lock.txt` (exact versions).
+- 184 tests (was 100).
+
+---
+
 ## [2.3.0] — 2026-09-19 (Triple-Engine Architecture & Hardsub Studio)
 
 ### 🌟 Release Highlights
