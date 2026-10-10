@@ -9,6 +9,8 @@ from brain.burmese_utils import (
     transliterate_english_acronyms,
     num_to_burmese,
     myanmar_digits_to_arabic,
+    convert_to_tts_phonetic_burmese,
+    normalize_standard_burmese_spelling,
 )
 
 class TestTransliteration(unittest.TestCase):
@@ -52,5 +54,64 @@ class TestTransliteration(unittest.TestCase):
         self.assertEqual(myanmar_digits_to_arabic("၁၂၃"), "123")
         self.assertEqual(myanmar_digits_to_arabic("၀၄၅"), "045")
 
+    def test_convert_to_tts_phonetic_burmese(self):
+        """Verify TTS text is converted to natural spoken phonetics without glottal stuttering."""
+        formal_text = "ကျွန်တော် တစ်ယောက်တည်း သွားမယ်။ ဥက္ကဋ္ဌကြီးက အံ့ဩသွားပြီး သမ္မတကြီးကို မေတ္တာရပ်ခံခဲ့တယ်။"
+        phonetic = convert_to_tts_phonetic_burmese(formal_text)
+        self.assertIn("ကျနော်", phonetic)
+        self.assertIn("တယောက်", phonetic)
+        self.assertIn("အုတ်ကထ", phonetic)
+        self.assertIn("အံ့အော", phonetic)
+        self.assertIn("သမ်မတ", phonetic)
+        self.assertIn("မိတ်တာ", phonetic)
+        self.assertNotIn("ကျွန်တော်", phonetic)
+        self.assertNotIn("ဥက္ကဋ္ဌ", phonetic)
+
+    def test_normalize_standard_burmese_spelling(self):
+        """Verify spoken phonetic text is converted to 100% correct standard Myanmar orthography for subtitles."""
+        spoken_text = "ကျနော် တယောက်တည်း သွားမယ်။ ဥက္ကဌကြီးက အံ့သြသွားပြီး ဝတ်ထုကို ဖတ်တယ်။ တကယ်တော့ သူက ယောင်္ကျားကောင်းပါ။"
+        standard = normalize_standard_burmese_spelling(spoken_text)
+        self.assertIn("ကျွန်တော်", standard)
+        self.assertIn("တစ်ယောက်", standard)
+        self.assertIn("ဥက္ကဋ္ဌ", standard)
+        self.assertIn("အံ့ဩ", standard)
+        self.assertIn("ဝတ္ထု", standard)
+        self.assertIn("ယောကျ်ား", standard)
+        self.assertIn("တကယ်တော့", standard)  # Non-classifier 'တ' must be preserved!
+        self.assertNotIn("ကျနော်", standard)
+        self.assertNotIn("ဥက္ကဌ", standard)
+        self.assertNotIn("အံ့သြ", standard)
+
+    def test_voice_agent_applies_tts_phonetics(self):
+        """Verify VoiceAgent._prepare_tts_text converts text phonetically for Edge TTS."""
+        from agents.voice_agent import VoiceAgent
+        agent = VoiceAgent(voice="my-MM-ThihaNeural")
+        raw_text = "ကျွန်တော် တစ်ယောက်တည်း သွားပါတယ်။"
+        prepared = agent._prepare_tts_text(raw_text)
+        self.assertIn("ကျနော်", prepared)
+        self.assertIn("တယောက်", prepared)
+
+    def test_subtitle_builder_applies_standard_orthography(self):
+        """Verify subtitle builders normalize text to standard Myanmar orthography."""
+        from core.subtitle_builder import build_srt_script, build_ass_script
+        segments = [
+            {"start_s": 0.0, "end_s": 3.0, "burmese": "ကျနော် တယောက်တည်း သွားမယ်။ ဥက္ကဌကြီးက အံ့သြသွားတယ်။"}
+        ]
+        srt_out = build_srt_script(segments)
+        ass_out = build_ass_script(segments)
+
+        self.assertIn("ကျွန်တော်", srt_out)
+        self.assertIn("တစ်ယောက်", srt_out)
+        self.assertIn("ဥက္ကဋ္ဌ", srt_out)
+        self.assertIn("အံ့ဩ", srt_out)
+        self.assertNotIn("ကျနော်", srt_out)
+
+        self.assertIn("ကျွန်တော်", ass_out)
+        self.assertIn("တစ်ယောက်", ass_out)
+        self.assertIn("ဥက္ကဋ္ဌ", ass_out)
+        self.assertIn("အံ့ဩ", ass_out)
+        self.assertNotIn("ကျနော်", ass_out)
+
 if __name__ == "__main__":
     unittest.main()
+

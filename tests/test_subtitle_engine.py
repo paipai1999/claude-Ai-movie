@@ -233,6 +233,37 @@ class TestSubtitleEngine(unittest.TestCase):
         res = self.engine._transcribe_with_whisper("dummy_video_without_audio.mp4")
         self.assertEqual(res, [])
 
+    @patch("hardsub_engine.HardsubEngine.render_subtitles_to_video")
+    def test_subtitle_engine_step8_render_with_blur(self, mock_render):
+        """Test that SubtitleEngine Step 8 invokes HardsubEngine with blur_mode and video_format."""
+        mock_render.return_value = True
+        dummy_video = os.path.join(self.temp_dir, "test_input.mp4")
+        with open(dummy_video, "w") as f:
+            f.write("dummy video data")
+
+        # Mock YouTube download/ingestion and transcription
+        self.engine._fetch_youtube_content = MagicMock(return_value=(dummy_video, None, "test_proj", {}))
+        self.engine._transcribe_with_whisper = MagicMock(return_value=[
+            {"start": 0.0, "end": 2.0, "text": "Hello world"}
+        ])
+        self.engine._translate_to_burmese = MagicMock(return_value=[
+            {"no": 1, "start": "00:00:00,000", "end": "00:00:02,000", "start_s": 0.0, "end_s": 2.0, "original": "Hello world", "burmese": "မင်္ဂလာပါ ကမ္ဘာလောက"}
+        ])
+
+        output_files = self.engine.run(
+            input_source=dummy_video,
+            project_name="test_step8_blur",
+            render_video=True,
+            video_format="16:9",
+            blur_mode="auto",
+            subtitle_style="box_black"
+        )
+        mock_render.assert_called_once()
+        kwargs = mock_render.call_args.kwargs
+        self.assertEqual(kwargs.get("blur_mode"), "auto")
+        self.assertEqual(kwargs.get("video_format"), "16:9")
+        self.assertEqual(kwargs.get("subtitle_style"), "box_black")
+
 
 if __name__ == "__main__":
     unittest.main()

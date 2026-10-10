@@ -28,6 +28,11 @@ class TestHealthAndQueue(unittest.TestCase):
     def tearDown(self):
         with queue_lock:
             job_queue.clear()
+        import shutil
+        for t_dir in ["test_movie_1", "test_movie_2"]:
+            p = os.path.join("outputs", t_dir)
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
 
     def test_system_health_check_structure(self):
         with patch('brain.config.load_config', return_value={'gemini': {'api_keys': ['dummy_key_123']}}):

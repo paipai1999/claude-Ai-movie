@@ -45,6 +45,10 @@ class TestEngineModesAndStageToggles(unittest.TestCase):
         prompt_recap = writer._get_system_prompt(state)
         self.assertIn("Myanmar Movie Recap Storyteller", prompt_recap)
 
+        state.translation_style = "drama_novel"
+        prompt_drama = writer._get_system_prompt(state)
+        self.assertIn("Chinese Short Drama Audiobook", prompt_drama)
+
     def test_master_agent_stage_toggles(self):
         """Verify MasterAgent respects stage_toggles for tts, blur, and reels."""
         toggles = {

@@ -16,6 +16,10 @@ class TestCancellation(unittest.TestCase):
 
     def tearDown(self):
         os.environ["CURRENT_JOB_CANCELLED"] = "0"
+        import shutil
+        dummy_dir = os.path.join("outputs", "dummy")
+        if os.path.exists(dummy_dir):
+            shutil.rmtree(dummy_dir, ignore_errors=True)
 
     def test_master_agent_init_not_cancelled(self):
         """Verify MasterAgent starts in non-cancelled state."""
