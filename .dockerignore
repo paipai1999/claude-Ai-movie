@@ -1,16 +1,35 @@
+# Build context hygiene – NEVER let credentials or large runtime data into an image layer.
+
+# ── Secrets / personal configuration ────────────────────────────────────────
+config.json
+config.json.tmp
+cookies.txt
+assets/cookies.txt
+.env
+*_PRIVATE.ipynb
+*_private.ipynb
+private/
+
+# ── Runtime data (mount as volumes instead) ─────────────────────────────────
+outputs/
+temp/
+movies/
+voiceover/
+*.db
+*.db-wal
+*.db-shm
+
+# ── VCS / tooling / caches ──────────────────────────────────────────────────
 .git
+.gitignore
 .venv
 __pycache__
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache
+tests/
 *.log
 *.tmp
 scratch/
-outputs/
-temp/
-movies/
-.env
 .tmp.driveupload/
-*_PRIVATE.ipynb

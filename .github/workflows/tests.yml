@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # Windows is the verified platform (the studio's primary target); Linux is informational for now.
+    continue-on-error: ${{ matrix.os != 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      # Lightweight set: the GPU / speech stack (torch, demucs, f5-tts, faster-whisper) is
+      # imported lazily by the pipelines and mocked in the tests.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Static analysis (pyflakes)
+        run: python -m pyflakes agents brain core services main.py web_ui.py hardsub_engine.py subtitle_engine.py regenerate_thumbnail.py
+
+      - name: Unit tests
+        env:
+          PAI_RESTORE_QUEUE: "0"
+        run: python -m pytest -q

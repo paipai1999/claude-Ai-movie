@@ -1,0 +1,7 @@
+# Development / CI dependencies:  pip install -r requirements-dev.txt
+-r requirements.txt
+
+pytest>=8.0.0
+# Starlette's TestClient (used by the API tests) is built on httpx2
+httpx2>=2.13.0
+pyflakes>=3.2.0

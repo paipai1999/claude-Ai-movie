@@ -1,0 +1,35 @@
+# Lightweight dependency set used by CI (GitHub Actions) to run the unit tests WITHOUT the heavy
+# GPU / speech stack (torch, demucs, f5-tts, faster-whisper). Those packages are imported lazily by
+# the pipelines and are mocked in the tests.
+#
+#   pip install -r requirements-ci.txt
+#   python -m pytest -q
+#
+# For local development use requirements-dev.txt (full runtime + test tools).
+
+# web server / API
+fastapi>=0.110.0,<1.0.0
+starlette>=0.40.0
+uvicorn>=0.28.0
+sse-starlette>=2.0.0
+python-multipart>=0.0.9
+jinja2>=3.1.2
+pydantic>=2.0.0
+
+# media / utilities imported at module level
+numpy>=1.24.0
+scipy>=1.10.0
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0
+moviepy>=1.0.3
+scenedetect>=0.6.2
+imageio-ffmpeg>=0.4.9
+soundfile>=0.12.1
+edge-tts>=6.1.9
+yt-dlp>=2023.11.16
+psutil>=5.9.0
+
+# test tooling
+pytest>=8.0.0
+httpx2>=2.13.0
+pyflakes>=3.2.0

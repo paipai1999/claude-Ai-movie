@@ -46,5 +46,9 @@ RUN mkdir -p movies outputs temp assets/fonts
 # Expose Web UI default port
 EXPOSE 5000
 
+# Liveness probe (the endpoint is public by design and reveals nothing but "auth required?")
+HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:5000/api/auth/status || exit 1
+
 # Start Pai AI Movie Studio Web Dashboard
 CMD ["python", "web_ui.py", "--host", "0.0.0.0", "--port", "5000"]
