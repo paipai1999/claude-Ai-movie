@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import os
 import json
 import re
@@ -114,8 +115,8 @@ class QAAgent:
                     try:
                         import json
                         parsed = json.loads(raw)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("agents.qa_agent.enforce_duration_constraints", _exc)
                 
                 if isinstance(parsed, dict) and "blocks" in parsed:
                     parsed = parsed["blocks"]
@@ -237,8 +238,8 @@ class QAAgent:
                 encoder_args = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "32"]
             elif hw_enc == "h264_qsv":
                 encoder_args = ["-c:v", "h264_qsv", "-global_quality", "32", "-preset", "veryfast"]
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("agents.qa_agent._create_qa_preview", _exc)
 
         cmd = [
             ffmpeg_bin, "-y",
@@ -358,8 +359,8 @@ class QAAgent:
             if recap_file_name and recap_working_key:
                 try:
                     delete_video_file(recap_file_name, recap_working_key)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("agents.qa_agent.review", _exc)
             if preview_path_to_clean and os.path.exists(preview_path_to_clean):
                 try:
                     os.remove(preview_path_to_clean)
@@ -558,8 +559,8 @@ class QAAgent:
                         if isinstance(data, list):
                             return {"blocks": data}
                         return data
-                    except json.JSONDecodeError:
-                        pass
+                    except json.JSONDecodeError as _exc:
+                        log_suppressed("agents.qa_agent._parse_json", _exc)
         
         # Robust partial recovery: extract any fully-formed JSON objects {...} if the array was cut off mid-response
         try:
@@ -571,12 +572,12 @@ class QAAgent:
                         obj = json.loads(m)
                         if isinstance(obj, dict) and any(k in obj for k in ["scene_id", "rewritten_narration", "start_sec", "text"]):
                             recovered.append(obj)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("agents.qa_agent._parse_json", _exc)
                 if recovered:
                     return {"blocks": recovered}
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("agents.qa_agent._parse_json", _exc)
 
         print(f"[!] QAAgent: Could not parse JSON: {raw[:200]}")
         return None

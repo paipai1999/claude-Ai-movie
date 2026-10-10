@@ -1,5 +1,7 @@
+from brain.diagnostics import log_suppressed
 import json
 import os
+import copy
 
 # Default configuration for the entire pipeline
 DEFAULT_CONFIG = {
@@ -7,7 +9,8 @@ DEFAULT_CONFIG = {
         "language": "burmese",            # burmese (မြန်မာ - Thiha Voice) | english (အင်္ဂလိပ် - Guy Voice)
         "script_engine": "recap",         # "recap" (Natural Storyteller) | "translate" (Direct 1:1)
         "video_format": "both",            # "both" (16:9 + 9:16) | "16:9" (YouTube Landscape) | "9:16" (Facebook Reels / TikTok)
-        "whisper_model": "base",          # small | base | medium | large (base matches the shipped config)
+        "whisper_model": "auto",          # auto | tiny | base | small | medium | large-v3   ("auto" = medium on a CUDA GPU, base on CPU)
+        "whisper_beam_size": 1,           # 1 = fastest (greedy). 5 = noticeably more accurate transcripts, ~2-3x slower
         "scene_threshold": 30.0,           # PySceneDetect sensitivity (lower = more scenes)
         "max_characters": 6,               # Max character names to detect
         "max_scenes_for_llm": 30,          # Scene count cap passed to LLM (context limit)
@@ -18,21 +21,21 @@ DEFAULT_CONFIG = {
     "gemini": {
         "enabled": True,                   # Use Gemini API when writing Burmese recap scripts for natural spoken flow
         "api_keys": [],
-        "model": "gemini-3.5-flash-lite",       # Primary model: gemini-3.5-flash-lite (fast, reliable 2026 production model)
+        "model": "gemini-3.1-flash-lite",       # Primary model: gemini-3.1-flash-lite (ultra-fast ~1.3s verified model)
         "daily_limit_per_key": 1500,
         "model_limits": {
-            "gemini-3.5-flash-lite": 1000,
             "gemini-3.1-flash-lite": 1000,
-            "gemini-flash-lite-latest": 1000,
+            "gemini-3.6-flash": 1000,
             "gemini-flash-latest": 500,
-            "gemini-3.5-flash": 500,
-            "gemini-3.6-flash": 500,
+            "gemini-flash-lite-latest": 1000,
             "gemini-3.7-flash": 500,
-            "gemini-3.8-flash": 500
+            "gemini-3.8-flash": 500,
+            "gemini-3.5-flash-lite": 1000,
+            "gemini-3.5-flash": 500
         },
         "models": {
-            "heavy": "gemini-3.5-flash",
-            "workhorse": "gemini-3.5-flash-lite",
+            "heavy": "gemini-3.6-flash",
+            "workhorse": "gemini-3.1-flash-lite",
             "polish": "gemini-3.1-flash-lite"
         }
     },
@@ -237,9 +240,21 @@ CONFIG_FILE = "config.json"
 _config_cache = None
 _config_cache_mtime = 0.0
 
+
+def _parse_env_gemini_keys() -> list:
+    """Returns Gemini keys supplied through GEMINI_API_KEYS / GEMINI_API_KEY (12-factor style)."""
+    raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY")
+    if not raw:
+        return []
+    return [k.strip() for k in raw.replace("\r\n", ",").replace("\n", ",").replace(";", ",").split(",") if k.strip()]
+
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Merge nested configuration sections without dropping sibling defaults."""
-    merged = dict(base)
+    """
+    Merge nested configuration sections without dropping sibling defaults.
+    `base` is deep-copied so callers that mutate the result (UI settings, key saves) can never
+    corrupt the shared DEFAULT_CONFIG sections.
+    """
+    merged = copy.deepcopy(base)
     for key, value in (override or {}).items():
         if isinstance(merged.get(key), dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
@@ -263,46 +278,67 @@ def load_config() -> dict:
                 user_config = json.load(f)
         except Exception:
             user_config = {}
-            
         merged = _deep_merge(DEFAULT_CONFIG, user_config)
-
-        # Auto-detect environment GEMINI_API_KEYS or GEMINI_API_KEY
-        env_keys = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY")
-        if env_keys:
-            parsed_env = [k.strip() for k in env_keys.replace("\r\n", ",").replace("\n", ",").replace(";", ",").split(",") if k.strip()]
-            if parsed_env:
-                if "gemini" not in merged:
-                    merged["gemini"] = {}
-                existing = merged["gemini"].get("api_keys", []) or []
-                combined = []
-                for k in parsed_env + existing:
-                    if k and k not in combined:
-                        combined.append(k)
-                merged["gemini"]["api_keys"] = combined
-
-        _config_cache = merged
-        _config_cache_mtime = mtime
-        return merged
     else:
         # First-time: write the default config file for the user
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
         print(f"[*] Config: Created default config file -> {CONFIG_FILE}")
-        _config_cache = DEFAULT_CONFIG
-        _config_cache_mtime = mtime
-        return DEFAULT_CONFIG
+        merged = copy.deepcopy(DEFAULT_CONFIG)
+
+    # Auto-detect environment GEMINI_API_KEYS or GEMINI_API_KEY (12-Factor App Production Standard)
+    parsed_env = _parse_env_gemini_keys()
+    if parsed_env:
+        if "gemini" not in merged:
+            merged["gemini"] = {}
+        existing = merged["gemini"].get("api_keys", []) or []
+        combined = []
+        for k in parsed_env + existing:
+            if k and k not in combined:
+                combined.append(k)
+        merged["gemini"]["api_keys"] = combined
+
+    _config_cache = merged
+    _config_cache_mtime = mtime
+    return merged
 
 def get(section: str, key: str, fallback=None):
     """Convenience getter: config.get('gemini', 'model')"""
     cfg = load_config()
     return cfg.get(section, {}).get(key, fallback)
 
+def _without_env_only_keys(config_data: dict) -> dict:
+    """
+    Returns a copy of `config_data` without Gemini keys that exist ONLY in the environment.
+
+    load_config() merges GEMINI_API_KEYS into the in-memory config; saving that merged dict as-is
+    would silently copy secrets that the user deliberately kept out of the project folder into
+    plaintext config.json. Keys already present in the file stay untouched.
+
+    env var ဖြင့်သာ ထည့်ထားသော key များကို config.json ထဲ မရေးမိစေရန် ဖယ်ထုတ်ပေးသည်။
+    """
+    env_keys = set(_parse_env_gemini_keys())
+    saved = copy.deepcopy(config_data)
+    keys = saved.get("gemini", {}).get("api_keys")
+    if not env_keys or not isinstance(keys, list):
+        return saved
+
+    on_disk = set()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            on_disk = set((json.load(f).get("gemini", {}) or {}).get("api_keys", []) or [])
+    except Exception as _exc:
+        log_suppressed("brain.config._without_env_only_keys", _exc)
+    saved["gemini"]["api_keys"] = [k for k in keys if k not in env_keys or k in on_disk]
+    return saved
+
+
 def save_config(config_data: dict) -> None:
-    """Atomically save config and refresh the in-process cache."""
+    """Atomically save config (without env-only secrets) and refresh the in-process cache."""
     global _config_cache, _config_cache_mtime
     tmp_file = CONFIG_FILE + ".tmp"
     with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(config_data, f, indent=4, ensure_ascii=False)
+        json.dump(_without_env_only_keys(config_data), f, indent=4, ensure_ascii=False)
     os.replace(tmp_file, CONFIG_FILE)
     _config_cache = config_data
     _config_cache_mtime = os.path.getmtime(CONFIG_FILE)

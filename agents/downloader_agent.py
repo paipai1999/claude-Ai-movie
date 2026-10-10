@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import os
 import re
 import time
@@ -16,6 +17,37 @@ class DownloaderAgent:
             re.IGNORECASE
         )
         return bool(url_pattern.match(input_string.strip()))
+
+    @staticmethod
+    def find_cookies_file(extra_dirs=()):
+        """
+        Returns the first usable cookies.txt (Netscape format) from every location the studio knows
+        (env var, project root, assets/, Kaggle, Colab, Google Drive) or None.
+        Shared by all three engines so a cookie file uploaded once in the dashboard works everywhere.
+
+        YouTube anti-bot အတွက် cookies.txt ကို ရှာဖွေပေးသော shared function (Engine ၃ ခုလုံး သုံးသည်)။
+        """
+        import glob
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [
+            os.environ.get('MOVIE_COOKIES_PATH', ''),
+            os.path.join(project_root, 'cookies.txt'),
+            os.path.join(project_root, 'assets', 'cookies.txt'),
+            os.path.abspath(os.path.join(os.path.dirname(project_root), 'Movie_Translate_Private', 'cookies.txt')),
+            'cookies.txt',
+            os.path.join('assets', 'cookies.txt'),
+            '/kaggle/working/cookies.txt',
+            '/kaggle/working/pai-ai-movie-studio/cookies.txt',
+            '/content/pai-ai-movie-studio/cookies.txt',
+            '/content/cookies.txt',
+            '/content/drive/MyDrive/MovieRecapOutputs/cookies.txt',
+        ]
+        candidates += [os.path.join(str(dir_), 'cookies.txt') for dir_ in extra_dirs]
+        candidates += glob.glob('/kaggle/input/**/cookies*.txt', recursive=True)
+        for path in candidates:
+            if path and os.path.exists(path) and os.path.getsize(path) > 10:
+                return path
+        return None
 
     @staticmethod
     def _clean_url(url: str) -> str:
@@ -53,32 +85,11 @@ class DownloaderAgent:
             except Exception:
                 ffmpeg_bin = None
 
-        # Check for optional cookies.txt
-        has_cookies = False
-        cookie_candidates = [
-            os.environ.get('MOVIE_COOKIES_PATH', ''),
-            os.path.abspath(os.path.join(os.path.dirname(os.getcwd()), 'Movie_Translate_Private', 'cookies.txt')),
-            'cookies.txt',
-            os.path.join('assets', 'cookies.txt'),
-            '/kaggle/working/cookies.txt',
-            '/kaggle/working/pai-ai-movie-studio/cookies.txt',
-            '/content/pai-ai-movie-studio/cookies.txt',
-            '/content/cookies.txt',
-            '/content/drive/MyDrive/MovieRecapOutputs/cookies.txt',
-            os.path.join(self.output_dir, 'cookies.txt')
-        ]
-        import glob
-        for k_match in glob.glob('/kaggle/input/**/cookies*.txt', recursive=True):
-            cookie_candidates.append(k_match)
-
-        active_cookie = None
-        for c_file in [c for c in cookie_candidates if c]:
-            if os.path.exists(c_file) and os.path.getsize(c_file) > 10:
-                active_cookie = c_file
-                has_cookies = True
-                print(f"[*] DownloaderAgent: Using cookies authentication from -> {c_file} ({os.path.getsize(c_file)} bytes)", flush=True)
-                break
-        if not active_cookie:
+        # Check for optional cookies.txt (shared discovery used by every engine)
+        active_cookie = self.find_cookies_file(extra_dirs=(self.output_dir,))
+        if active_cookie:
+            print(f"[*] DownloaderAgent: Using cookies authentication from -> {active_cookie} ({os.path.getsize(active_cookie)} bytes)", flush=True)
+        else:
             print("[!] DownloaderAgent: No cookies.txt found in search paths. Using anonymous datacenter bypass mode...", flush=True)
 
         # Configure video resolution format
@@ -120,8 +131,8 @@ class DownloaderAgent:
             if progress_callback and callable(progress_callback):
                 try:
                     progress_callback(d)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("agents.downloader_agent._dl_progress", _exc)
             if d.get('status') == 'downloading':
                 now = time.time()
                 if now - last_progress_time[0] >= 1.5:
@@ -216,8 +227,8 @@ class DownloaderAgent:
                             try:
                                 os.remove(partial)
                                 print(f"[*] Downloader: Removed partial file {os.path.basename(partial)}")
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                log_suppressed("agents.downloader_agent.download_video", _exc)
                 if attempt == max_attempts:
                     if "Sign in to confirm" in str(e) or "bot" in str(e).lower():
                         raise RuntimeError(

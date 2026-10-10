@@ -2,7 +2,7 @@
 <html lang="my">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pai AI Movie Studio - Enterprise Video AI Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -598,6 +598,10 @@
         }
 
         .stepper-item {
+            background: transparent;
+            border: 0;
+            font: inherit;
+            text-align: left;
             display: flex;
             align-items: center;
             gap: 0.6rem;
@@ -1135,6 +1139,31 @@
             to { transform: translateX(0); opacity: 1; }
         }
 
+        /* ── KEYBOARD FOCUS & REDUCED MOTION (accessibility) ── */
+        button:focus-visible,
+        a:focus-visible,
+        select:focus-visible,
+        input:focus-visible,
+        textarea:focus-visible,
+        summary:focus-visible,
+        [tabindex]:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .app-sidebar button:focus-visible {
+            outline-color: var(--sidebar-active-text);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms;
+                animation-iteration-count: 1;
+                transition-duration: 0.01ms;
+                scroll-behavior: auto;
+            }
+        }
+
         /* ── RESPONSIVE MEDIA QUERIES ── */
         @media (max-width: 1024px) {
             .app-sidebar {
@@ -1371,31 +1400,31 @@
         <div id="view-studio" class="view-section">
             
             <!-- Stepper Header -->
-            <div class="stepper-header">
-                <div class="stepper-item active" id="step-nav-1" onclick="goToStep(1)">
-                    <div class="stepper-num">1</div>
-                    <div class="stepper-label" id="step-nav-label-1">Setup & Media</div>
-                </div>
-                <div class="stepper-arrow">></div>
-                <div class="stepper-item" id="step-nav-2" onclick="goToStep(2)">
-                    <div class="stepper-num">2</div>
-                    <div class="stepper-label" id="step-nav-label-2">Engine & Protection</div>
-                </div>
-                <div class="stepper-arrow">></div>
-                <div class="stepper-item" id="step-nav-3" onclick="goToStep(3)">
-                    <div class="stepper-num">3</div>
-                    <div class="stepper-label" id="step-nav-label-3">Audio & Branding</div>
-                </div>
-                <div class="stepper-arrow">></div>
-                <div class="stepper-item" id="step-nav-4" onclick="goToStep(4)">
-                    <div class="stepper-num">4</div>
-                    <div class="stepper-label" id="step-nav-label-4">Subtitles & Ratio</div>
-                </div>
-                <div class="stepper-arrow">></div>
-                <div class="stepper-item" id="step-nav-5" onclick="goToStep(5)">
-                    <div class="stepper-num">5</div>
-                    <div class="stepper-label" id="step-nav-label-5">Review & Launch</div>
-                </div>
+            <div class="stepper-header" role="group" aria-label="Production steps">
+                <button type="button" class="stepper-item active" id="step-nav-1" onclick="goToStep(1)" aria-current="step">
+                    <span class="stepper-num">1</span>
+                    <span class="stepper-label" id="step-nav-label-1">Setup & Media</span>
+                </button>
+                <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
+                <button type="button" class="stepper-item" id="step-nav-2" onclick="goToStep(2)">
+                    <span class="stepper-num">2</span>
+                    <span class="stepper-label" id="step-nav-label-2">Engine & Protection</span>
+                </button>
+                <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
+                <button type="button" class="stepper-item" id="step-nav-3" onclick="goToStep(3)">
+                    <span class="stepper-num">3</span>
+                    <span class="stepper-label" id="step-nav-label-3">Audio & Branding</span>
+                </button>
+                <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
+                <button type="button" class="stepper-item" id="step-nav-4" onclick="goToStep(4)">
+                    <span class="stepper-num">4</span>
+                    <span class="stepper-label" id="step-nav-label-4">Subtitles & Ratio</span>
+                </button>
+                <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
+                <button type="button" class="stepper-item" id="step-nav-5" onclick="goToStep(5)">
+                    <span class="stepper-num">5</span>
+                    <span class="stepper-label" id="step-nav-label-5">Review & Launch</span>
+                </button>
             </div>
 
             <!-- ── STEP 1: SETUP & MEDIA INPUT ── -->
@@ -1509,6 +1538,7 @@
                         <label class="form-label" id="label-translation-style">Translation Style:</label>
                         <select id="select-translation-style" class="select-control">
                             <option value="recap" selected>Movie Recap Storyteller Style</option>
+                            <option value="drama_novel">Chinese Drama Audio Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်)</option>
                             <option value="dialogue">1:1 Natural Spoken Dialogue</option>
                             <option value="persona">Character Persona & Kinship Dubbing</option>
                             <option value="wuxia">Wuxia / Cultivation (သိုင်းကား / ကျင့်ကြံရေး နန်းတွင်း)</option>
@@ -2363,6 +2393,17 @@
             }
         };
 
+        // ── Safe HTML helpers ──
+        // File / project / queue names come from the disk and from user input: they must never be
+        // injected raw into innerHTML or inline onclick handlers.
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        }
+        // JS string literal that is safe inside a double-quoted HTML attribute: onclick="fn(${jsAttr(x)})"
+        function jsAttr(value) {
+            return escapeHtml(JSON.stringify(String(value ?? '')));
+        }
+
         let currentLang = localStorage.getItem('pai_ai_lang') || 'my';
         let currentStep = 1;
         let currentJobId = null;
@@ -2523,6 +2564,8 @@
                 if (nav) {
                     nav.classList.toggle('active', i === step);
                     nav.classList.toggle('completed', i < step);
+                    if (i === step) nav.setAttribute('aria-current', 'step');
+                    else nav.removeAttribute('aria-current');
                 }
             }
             if (step === 5) {
@@ -2570,7 +2613,7 @@
             } else if (engine === 'subtitle') {
                 if (styleSel) styleSel.value = 'dialogue';
                 if (audioSel) audioSel.value = 'original';
-                if (renderSel) renderSel.value = 'false';
+                if (renderSel) renderSel.value = 'true';
             } else {
                 if (styleSel) styleSel.value = 'recap';
                 if (audioSel) audioSel.value = 'ai_voiceover';
@@ -2731,6 +2774,7 @@
             const engineNames = { recap: 'Movie Recap Studio', subtitle: 'Pure Subtitle Translation', hardsub: 'Original Audio Hardsub' };
             const styleNames = {
                 recap: 'Movie Recap Storyteller',
+                drama_novel: 'Audio Drama Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်)',
                 dialogue: '1:1 Natural Spoken Dialogue',
                 persona: 'Character Persona & Kinship',
                 wuxia: 'Wuxia / Cultivation (သိုင်းကား)',
@@ -2918,7 +2962,7 @@
                 tags.push(`Hint: ${currentJobConfig.contextHint.length > 20 ? currentJobConfig.contextHint.slice(0, 17) + '...' : currentJobConfig.contextHint}`);
             }
             if (container) {
-                container.innerHTML = tags.map(t => `<span class="active-config-tag">${t}</span>`).join('');
+                container.innerHTML = tags.map(t => `<span class="active-config-tag">${escapeHtml(t)}</span>`).join('');
             }
         }
 
@@ -3221,12 +3265,12 @@
                     const files = (mdata.files || []).filter(f => f.endsWith('.mp4'));
                     const safeM = encodeURIComponent(m);
                     let videoHtml = files.length ? `<video controls style="width:100%; border-radius:6px; margin:0.5rem 0;" src="/api/outputs/file?path=${encodeURIComponent(files[0])}"></video>` : '';
-                    let cinemaBtn = files.length ? `<button class="btn-secondary" style="font-size:0.75rem; padding:0.35rem 0.7rem; cursor:pointer;" onclick="openVideoPlayerModal('/api/outputs/file?path=${encodeURIComponent(files[0])}', '${m}')">🎬 Cinema</button>` : '';
+                    let cinemaBtn = files.length ? `<button class="btn-secondary" style="font-size:0.75rem; padding:0.35rem 0.7rem; cursor:pointer;" onclick="openVideoPlayerModal(${jsAttr('/api/outputs/file?path=' + encodeURIComponent(files[0]))}, ${jsAttr(m)})">🎬 Cinema</button>` : '';
                     return `
                         <div class="media-card">
                             <div>
-                                <div class="media-card-title">${m}</div>
-                                <div class="media-card-meta">Engine: ${mdata.engine_type || 'recap'} | Files: ${mdata.files ? mdata.files.length : 0}</div>
+                                <div class="media-card-title">${escapeHtml(m)}</div>
+                                <div class="media-card-meta">Engine: ${escapeHtml(mdata.engine_type || 'recap')} | Files: ${mdata.files ? mdata.files.length : 0}</div>
                                 ${videoHtml}
                             </div>
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.75rem; gap:0.4rem; flex-wrap:wrap;">
@@ -3234,7 +3278,7 @@
                                     ${cinemaBtn}
                                     <a href="/api/download/zip?movie=${safeM}" class="btn-secondary" style="font-size:0.75rem; padding:0.35rem 0.7rem; text-decoration:none;">ZIP</a>
                                 </div>
-                                <button class="btn-danger" style="font-size:0.72rem; padding:0.35rem 0.65rem;" onclick="deleteItem('outputs', '${m}')">Delete</button>
+                                <button class="btn-danger" style="font-size:0.72rem; padding:0.35rem 0.65rem;" onclick="deleteItem('outputs', ${jsAttr(m)})">Delete</button>
                             </div>
                         </div>
                     `;
@@ -3256,11 +3300,11 @@
                     return `
                         <div class="media-card">
                             <div>
-                                <div class="media-card-title">${f}</div>
+                                <div class="media-card-title">${escapeHtml(f)}</div>
                             </div>
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.75rem;">
-                                <button class="btn-primary" style="font-size:0.75rem; padding:0.35rem 0.7rem;" onclick="useMovie('${f}')">Use in Studio</button>
-                                <button class="btn-danger" style="font-size:0.72rem; padding:0.35rem 0.65rem;" onclick="deleteItem('movies', '${f}')">Delete</button>
+                                <button class="btn-primary" style="font-size:0.75rem; padding:0.35rem 0.7rem;" onclick="useMovie(${jsAttr(f)})">Use in Studio</button>
+                                <button class="btn-danger" style="font-size:0.72rem; padding:0.35rem 0.65rem;" onclick="deleteItem('movies', ${jsAttr(f)})">Delete</button>
                             </div>
                         </div>
                     `;
@@ -3355,14 +3399,15 @@
                 if (!res.ok) return;
                 const data = await res.json();
                 const checks = data.checks || {};
-                if (checks.ffmpeg) document.getElementById('health-ffmpeg-desc').textContent = `${checks.ffmpeg.encoder} (${checks.ffmpeg.details})`;
+                if (checks.ffmpeg) document.getElementById('health-ffmpeg-desc').textContent = `${checks.ffmpeg.encoder} [${checks.ffmpeg.codec}]`;
                 if (checks.gemini) document.getElementById('health-gemini-desc').textContent = `${checks.gemini.valid_keys}/${checks.gemini.total_keys} Active Keys`;
                 if (checks.edge_tts) document.getElementById('health-tts-desc').textContent = checks.edge_tts.healthy ? 'Online' : 'Offline';
-                if (checks.disk) document.getElementById('health-disk-desc').textContent = `${checks.disk.free_gb} GB Free`;
+                if (checks.disk) document.getElementById('health-disk-desc').textContent = `${checks.disk.free_gb} GB Free of ${checks.disk.total_gb || checks.disk.free_gb} GB`;
                 const overall = document.getElementById('health-overall-badge');
                 if (overall) {
-                    overall.textContent = data.status === 'healthy' ? 'All Systems Healthy' : 'Diagnostics Active';
-                    overall.className = `badge-pill ${data.status === 'healthy' ? 'success' : 'info'}`;
+                    const isHealthy = data.status === 'ok' || data.status === 'healthy';
+                    overall.textContent = isHealthy ? 'All Systems Healthy (စနစ်အားလုံး ပုံမှန်လည်ပတ်နေပါသည်)' : 'Diagnostics Warning';
+                    overall.className = `badge-pill ${isHealthy ? 'success' : 'warn'}`;
                 }
             } catch(e){}
         }
@@ -3481,7 +3526,7 @@
                     if (cont) {
                         cont.innerHTML = queue.length ? queue.map((q, idx) => `
                             <div style="padding:0.6rem; background:var(--surface2); border-radius:6px; margin-bottom:0.4rem; font-size:0.8rem;">
-                                <b>#${idx+1}</b> ${q.source || 'Task'}
+                                <b>#${idx+1}</b> ${escapeHtml(q.source || 'Task')}
                             </div>
                         `).join('') : '<div class="empty-state">No queued videos waiting.</div>';
                     }

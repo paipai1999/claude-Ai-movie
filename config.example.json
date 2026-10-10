@@ -2,29 +2,30 @@
   "gemini": {
     "enabled": true,
     "api_keys": [],
-    "model": "gemini-3.5-flash-lite",
+    "model": "gemini-3.1-flash-lite",
     "models": {
-      "heavy": "gemini-3.5-flash",
-      "workhorse": "gemini-3.5-flash-lite",
+      "heavy": "gemini-3.6-flash",
+      "workhorse": "gemini-3.1-flash-lite",
       "polish": "gemini-3.1-flash-lite"
     },
     "daily_limit_per_key": 1500,
     "model_limits": {
-      "gemini-3.5-flash-lite": 1000,
       "gemini-3.1-flash-lite": 1000,
-      "gemini-flash-lite-latest": 1000,
+      "gemini-3.6-flash": 1000,
       "gemini-flash-latest": 500,
-      "gemini-3.5-flash": 500,
-      "gemini-3.6-flash": 500,
+      "gemini-flash-lite-latest": 1000,
       "gemini-3.7-flash": 500,
-      "gemini-3.8-flash": 500
+      "gemini-3.8-flash": 500,
+      "gemini-3.5-flash-lite": 1000,
+      "gemini-3.5-flash": 500
     }
   },
   "pipeline": {
     "language": "burmese",
     "script_engine": "recap",
     "video_format": "both",
-    "whisper_model": "base",
+    "whisper_model": "auto",
+    "whisper_beam_size": 1,
     "scene_threshold": 30.0,
     "max_characters": 6,
     "max_scenes_for_llm": 30,

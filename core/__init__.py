@@ -32,6 +32,7 @@ from core.letterbox import (
 __all__ = [
     "format_srt_timestamp",
     "format_ass_timestamp",
+    "parse_srt_timestamp",
     "wrap_burmese_text",
     "build_ass_script",
     "build_srt_script",

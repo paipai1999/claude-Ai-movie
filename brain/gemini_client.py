@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import json
 import time
 import os
@@ -11,32 +12,47 @@ def _mask_key(key: str) -> str:
         return '***'
     return key[:6] + '...' + key[-4:]
 
+def _interruptible_sleep(seconds: float) -> None:
+    """
+    time.sleep() that wakes up as soon as the user presses Stop (CURRENT_JOB_CANCELLED=1) and then
+    raises InterruptedError, so a 65-second rate-limit wait can never keep a cancelled job alive.
+
+    Stop နှိပ်လျှင် rate-limit စောင့်ချိန်ကို ချက်ချင်း ဖြတ်ပြီး InterruptedError ပေးသည်။
+    """
+    deadline = time.time() + max(0.0, float(seconds))
+    while True:
+        if os.environ.get("CURRENT_JOB_CANCELLED") == "1":
+            raise InterruptedError("Gemini request cancelled by user.")
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.5, remaining))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Valid Google AI Studio Gemini Models (Priority Order):
-# 1. gemini-3.6-flash         : Google Recommended Flagship Model (Verified 200 OK)
-# 2. gemini-3-flash-preview   : High-Speed Preview Model (Verified 200 OK)
-# 3. gemini-3.5-flash-lite    : Ultra Fast Lite Model
-# 4. gemini-flash-latest      : Always updated latest flash model
-# 5. gemini-flash-lite-latest : Always updated latest flash lite model
-# 6. gemini-3.1-flash-lite    : High-speed Lite fallback
-# 7. gemini-3.5-flash         : Quality model
-# 8. gemini-3.7-flash         : Advanced reasoning & translation
-# 9. gemini-3.8-flash         : Heavy reasoning model
-# Legacy Fallbacks:
+# 1. gemini-3.1-flash-lite    : Ultra-fast verified workhorse (~1.3s latency)
+# 2. gemini-3.6-flash         : High-performance flagship model (Verified 200 OK)
+# 3. gemini-flash-latest      : Always updated latest flash model (Verified 200 OK)
+# 4. gemini-flash-lite-latest : Always updated latest flash lite model
+# 5. gemini-3.7-flash         : Advanced reasoning & translation
+# 6. gemini-3.8-flash         : Heavy reasoning model
+# 7. gemini-3-flash-preview   : High-Speed Preview Model
+# 8. gemini-3.5-flash-lite    : Ultra Fast Lite Model
+# 9. gemini-3.5-flash         : Quality model
 # 10. gemini-2.5-flash        : Legacy 2.5 series
 # 11. gemini-2.0-flash        : Legacy 2.0 series
 # 12. gemini-1.5-flash        : Legacy 1.5 series
 _FALLBACK_MODELS = [
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3-flash-preview",
     "gemini-3.6-flash",
+    "gemini-flash-latest",
     "gemini-flash-lite-latest",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
     "gemini-3.7-flash",
     "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-flash",
@@ -176,7 +192,8 @@ def call_gemini(
                         headers={"Content-Type": "application/json", "x-goog-api-key": key},
                         method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=120.0) as response:
+                    api_timeout = 50.0 if images else 35.0
+                    with urllib.request.urlopen(req, timeout=api_timeout) as response:
                         res_data = json.loads(response.read().decode("utf-8"))
                         _record_api_usage(key, m, "success")
                         text = _extract_text_from_gemini_response(res_data)
@@ -186,7 +203,8 @@ def call_gemini(
                     last_err = e
                     err_body = ""
                     try: err_body = e.read().decode("utf-8")
-                    except Exception: pass
+                    except Exception as _exc:
+                        log_suppressed("brain.gemini_client.call_gemini", _exc)
                     
                     if e.code == 429:
                         is_daily = "daily" in err_body.lower() or "per day" in err_body.lower() or "free_tier_requests" in err_body.lower()
@@ -196,7 +214,7 @@ def call_gemini(
                         else:
                             print(f"[!] Gemini API Rate Limit (429 RPM) on '{m}'. Trying next API key...")
                         _record_api_usage(key, m, "rate_limited")
-                        time.sleep(2)   # brief pause — don't hammer
+                        _interruptible_sleep(2)   # brief pause — don't hammer
                         continue        # next key, same model
                     elif e.code in (404, 503):
                         # FIX-W2: 404/503 = model doesn't exist or service unavailable globally → skip whole model
@@ -214,6 +232,12 @@ def call_gemini(
                         )
                         _record_api_usage(key, m, f"error_{e.code}")
                         continue        # next key, same model
+
+                except (TimeoutError, urllib.error.URLError) as e:
+                    last_err = e
+                    _record_api_usage(key, m, "timeout")
+                    print(f"[!] Gemini API model '{m}' timed out or connection error on key '{_mask_key(key)}': {e}. Trying next key...")
+                    continue
 
                 except Exception as e:
                     last_err = e
@@ -241,7 +265,7 @@ def call_gemini(
                         f"Waiting {wait_time}s for quota window to reset "
                         f"(attempt {attempt + 1}/3)..."
                     )
-                time.sleep(wait_time)
+                _interruptible_sleep(wait_time)
             else:
                 break   # non-transient error — stop retrying
 
@@ -319,7 +343,7 @@ def call_gemini_vision(
                         headers={"Content-Type": "application/json", "x-goog-api-key": key},
                         method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=120.0) as response:
+                    with urllib.request.urlopen(req, timeout=45.0) as response:
                         res_data = json.loads(response.read().decode("utf-8"))
                         _record_api_usage(key, m, "success")
                         text = _extract_text_from_gemini_response(res_data)
@@ -330,7 +354,8 @@ def call_gemini_vision(
                     err_code = e.code
                     err_body = ""
                     try: err_body = e.read().decode("utf-8")
-                    except Exception: pass
+                    except Exception as _exc:
+                        log_suppressed("brain.gemini_client.call_gemini_vision", _exc)
 
                     if err_code == 429:
                         setattr(e, "is_quota", "quota" in err_body.lower() or "exhausted" in err_body.lower())
@@ -339,18 +364,24 @@ def call_gemini_vision(
                         else:
                             print(f"[WARN] Vision Model '{m}' rate-limited (429). Retrying next key...")
                         _record_api_usage(key, m, "rate_limited")
-                        time.sleep(1)
+                        _interruptible_sleep(1)
                         continue
-                    elif err_code == 404:
-                        # FIX-W2: 404 = model not available for any key → skip whole model
-                        print(f"[WARN] Vision Model '{m}' not found (404). Skipping to next model...")
-                        _record_api_usage(key, m, "error_404")
+                    elif err_code in (404, 503):
+                        # FIX-W2: 404/503 = model not available for any key → skip whole model
+                        print(f"[WARN] Vision Model '{m}' returned HTTP {err_code}. Skipping to next model...")
+                        _record_api_usage(key, m, f"error_{err_code}")
                         model_404 = True
                         break           # FIX-W2: break key loop → go to next model
                     else:
                         print(f"[WARN] Vision Model '{m}' returned HTTP {err_code}: {err_body[:200]} -- trying next key...")
                         _record_api_usage(key, m, f"error_{err_code}")
                         continue
+
+                except (TimeoutError, urllib.error.URLError) as e:
+                    last_err = e
+                    _record_api_usage(key, m, "timeout")
+                    print(f"[WARN] Vision Model '{m}' timed out or connection error on key '{_mask_key(key)}': {e}. Trying next key...")
+                    continue
 
                 except Exception as e:
                     last_err = e
@@ -368,7 +399,7 @@ def call_gemini_vision(
                     f"[!] VisionAPI: All keys rate-limited. "
                     f"Waiting {_RPM_WAIT_SEC}s (attempt {attempt + 1}/3)..."
                 )
-                time.sleep(_RPM_WAIT_SEC)
+                _interruptible_sleep(_RPM_WAIT_SEC)
             else:
                 break
 
@@ -540,7 +571,7 @@ def ask_gemini_with_video(file_name: str, system_prompt: str, user_text: str, ke
                     if attempt < max_retries - 1:
                         wait_sec = (attempt + 1) * 10
                         print(f"[WARN] {m} returned {e.code}. Retrying in {wait_sec}s...")
-                        time.sleep(wait_sec)
+                        _interruptible_sleep(wait_sec)
                         continue
                     else:
                         print(f"[WARN] {m} failed after {max_retries} attempts with HTTP {e.code}. Falling back to next model...")
@@ -559,7 +590,7 @@ def delete_video_file(file_name: str, key: str):
     url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}"
     req = urllib.request.Request(url, headers={"x-goog-api-key": key}, method="DELETE")
     try:
-        urllib.request.urlopen(req)
+        urllib.request.urlopen(req, timeout=30)
         print(f"[OK] Gemini API: Deleted video '{file_name}'.")
     except Exception as e:
         print(f"[WARN] Failed to delete video file {file_name}: {e}")

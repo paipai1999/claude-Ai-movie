@@ -14,6 +14,7 @@ A dedicated, standalone AI engine providing:
 သဘာဝကျကျ ၁:၁ စကားပြောဟန် မြန်မာစာတန်းထိုးအဖြစ် တိကျစွာ ပြန်ဆိုထုတ်လုပ်ပေးပါသည်။
 """
 
+from brain.diagnostics import log_suppressed
 import os
 import sys
 import re
@@ -37,17 +38,19 @@ from brain.burmese_utils import (
     sanitize_burmese_narration,
     has_untranslated_foreign_script,
     sanitize_dialogue_persona_particles,
-    replace_numbers_with_burmese,
-    transliterate_english_acronyms,
     strip_trailing_subtitle_punctuation,
     format_dual_speaker_subtitles,
     merge_short_gap_segments,
-    localize_common_idioms,
+    normalize_standard_burmese_spelling,
 )
 from brain.prompts import (
     get_subtitle_persona_prompt,
     get_subtitle_wuxia_prompt,
+    get_subtitle_drama_novel_prompt,
 )
+from agents.downloader_agent import DownloaderAgent
+from core.paths import sanitize_project_name, resolve_inside
+from core.whisper_settings import load_faster_whisper, resolve_beam_size
 from core.subtitle_builder import (
     format_srt_timestamp,
     parse_srt_timestamp,
@@ -66,8 +69,8 @@ def _get_ffmpeg_bin() -> str:
         p = imageio_ffmpeg.get_ffmpeg_exe()
         if p and os.path.exists(p):
             return p
-    except Exception:
-        pass
+    except Exception as _exc:
+        log_suppressed("subtitle_engine._get_ffmpeg_bin", _exc)
     # Check venv or PATH
     which_p = shutil.which("ffmpeg")
     if which_p and os.path.exists(which_p):
@@ -89,7 +92,8 @@ class SubtitleEngine:
         cancel_event: Optional[threading.Event] = None,
     ):
         self.output_base_dir = os.path.abspath(output_base_dir)
-        self.cookies_path = cookies_path
+        # Explicit --cookies wins; otherwise reuse the cookie file uploaded through the dashboard.
+        self.cookies_path = cookies_path or DownloaderAgent.find_cookies_file()
         self.cancel_event = cancel_event
         self.config_data = cfg.load_config()
         self.ffmpeg_bin = _get_ffmpeg_bin()
@@ -135,6 +139,9 @@ class SubtitleEngine:
                 render_video = True
             if stage_toggles.get("blur") is False:
                 blur_mode = "no"
+            elif stage_toggles.get("blur") is True:
+                blur_mode = "auto" if blur_mode == "no" else blur_mode
+                render_video = True
             if stage_toggles.get("reels") is False and video_format == "both":
                 video_format = "16:9"
 
@@ -145,6 +152,10 @@ class SubtitleEngine:
         print(f"[*] Force Whisper STT: {force_whisper}")
         print(f"[*] Translation Style: {translation_style}")
         print(f"[*] Render Hardsub Video: {render_video}")
+        if render_video:
+            print(f"[*] Subtitle Blur Removal: {blur_mode.upper()} (Region Height: {f'{int(blur_height*100)}%' if blur_height else 'Vision AI Auto'})")
+            print(f"[*] Subtitle Style Preset: {subtitle_style}")
+            print(f"[*] Target Video Format  : {video_format} ({resolution})")
         print("=" * 65 + "\n")
 
         # ── Step 1: Download / Ingest Video & Subtitles ─────────────────────────
@@ -164,8 +175,10 @@ class SubtitleEngine:
             video_metadata = self._probe_video_metadata(video_file)
 
         # Sanitize slug
-        slug = re.sub(r'[^a-zA-Z0-9_-]', '_', slug).strip('_') or f"project_{int(time.time())}"
-        proj_dir = os.path.join(self.output_base_dir, slug)
+        slug = sanitize_project_name(slug, ascii_only=True)
+        proj_dir = resolve_inside(self.output_base_dir, slug)
+        if not proj_dir:
+            raise ValueError(f"Invalid project name: {slug!r}")
         os.makedirs(proj_dir, exist_ok=True)
 
         print(f"[*] Project Output Directory: {proj_dir}")
@@ -176,8 +189,8 @@ class SubtitleEngine:
             try:
                 shutil.copy2(initial_subs_file, proj_sub)
                 initial_subs_file = proj_sub
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("subtitle_engine.run", _exc)
 
         # Standardize 01_video_original.mp4
         final_video_path = os.path.join(proj_dir, "01_video_original.mp4")
@@ -200,8 +213,8 @@ class SubtitleEngine:
             try:
                 if os.path.exists(video_file) and os.path.abspath(video_file) != os.path.abspath(final_video_path):
                     os.remove(video_file)
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("subtitle_engine.run", _exc)
 
         # ── Step 2: Extract / Standardize Segments with Timestamps ──────────────
         self._check_cancellation()
@@ -270,7 +283,7 @@ class SubtitleEngine:
 
         # ── Step 8: Optional Hardsub Video Render ─────────────────────────────
         if render_video:
-            print("\n--- [Phase: Step 8 - Rendering Hardsub Video Output] ---")
+            print(f"\n--- [Phase: Step 8 - Rendering Hardsub Video Output (Vision AI Blur: {blur_mode.upper()})] ---")
             try:
                 from hardsub_engine import HardsubEngine
                 hs = HardsubEngine(output_base_dir=self.output_base_dir, cookies_path=self.cookies_path, cancel_event=self.cancel_event)
@@ -278,6 +291,7 @@ class SubtitleEngine:
                 for fmt in formats_to_render:
                     out_fname = f"01_hardsub_{fmt.replace(':', '_')}.mp4"
                     target_out = os.path.join(proj_dir, out_fname)
+                    print(f"[*] SubtitleEngine: Burning Burmese Subtitles with Blur Mode [{blur_mode}] into {fmt} video...")
                     # Convert segments format to match HardsubEngine schema
                     hs_segments = [
                         {
@@ -427,8 +441,8 @@ class SubtitleEngine:
             if wh_match:
                 w = int(wh_match.group(1))
                 h = int(wh_match.group(2))
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("subtitle_engine._probe_video_metadata", _exc)
 
         return {
             "title": os.path.splitext(os.path.basename(video_path))[0],
@@ -499,12 +513,13 @@ class SubtitleEngine:
 
             whisper_lang = None if language in ["auto", "", None] else language
 
-            from faster_whisper import WhisperModel
-            model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=min(8, os.cpu_count() or 4))
+            pipeline_cfg = self.config_data.get("pipeline", {})
+            model, model_size, device = load_faster_whisper(pipeline_cfg.get("whisper_model", "auto"))
+            print(f"[*] Faster-Whisper ready: model={model_size}, device={device}")
             seg_gen, info = model.transcribe(
                 temp_audio,
                 language=whisper_lang,
-                beam_size=1,
+                beam_size=resolve_beam_size(pipeline_cfg),
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=400)
             )
@@ -700,6 +715,8 @@ class SubtitleEngine:
             chunk = segments[b_idx * batch_size : (b_idx + 1) * batch_size]
             if style in ["wuxia", "cultivation", "historical", "costume"]:
                 style_label = "Wuxia / Cultivation Subtitles"
+            elif style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+                style_label = "Chinese Drama Audio Novel Subtitles"
             elif style in ["persona", "character", "kinship", "cinematic"]:
                 style_label = "Cinematic Persona Subtitles"
             elif style in ["recap", "storyteller"]:
@@ -730,10 +747,12 @@ class SubtitleEngine:
                     item["duration_sec"] = dur
                     if dur < 2.5:
                         item["reading_budget"] = f"Short scene ({dur}s) - keep concise (<={max(16, int(dur * 14))} chars)"
-                dialogue_items.append(item)
+                    dialogue_items.append(item)
 
             if style in ["wuxia", "cultivation", "historical", "costume"]:
                 system_prompt = get_subtitle_wuxia_prompt(len(chunk))
+            elif style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+                system_prompt = get_subtitle_drama_novel_prompt(len(chunk))
             elif style in ["persona", "character", "kinship", "cinematic"]:
                 system_prompt = get_subtitle_persona_prompt(len(chunk))
             elif style in ["recap", "storyteller"]:
@@ -781,6 +800,8 @@ class SubtitleEngine:
 
             if style in ["wuxia", "cultivation", "historical", "costume"]:
                 instruction = f"Translate these {len(chunk)} dialogue lines into dramatic Wuxia/Cultivation colloquial Burmese subtitles:"
+            elif style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+                instruction = f"Translate and adapt these {len(chunk)} dialogue lines into thrilling Chinese Drama Audio Novel colloquial Burmese subtitles:"
             elif style in ["persona", "character", "kinship", "cinematic"]:
                 instruction = f"Translate these {len(chunk)} dialogue lines into natural cinematic colloquial Burmese subtitles with realistic character personas:"
             elif style in ["recap", "storyteller"]:
@@ -878,8 +899,6 @@ class SubtitleEngine:
         4. Guarantees 0% raw foreign characters in the final subtitle deliverables.
         """
         api_keys = self._get_api_keys()
-        is_foreign = bool(source_lang and not source_lang.lower().startswith("my") and source_lang.lower() not in ["burmese", "mm"])
-
         damaged_indices = []
         for idx, s in enumerate(segments):
             b_text = str(s.get("burmese", "")).strip()
@@ -1097,13 +1116,13 @@ class SubtitleEngine:
         f4 = os.path.join(proj_dir, "04_transcript_burmese.txt")
         with open(f4, "w", encoding="utf-8") as f:
             for s in segments:
-                f.write(f"{strip_trailing_subtitle_punctuation(s.get('burmese', ''))}\n\n")
+                f.write(f"{strip_trailing_subtitle_punctuation(normalize_standard_burmese_spelling(s.get('burmese', '')))}\n\n")
 
         # 4. 05_subtitle_burmese.srt (Standard SRT format)
         f5 = os.path.join(proj_dir, "05_subtitle_burmese.srt")
         with open(f5, "w", encoding="utf-8") as f:
             for s in segments:
-                b_text = strip_trailing_subtitle_punctuation(s.get("burmese", ""))
+                b_text = strip_trailing_subtitle_punctuation(normalize_standard_burmese_spelling(s.get("burmese", "")))
                 f.write(f"{s['no']}\n")
                 f.write(f"{s['start']} --> {s['end']}\n")
                 f.write(f"{b_text}\n\n")
@@ -1120,7 +1139,7 @@ class SubtitleEngine:
                     "end": s.get("end_s", 2.0),
                     "start_ts": s.get("start", ""),
                     "end_ts": s.get("end", ""),
-                    "burmese": strip_trailing_subtitle_punctuation(s.get("burmese", "")),
+                    "burmese": strip_trailing_subtitle_punctuation(normalize_standard_burmese_spelling(s.get("burmese", ""))),
                 }
                 for i, s in enumerate(segments)
             ]
@@ -1209,6 +1228,8 @@ def main():
     parser.add_argument("--style", choices=["box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box"], default="box_black", help="Subtitle style preset")
     parser.add_argument("--render-video", dest="render_video", action="store_true", default=False, help="Render hardsub preview video")
     parser.add_argument("--no-render", dest="render_video", action="store_false", help="Skip rendering video")
+    parser.add_argument("--blur", dest="blur_flag", action="store_true", default=None, help="Enable Vision AI subtitle blur removal and render video")
+    parser.add_argument("--no-blur", dest="blur_flag", action="store_false", help="Disable subtitle blur")
     parser.add_argument("--blur-mode", choices=["auto", "yes", "no"], default="auto", help="Subtitle blur mode")
     parser.add_argument("--blur-height", type=float, default=None, help="Subtitle blur height")
     parser.add_argument("--mirror", action="store_true", default=False, help="Mirror video horizontally")
@@ -1220,6 +1241,14 @@ def main():
     if not input_source:
         parser.error("the following arguments are required: -i/--input or input positional")
 
+    render_video = args.render_video
+    blur_mode = args.blur_mode
+    if args.blur_flag is True:
+        render_video = True
+        blur_mode = "auto" if blur_mode == "no" else blur_mode
+    elif args.blur_flag is False:
+        blur_mode = "no"
+
     engine = SubtitleEngine(output_base_dir=args.output_dir, cookies_path=args.cookies)
     try:
         engine.run(
@@ -1228,11 +1257,11 @@ def main():
             source_language=args.source_lang,
             force_whisper=args.force_whisper,
             translation_style=args.translation_style,
-            render_video=args.render_video,
+            render_video=render_video,
             video_format=args.format,
             resolution=args.res,
             subtitle_style=args.style,
-            blur_mode=args.blur_mode,
+            blur_mode=blur_mode,
             mirror=args.mirror,
             blur_height=args.blur_height,
             audio_anti_copyright=args.audio_anti_copyright,

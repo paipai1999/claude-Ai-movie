@@ -17,6 +17,7 @@ English:
   for automated multi-lingual movie video generation.
 """
 
+from brain.diagnostics import log_suppressed
 import os
 import sys
 import re
@@ -24,28 +25,23 @@ import json
 import uuid
 import time
 import threading
-import io
 import shutil
 import posixpath
 import asyncio
-import traceback
-import contextvars
 import zipfile
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote
-from typing import Optional, List, Dict, Any
+from urllib.parse import quote, parse_qs
+from typing import Optional, List, Dict, Any, Callable
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
-from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from agents.downloader_agent import DownloaderAgent
-from agents.master import MasterAgent
 from agents.video_merger_agent import detect_hardware_encoder
 from brain.sqlite_store import (
     delete_movie_state,
@@ -53,10 +49,14 @@ from brain.sqlite_store import (
     clean_stale_running_jobs,
     create_job,
     update_job,
+    store_queued_job,
+    load_queued_jobs,
 )
 from brain import config as cfg
 from brain.config import SUBTITLE_PRESETS
+from core.paths import resolve_inside
 from main import check_dependencies
+from services import security, process_registry
 
 
 # =============================================================================
@@ -64,12 +64,18 @@ from main import check_dependencies
 # (စနစ် စတင်လည်ပတ်ခြင်းနှင့် Hardware အရှိန်မြှင့်စနစ် စစ်ဆေးခြင်း)
 # =============================================================================
 
-# Verify system dependencies (FFmpeg, FFprobe) and detect GPU video encoder
+# The dashboard runs jobs on a server: never pop a media player on that machine.
+# (CLI runs keep the "open finished video" convenience.)
+os.environ.setdefault("PAI_DISABLE_AUTO_OPEN", "1")
+
+# Verify system dependencies (FFmpeg, FFprobe) and detect GPU video encoder.
+# check_dependencies() ends with sys.exit() when FFmpeg is missing – catch SystemExit as well,
+# otherwise the dashboard (and its health-check page) could never start to report the problem.
 try:
     check_dependencies()
     _enc = detect_hardware_encoder()
     print(f"[WebUI Hardware Acceleration] Active Video Encoder: {_enc.get('label', 'Default')} [{_enc.get('codec', 'libx264')}]")
-except Exception as e:
+except (Exception, SystemExit) as e:
     print(f"[WARN] check_dependencies failed: {e}")
 
 # Recover from unexpected server crash: mark previously uncompleted running jobs as error/stale
@@ -86,15 +92,49 @@ except Exception as e:
 # (FastAPI အက်ပ်နှင့် လုံခြုံရေး စိစစ်မှုစနစ်)
 # =============================================================================
 
-app = FastAPI(title="AI Movie Recap API", version="2.2.0")
+from contextlib import asynccontextmanager
 
-# Cross-Origin Resource Sharing (CORS) setup
+
+@asynccontextmanager
+async def _lifespan(_app):
+    """Server startup hook: put jobs that were still queued before a restart back in line."""
+    if os.getenv("PAI_RESTORE_QUEUE", "1") != "0":
+        try:
+            _restore_queued_jobs()
+        except Exception as e:
+            print(f"[WARN] Could not restore queued jobs: {e}")
+    yield
+
+
+app = FastAPI(title="AI Movie Recap API", version="2.3.0", lifespan=_lifespan)
+
+# Cross-Origin Resource Sharing (CORS) setup.
+# Secure default: the dashboard is same-origin, so NO foreign website may call the API.
+# Only the local dashboard origins are listed; extra origins must be opted in explicitly
+# through WEB_UI_ALLOWED_ORIGINS="https://a.example,https://b.example" ("*" is still honoured
+# for people who really want it, but is never the default).
+# CORS ပုံသေ: အခြား website များ API ကို မခေါ်နိုင်ရန် localhost origin များကိုသာ ခွင့်ပြုထားသည်။
+_LOCAL_DEFAULT_ORIGINS = [
+    "http://127.0.0.1:5000", "http://localhost:5000",
+    "http://127.0.0.1:3000", "http://localhost:3000",
+]
+_configured_origins = security.parse_allowed_origins(os.getenv("WEB_UI_ALLOWED_ORIGINS", ""))
+if _configured_origins == ["*"]:
+    _allowed_origins = ["*"]
+    _allow_credentials = False  # W3C: credentials cannot be combined with a wildcard origin
+elif _configured_origins:
+    _allowed_origins = _configured_origins
+    _allow_credentials = True
+else:
+    _allowed_origins = list(_LOCAL_DEFAULT_ORIGINS)
+    _allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=_allow_credentials,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-auth-token"],
 )
 
 
@@ -108,72 +148,164 @@ def _is_authenticated(request: Request) -> bool:
       3. URL Query Parameter: ?token=<token>
       4. HTTP Secure Cookie: web_ui_token=<token>
     """
-    auth_secret = os.getenv("WEB_UI_PASSWORD") or os.getenv("WEB_UI_TOKEN")
+    auth_secret = security.get_auth_secret()
     if not auth_secret:
         return True  # Authentication disabled if no environment secret is configured
 
     # 1. Bearer token in Authorization header
     auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        if token == auth_secret:
-            return True
+    if auth_header.startswith("Bearer ") and security.secrets_match(auth_header[7:], auth_secret):
+        return True
 
     # 2. Custom header (x-auth-token)
-    if request.headers.get("x-auth-token", "").strip() == auth_secret:
+    if security.secrets_match(request.headers.get("x-auth-token", ""), auth_secret):
         return True
 
     # 3. Query parameter for direct browser links or testing
-    q_token = request.query_params.get("token") or request.query_params.get("auth") or request.query_params.get("password")
-    if q_token and q_token.strip() == auth_secret:
+    if security.secrets_match(_query_token(request), auth_secret):
         return True
 
-    # 4. HTTP Cookie for browser dashboard sessions
-    if request.cookies.get("web_ui_token", "").strip() == auth_secret:
+    # 4. Session cookie (stores a digest of the secret, never the secret itself)
+    if security.secrets_match(request.cookies.get("web_ui_token", ""), security.session_cookie_value(auth_secret)):
         return True
 
     return False
 
 
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    """
-    Intercepts incoming HTTP requests to enforce authentication when WEB_UI_PASSWORD is set.
-    လုံခြုံရေးစနစ် ဖွင့်ထားပါက ခွင့်ပြုချက်မရှိသော Request များကို ပိတ်ပင်ပေးသည်။
-    """
-    auth_secret = os.getenv("WEB_UI_PASSWORD") or os.getenv("WEB_UI_TOKEN")
-    if auth_secret:
-        path = request.url.path
-        exempt = path in ["/api/login", "/api/auth/status", "/favicon.ico"] or path.startswith("/static")
-        if not exempt and not _is_authenticated(request):
-            if path.startswith("/api/"):
-                return JSONResponse(status_code=401, content={"status": "error", "detail": "Unauthorized: Password or Token required"})
-            return HTMLResponse(
-                content="""<!DOCTYPE html><html><head><title>Dashboard Login</title><meta name='viewport' content='width=device-width, initial-scale=1'>
+def _query_token(request: Request) -> str:
+    """Returns the token passed as ?token= / ?auth= / ?password= (empty string when absent)."""
+    return (
+        request.query_params.get("token")
+        or request.query_params.get("auth")
+        or request.query_params.get("password")
+        or ""
+    )
+
+
+def _login_page(error: str = "") -> str:
+    """Minimal password page. The form POSTs to /api/login so the secret never lands in a URL."""
+    msg = f"<p style='color:#f85149;font-size:14px;'>{error}</p>" if error else ""
+    return """<!DOCTYPE html><html><head><title>Dashboard Login</title><meta name='viewport' content='width=device-width, initial-scale=1'>
 <style>body{font-family:-apple-system,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
 .box{background:#161b22;padding:32px;border-radius:12px;border:1px solid #30363d;max-width:360px;width:90%;text-align:center;}
 input{width:100%;box-sizing:border-box;padding:12px;margin:16px 0;background:#0d1117;border:1px solid #30363d;color:#fff;border-radius:6px;font-size:15px;}
 button{width:100%;padding:12px;background:#238636;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:bold;font-size:15px;}
 button:hover{background:#2ea043;}
-</style></head><body><div class='box'><h2>Login Required</h2><p style='color:#8b949e;font-size:14px;'>This Movie Recap Web UI is password-protected.</p>
-<form method='GET' action='/'><input type='password' name='token' placeholder='Enter Password / Token' required/><button type='submit'>Access Dashboard</button></form>
-</div></body></html>""",
-                status_code=401
-            )
+</style></head><body><div class='box'><h2>Login Required</h2><p style='color:#8b949e;font-size:14px;'>This Movie Recap Web UI is password-protected.</p>""" + msg + """
+<form method='POST' action='/api/login'><input type='password' name='token' placeholder='Enter Password / Token' required autofocus/><button type='submit'>Access Dashboard</button></form>
+</div></body></html>"""
+
+
+def _set_session_cookie(response, request: Request, secret: str) -> None:
+    """Persists the browser session (digest value, HttpOnly, SameSite, Secure over HTTPS)."""
+    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    response.set_cookie(
+        "web_ui_token",
+        security.session_cookie_value(secret),
+        max_age=86400 * 7,
+        httponly=True,
+        samesite="lax",
+        secure=is_https,
+    )
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """
+    Request gate for the whole dashboard:
+      1. Anonymous mode (no secret configured): rejects cross-site state-changing calls and
+         DNS-rebinding Host headers, so a random website cannot drive the local API.
+      2. Password mode: rejects every request that is not authenticated.
+
+    1) Password မသတ်မှတ်ထားလျှင် အခြား website မှ ခေါ်သော POST/DELETE များကို ပိတ်ပင်သည်။
+    2) Password သတ်မှတ်ထားလျှင် ခွင့်ပြုချက်မရှိသော Request အားလုံးကို ပိတ်ပင်သည်။
+    """
+    auth_secret = security.get_auth_secret()
+    path = request.url.path
+
+    if not auth_secret:
+        host_header = request.headers.get("host", "")
+        bind_host = getattr(app.state, "bind_host", None)
+        if not security.host_is_trusted(host_header, bind_host):
+            return JSONResponse(status_code=403, content={"status": "error", "detail": "Untrusted Host header"})
+        if request.method not in security.SAFE_METHODS:
+            if not security.origin_is_allowed(request.headers.get("origin"), host_header, _configured_origins):
+                return JSONResponse(status_code=403, content={"status": "error", "detail": "Cross-site request blocked"})
+    else:
+        exempt = path in ["/api/login", "/api/auth/status", "/favicon.ico"] or path.startswith("/static")
+        if not exempt and not _is_authenticated(request):
+            if path.startswith("/api/"):
+                return JSONResponse(status_code=401, content={"status": "error", "detail": "Unauthorized: Password or Token required"})
+            return HTMLResponse(content=_login_page(), status_code=401)
 
     response = await call_next(request)
-    # Automatically persist valid session cookie for browser visits
-    if auth_secret and _is_authenticated(request):
-        q_token = request.query_params.get("token") or request.query_params.get("auth") or request.query_params.get("password")
-        if q_token and q_token.strip() == auth_secret:
-            response.set_cookie("web_ui_token", auth_secret, max_age=86400 * 7, httponly=True, samesite="lax")
+    # Persist a session cookie after a successful ?token= visit
+    if auth_secret and security.secrets_match(_query_token(request), auth_secret):
+        _set_session_cookie(response, request, auth_secret)
     return response
+
+
+# Brute-force throttle for /api/login: {client_ip: [failure timestamps]}
+_login_failures: Dict[str, List[float]] = {}
+_LOGIN_MAX_FAILURES = 10
+_LOGIN_WINDOW_SEC = 60
+
+
+@app.post("/api/login")
+async def login(request: Request):
+    """
+    Password login endpoint used by the login page (form POST) or scripts (JSON {"token": ...}).
+    Sets the session cookie and redirects (form) / returns JSON (script).
+    """
+    secret = security.get_auth_secret()
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    wants_json = "application/json" in request.headers.get("content-type", "")
+    token = ""
+    if wants_json:
+        try:
+            token = str(json.loads(raw).get("token", ""))
+        except Exception:
+            token = ""
+    else:
+        token = (parse_qs(raw).get("token") or [""])[0]
+
+    if not secret:  # authentication disabled – nothing to log in to
+        return {"success": True, "auth_required": False} if wants_json else RedirectResponse("/", status_code=303)
+
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    recent = [t for t in _login_failures.get(client, []) if now - t < _LOGIN_WINDOW_SEC]
+    if len(recent) >= _LOGIN_MAX_FAILURES:
+        _login_failures[client] = recent
+        return JSONResponse(status_code=429, content={"status": "error", "detail": "Too many attempts. Try again in a minute."})
+
+    if not security.secrets_match(token, secret):
+        recent.append(now)
+        _login_failures[client] = recent
+        if wants_json:
+            return JSONResponse(status_code=401, content={"status": "error", "detail": "Invalid password"})
+        return HTMLResponse(content=_login_page("Invalid password."), status_code=401)
+
+    _login_failures.pop(client, None)
+    response = JSONResponse({"success": True}) if wants_json else RedirectResponse("/", status_code=303)
+    _set_session_cookie(response, request, secret)
+    return response
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    """Tells the frontend whether a password is required and whether this session has it."""
+    required = bool(security.get_auth_secret())
+    return {"auth_required": required, "authenticated": (not required) or _is_authenticated(request)}
 
 
 # Jinja2 template renderer for the web dashboard HTML
 templates = Jinja2Templates(directory="templates")
 
-VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v')
+
+# Upload limits (disk-fill / memory protection). MAX_UPLOAD_MB overrides the 16 GB default.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "16384")) * 1024 * 1024
+MAX_COOKIE_FILE_BYTES = 1024 * 1024
 
 
 # =============================================================================
@@ -186,14 +318,13 @@ from services.job_manager import (
     jobs,
     jobs_lock,
     JOB_RETENTION_SECONDS,
+    has_running_job,
 )
 from services.queue_manager import (
     job_queue,
     queue_lock,
 )
 
-# Cancellation signal events: {job_id: threading.Event}
-cancel_events: Dict[str, threading.Event] = {}
 _dispatcher_thread: Optional[threading.Thread] = None
 
 def _queue_dispatcher():
@@ -225,8 +356,8 @@ def _queue_dispatcher():
                     should_start = True
                     try:
                         update_job(jid, status="running", phase="Starting...")
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("web_ui._queue_dispatcher", _exc)
                 else:
                     print(f"[*] Queue Dispatcher: Skipping job {jid} (status: {jobs.get(jid, {}).get('status')})")
             if should_start:
@@ -256,6 +387,70 @@ def _ensure_queue_dispatcher():
 _ensure_queue_dispatcher()
 
 
+def _worker_registry() -> Dict[str, Callable]:
+    """name -> worker function (resolved lazily because the workers are defined further below)."""
+    return {fn.__name__: fn for fn in (pipeline_worker, subtitle_worker, hardsub_worker, batch_worker, downloader_worker)}
+
+
+def _persist_queued_job(job_entry: Dict[str, Any]) -> None:
+    """Stores a freshly queued job so it survives a server restart (best effort)."""
+    try:
+        target = job_entry.get("target")
+        meta = {k: job_entry.get(k) for k in ("name", "source", "language", "tts_engine", "engine_mode", "created_at")}
+        if target is None or not store_queued_job(job_entry["job_id"], target.__name__, list(job_entry["args"]), meta):
+            print(f"[WARN] Queue persistence skipped for job {job_entry.get('job_id')} (arguments not serialisable).")
+    except Exception as e:
+        print(f"[WARN] Queue persistence failed for job {job_entry.get('job_id')}: {e}")
+
+
+def _restore_queued_jobs() -> int:
+    """
+    Re-creates in-memory jobs + queue entries for rows that were 'queued' when the server stopped.
+    Jobs that were already running are marked 'interrupted' by clean_stale_running_jobs() instead
+    (re-run them manually; their checkpoints make the resume cheap).
+
+    Server ပြန်စတင်ချိန်တွင် တန်းစီနေဆဲ အလုပ်များကို တန်းစီစာရင်းထဲ ပြန်ထည့်ပေးသည်။
+    """
+    registry = _worker_registry()
+    restored = 0
+    for item in load_queued_jobs():
+        worker = registry.get(item["worker"])
+        job_id = item["job_id"]
+        if worker is None:
+            continue
+        with jobs_lock:
+            if job_id in jobs:
+                continue
+            meta = item.get("meta") or {}
+            jobs[job_id] = {
+                "status": "queued",
+                "phase": "Restored after restart - waiting in queue",
+                "buffer": None,
+                "created_at": item.get("created_at") or time.time(),
+                "name": meta.get("name") or "video",
+                "source": meta.get("source") or meta.get("name") or "video",
+                "language": meta.get("language") or "burmese",
+                "tts_engine": meta.get("tts_engine") or "edge_tts",
+            }
+        with queue_lock:
+            job_queue.append({
+                "job_id": job_id,
+                "target": worker,
+                "args": tuple(item["args"]),
+                "name": meta.get("name"),
+                "source": meta.get("source"),
+                "language": meta.get("language"),
+                "tts_engine": meta.get("tts_engine"),
+                "engine_mode": meta.get("engine_mode"),
+                "created_at": item.get("created_at"),
+            })
+        restored += 1
+    if restored:
+        _ensure_queue_dispatcher()
+        print(f"[*] WebUI: Restored {restored} queued job(s) from the previous session.")
+    return restored
+
+
 def _cleanup_old_jobs():
     """
     Purges completed, errored, or cancelled jobs older than JOB_RETENTION_SECONDS.
@@ -274,11 +469,8 @@ def _cleanup_old_jobs():
         for jid in to_delete:
             jobs.pop(jid, None)
             # Free thread_stdout buffers and subscribers to prevent memory leak
-            t_out = globals().get('thread_stdout')
-            if t_out and hasattr(t_out, 'buffers'):
-                t_out.buffers.pop(jid, None)
-            if t_out and hasattr(t_out, 'subscribers'):
-                t_out.subscribers.pop(jid, None)
+            thread_stdout.buffers.pop(jid, None)
+            thread_stdout.subscribers.pop(jid, None)
 
 
 def _has_running_job() -> bool:
@@ -286,130 +478,60 @@ def _has_running_job() -> bool:
     Returns True if any video generation job is currently executing.
     လက်ရှိ လုပ်ဆောင်ဆဲ အလုပ် ရှိ/မရှိ စစ်ဆေးပေးသည်။
     """
-    with jobs_lock:
-        return any(job.get('status') == 'running' for job in jobs.values())
-
-
-def _resolve_input_source(input_source: str) -> str:
-    """
-    Resolves input filename or URL to a canonical local filesystem path or validated URL.
-    - If URL: returns as-is.
-    - If relative filename: checks inside `movies/` directory.
-    - If absolute path: verifies file existence.
-    
-    ဗီဒီယိုဖိုင် အမည် သို့မဟုတ် URL အား စစ်ဆေးပြီး တိကျသော File Path ကို ရှာဖွေပေးသည်။
-    """
-    source = str(input_source or '').strip()
-    if not source:
-        raise ValueError("No input provided")
-    if DownloaderAgent.is_url(source):
-        return source
-    if os.path.exists(source):
-        return os.path.abspath(source)
-    if not os.path.dirname(source):
-        movies_path = os.path.join('movies', source)
-        if os.path.exists(movies_path):
-            return os.path.abspath(movies_path)
-    raise FileNotFoundError(f"File not found: '{source}'")
+    return has_running_job()
 
 
 def _safe_child_path(folder_type: str, item_name: str) -> Optional[str]:
     """
     Security check against Path Traversal attacks (e.g., '../../secret_file').
-    Ensures candidate path is strictly within the designated parent folder ('outputs', 'movies', 'temp').
-    
-    Path Traversal တိုက်ခိုက်မှုများ မဖြစ်စေရန် ရွေးချယ်ထားသော ဖိုဒါအတွင်း၌သာ ရှိမရှိ စစ်ဆေးပေးသည်။
+    Ensures candidate path is strictly INSIDE the designated parent folder ('outputs', 'movies', 'temp').
+    The folder itself ('.', '', './') is rejected so a delete call can never wipe a whole root folder.
+
+    Path Traversal တိုက်ခိုက်မှုများ မဖြစ်စေရန် ရွေးချယ်ထားသော ဖိုဒါအတွင်း၌သာ ရှိမရှိ စစ်ဆေးပေးပြီး
+    ဖိုဒါကိုယ်တိုင် ('.') ကို ပယ်ချသည်။
     """
     if folder_type not in {'outputs', 'movies', 'temp'} or not item_name:
         return None
-    base = os.path.abspath(folder_type)
-    candidate = os.path.abspath(os.path.join(base, item_name))
-    try:
-        return candidate if os.path.commonpath([base, candidate]) == base else None
-    except ValueError:
-        return None
+    return resolve_inside(folder_type, item_name)
 
+from services.job_runtime import (  # noqa: E402  (job execution lives in services/job_runtime.py)
+    VIDEO_EXTENSIONS,
+    INPUT_EXTENSIONS,
+    cancel_events,
+    current_job_id,
+    thread_stdout,
+    _STANDALONE_DOWNLOAD_JOB,
+    _is_job_cancelled,
+    _set_job_state,
+    _project_dir_from_result,
+    _resolve_input_source,
+    pipeline_worker,
+    subtitle_worker,
+    hardsub_worker,
+    batch_worker,
+    downloader_worker,
+)
+# Names that tests / external callers historically imported from web_ui (kept as a stable surface)
+__all__ = [
+    "app", "jobs", "jobs_lock", "job_queue", "queue_lock", "INPUT_EXTENSIONS", "VIDEO_EXTENSIONS",
+    "_is_job_cancelled", "_set_job_state", "_project_dir_from_result", "_resolve_input_source",
+]
+
+from services.schemas import (  # noqa: E402
+    StartRequest,
+    BatchStartRequest,
+    SubtitleConfigRequest,
+    BrandingConfigRequest,
+    RenameRequest,
+    SaveKeysRequest,
+    CookieSaveRequest,
+    DownloadVideoRequest,
+)
 
 # =============================================================================
-# SECTION 4: REALTIME STDOUT CAPTURE & CONTEXT PROPAGATION
-# (Console Output ဖမ်းယူမှုနှင့် SSE Real-Time Streaming)
+# CONSOLE CAPTURE: route stdout / stderr through the per-job log multiplexer
+# (Console output ကို job အလိုက် log buffer နှင့် SSE သို့ ပို့ရန် ချိတ်ဆက်ခြင်း)
 # =============================================================================
-
-# ContextVar for thread-local job identification across worker thread pools (Python 3.7+)
-current_job_id = contextvars.ContextVar("current_job_id", default=None)
-
-
-class ThreadedStdout:
-    """
-    Custom multiplexing stdout stream that routes console logs simultaneously to:
-      1. Original system stdout / console
-      2. Per-job in-memory StringIO buffer (for later download/inspection)
-      3. Connected SSE subscribers (for zero-latency browser terminal feeds)
-      
-    Console တွင် ပေါ်သည့် စာသားများကို Web UI အချိန်နှင့်တပြေးညီ မြင်တွေ့နိုင်ရန်
-    StringIO buffer နှင့် SSE browser queues များဆီသို့ တစ်ပြိုင်နက် ပို့ဆောင်ပေးသည်။
-    """
-    def __init__(self, original_stdout):
-        self.original_stdout = original_stdout
-        self.buffers: Dict[str, io.StringIO] = {}
-        self.subscribers: Dict[str, list] = {}
-
-    def write(self, s: str):
-        # Ignore HTTP polling access logs from being written into job buffers
-        is_http_poll = any(ign in s for ign in ("GET /api/status", "GET /api/queue", "GET /api/keys", "OPTIONS /api/"))
-
-        jid = current_job_id.get()
-        if not jid and self.buffers and not is_http_poll:
-            # Fallback: associate with active job buffer if context was not inherited
-            if len(self.buffers) == 1:
-                jid = next(iter(self.buffers.keys()))
-            else:
-                jid = list(self.buffers.keys())[-1]
-
-        if jid and jid in self.buffers and not is_http_poll:
-            try:
-                self.buffers[jid].write(s)
-            except Exception:
-                pass
-            if jid in self.subscribers:
-                for item in list(self.subscribers.get(jid, [])):
-                    try:
-                        if isinstance(item, tuple):
-                            q, loop = item
-                            if loop.is_running():
-                                loop.call_soon_threadsafe(q.put_nowait, s)
-                        else:
-                            item.put_nowait(s)
-                    except Exception:
-                        pass
-        try:
-            self.original_stdout.write(s)
-            self.original_stdout.flush()
-        except Exception:
-            pass
-
-    def flush(self):
-        try:
-            self.original_stdout.flush()
-        except Exception:
-            pass
-
-    def isatty(self):
-        return getattr(self.original_stdout, "isatty", lambda: False)()
-
-    def fileno(self):
-        if hasattr(self.original_stdout, "fileno"):
-            return self.original_stdout.fileno()
-        raise io.UnsupportedOperation("fileno")
-
-    def reconfigure(self, **kwargs):
-        if hasattr(self.original_stdout, "reconfigure"):
-            self.original_stdout.reconfigure(**kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self.original_stdout, name)
-
-
 # Ensure UTF-8 console output encoding on Windows
 if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
@@ -417,889 +539,53 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# Intercept global sys.stdout and sys.stderr
-thread_stdout = ThreadedStdout(sys.stdout)
+# Intercept global sys.stdout and sys.stderr (thread_stdout wraps the original stream)
 sys.stdout = thread_stdout
 sys.stderr = thread_stdout
 
 
-# =============================================================================
-# SECTION 5: PIPELINE WORKER ENGINES
-# (အဓိက ဗီဒီယို ထုတ်လုပ်မှု Worker များ - Recap, Subtitles, Hardsub, Batch)
-# =============================================================================
+# Gemini key probing (shared by /api/system/health-check and /api/keys/status)
+_GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-def pipeline_worker(
-    job_id,
-    input_source,
-    language="burmese",
-    subtitle_mode="burn",
-    resolution="1080p",
-    tts_engine=None,
-    custom_thumb_title=None,
-    watermark_enabled=None,
-    watermark_text=None,
-    watermark_opacity=None,
-    reels_enabled=True,
-    video_format="both",
-    subtitle_style="box_black",
-    thumbnail_intro=False,
-    source_language="auto",
-    skip_demucs=False,
-    detect_scenes=False,
-    resume=True,
-    tts_voice=None,
-    script_engine="recap",
-    trim_end=None,
-    no_smart_trim=False,
-    outro_card=False,
-    translation_style="recap",
-    audio_mode="ai_voiceover",
-    sfx_mode="original_sfx",
-    sfx_volume=0.15,
-    blur_mode="auto",
-    blur_height=None,
-    mirror=False,
-    audio_anti_copyright=False,
-    render_video=True,
-    stage_toggles=None,
-    context_hint=None,
-):
+
+def _ping_gemini_key(key: str, timeout: float = 8.0) -> tuple:
     """
-    Executes the Complete Movie Recap Pipeline via MasterAgent.
-    ဇာတ်ကား အကျဉ်းချုပ် ဗီဒီယို အပြည့်အစုံကို MasterAgent ဖြင့် စတင်ထုတ်လုပ်ပေးသည့် Worker ဖြစ်ပါသည်။
-    
-    Pipeline Stages:
-      1. Video & Audio Ingestion (YouTube URL auto-download or local file)
-      2. Vocal Separation & Demucs Isolation
-      3. Whisper Speech-to-Text Dialogue Extraction
-      4. Gemini Vision Scene & Storyline Analysis
-      5. Multi-lingual Script Synthesis (Burmese/English/Thai)
-      6. AI Voiceover Narration (Edge-TTS / F5-TTS)
-      7. Anti-Copyright Hardsubbing & Video Compositing
+    Checks one Gemini API key against the models endpoint and returns (state, http_code).
+    The key travels in the `x-goog-api-key` header – it is never placed in the URL, so it cannot
+    leak through proxy logs, exception text or browser history.
+
+    API key ကို URL ထဲမထည့်ဘဲ header ဖြင့်သာ ပို့ပြီး အခြေအနေကို စစ်ဆေးပေးသည်။
     """
-    current_job_id.set(job_id)
-    cancel_events[job_id] = threading.Event()
-    os.environ["CURRENT_JOB_CANCELLED"] = "0"
-    if skip_demucs:
-        os.environ["SKIP_DEMUCS"] = "true"
-    else:
-        os.environ.pop("SKIP_DEMUCS", None)
-
-    if detect_scenes:
-        os.environ["SKIP_SCENES"] = "0"
-    else:
-        os.environ["SKIP_SCENES"] = "1"
-
-    if video_format == "16:9" or reels_enabled is False:
-        os.environ["DISABLE_REELS"] = "true"
-        os.environ.pop("ENABLE_REELS", None)
-    elif video_format in ["9:16", "both"] or reels_enabled is True:
-        os.environ["ENABLE_REELS"] = "true"
-        os.environ.pop("DISABLE_REELS", None)
-
-    buffer = io.StringIO()
-    thread_stdout.buffers[job_id] = buffer
-    with jobs_lock:
-        jobs[job_id]['buffer'] = buffer
-    
+    key_str = str(key).strip()
+    if not key_str:
+        return "EMPTY", 0
+    req = urllib.request.Request(
+        _GEMINI_MODELS_URL,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Recap/2.3", "x-goog-api-key": key_str},
+        method="GET",
+    )
     try:
-        create_job(job_id, str(input_source), phase="Starting...")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 0)
+            if status == 200:
+                return "ONLINE", 200
+            return "UNKNOWN", status if isinstance(status, int) else 0
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "RATE LIMITED (429)", 429
+        if e.code in (400, 401, 403):
+            return "INVALID KEY", e.code
+        return f"HTTP {e.code}", e.code
     except Exception:
-        pass
-    
-    try:
-        if DownloaderAgent.is_url(input_source):
-            with jobs_lock:
-                jobs[job_id]['phase'] = 'Downloading Video...'
-            try:
-                update_job(job_id, phase='Downloading Video...')
-            except Exception:
-                pass
-            print(f"[URL] Detected URL: {input_source} - starting auto-download...")
-            downloader = DownloaderAgent(output_dir="movies")
-            movie_path = downloader.download_video(input_source)
-        else:
-            with jobs_lock:
-                jobs[job_id]['phase'] = 'Processing Local File...'
-            movie_path = _resolve_input_source(input_source)
-        
-        # Multi-Voice Mapping
-        tts_voice_override = tts_voice
-        clean_lang = language
-        if tts_voice_override:
-            if tts_voice_override in ["thiha", "male", "burmese_thiha"]:
-                tts_voice_override = "my-MM-ThihaNeural"
-            elif tts_voice_override in ["nilar", "female", "burmese_nilar"]:
-                tts_voice_override = "my-MM-NilarNeural"
-            elif tts_voice_override in ["guy", "english_guy"]:
-                tts_voice_override = "en-US-GuyNeural"
-            elif tts_voice_override in ["jenny", "english_jenny"]:
-                tts_voice_override = "en-US-JennyNeural"
-        elif language in ["burmese_thiha", "thiha"]:
-            clean_lang = "burmese"
-            tts_voice_override = "my-MM-ThihaNeural"
-        elif language in ["burmese_nilar", "nilar"]:
-            clean_lang = "burmese"
-            tts_voice_override = "my-MM-NilarNeural"
-        elif language in ["burmese", "mm", "myanmar"]:
-            clean_lang = "burmese"
-            tts_voice_override = "my-MM-ThihaNeural"  # Auto multi-voice enabled
-        elif language in ["english_guy", "guy"]:
-            clean_lang = "english"
-            tts_voice_override = "en-US-GuyNeural"
-        elif language in ["english_jenny", "jenny"]:
-            clean_lang = "english"
-            tts_voice_override = "en-US-JennyNeural"
-        elif language in ["english", "en"]:
-            clean_lang = "english"
-            tts_voice_override = "en-US-GuyNeural"    # Auto multi-voice enabled
-
-        master = MasterAgent(
-            movie_path,
-            language=clean_lang,
-            subtitle_mode=subtitle_mode,
-            subtitle_style=subtitle_style,
-            resolution=resolution,
-            tts_engine=tts_engine,
-            tts_voice=tts_voice_override,
-            custom_thumb_title=custom_thumb_title,
-            watermark_enabled=watermark_enabled,
-            watermark_text=watermark_text,
-            watermark_opacity=watermark_opacity,
-            video_format=video_format,
-            thumbnail_intro=thumbnail_intro,
-            source_language=source_language,
-            script_engine=script_engine,
-            resume=resume,
-            trim_end=trim_end,
-            no_smart_trim=no_smart_trim,
-            outro_card=outro_card,
-            cancel_event=cancel_events.get(job_id),
-            skip_demucs=skip_demucs,
-            detect_scenes=detect_scenes,
-            translation_style=translation_style,
-            audio_mode=audio_mode,
-            sfx_mode=sfx_mode,
-            sfx_volume=sfx_volume,
-            blur_mode=blur_mode,
-            blur_height=blur_height,
-            mirror=mirror,
-            audio_anti_copyright=audio_anti_copyright,
-            render_video=render_video,
-            stage_toggles=stage_toggles,
-            context_hint=context_hint,
-        )
-        master.run_pipeline()
-        
-        job_cancel_ev = cancel_events.get(job_id)
-        if (job_cancel_ev and job_cancel_ev.is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            with jobs_lock:
-                jobs[job_id]['status'] = 'done'
-            try:
-                update_job(job_id, status='done', phase='Done')
-            except Exception:
-                pass
-    except Exception as e:
-        job_cancel_ev = cancel_events.get(job_id)
-        is_cancel = isinstance(e, (InterruptedError, KeyboardInterrupt)) or (job_cancel_ev and job_cancel_ev.is_set()) or (os.environ.get("CURRENT_JOB_CANCELLED") == "1")
-        if is_cancel:
-            print(f"\n[STOP] Job {job_id} was force-stopped by user.")
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            traceback.print_exc()
-            err_msg = str(e) or type(e).__name__
-            with jobs_lock:
-                jobs[job_id]['status'] = 'error'
-                jobs[job_id]['error'] = err_msg
-                jobs[job_id]['phase'] = f"Error: {err_msg[:60]}"
-            try:
-                update_job(job_id, status='error', phase=f"Error: {err_msg[:60]}")
-            except Exception:
-                pass
-    finally:
-        # Free log buffer immediately on job end
-        if hasattr(thread_stdout, 'buffers'):
-            thread_stdout.buffers.pop(job_id, None)
-
-def subtitle_worker(
-    job_id,
-    input_source,
-    project_name=None,
-    source_language="auto",
-    force_whisper=False,
-    translation_style="dialogue",
-    audio_mode="original",
-    sfx_mode="original_sfx",
-    sfx_volume=0.15,
-    render_video=False,
-    video_format="16:9",
-    resolution="1080p",
-    subtitle_style="box_black",
-    blur_mode="auto",
-    mirror=False,
-    color_grading=True,
-    blur_height=None,
-    audio_anti_copyright=False,
-    stage_toggles=None,
-    context_hint=None,
-):
-    """
-    Executes the Subtitle Generation & Translation Engine.
-    စာတန်းထိုး သီးသန့် ထုတ်လုပ်ခြင်းနှင့် ဘာသာပြန်ဆိုခြင်း လုပ်ငန်းများကို ဆောင်ရွက်ပေးသည့် Worker ဖြစ်ပါသည်။
-    
-    Capabilities:
-      - Speech-to-Text transcription via OpenAI Whisper
-      - Nuanced multilingual translation via Gemini AI
-      - SRT, ASS subtitle export and optional hardsub rendering
-      - Anti-copyright filters (mirror, blur, color grading)
-    """
-    current_job_id.set(job_id)
-    cancel_events[job_id] = threading.Event()
-    os.environ["CURRENT_JOB_CANCELLED"] = "0"
-    buffer = io.StringIO()
-    thread_stdout.buffers[job_id] = buffer
-    with jobs_lock:
-        jobs[job_id]['buffer'] = buffer
-
-    try:
-        create_job(job_id, str(input_source), phase="Starting Subtitle Engine...")
-    except Exception:
-        pass
-
-    try:
-        from subtitle_engine import SubtitleEngine
-        engine = SubtitleEngine(output_base_dir="outputs", cancel_event=cancel_events.get(job_id))
-        with jobs_lock:
-            jobs[job_id]['phase'] = 'Processing Subtitles...'
-        print(f"[*] Subtitle Engine: Starting job {job_id} for {input_source}...")
-        engine.run(
-            input_source=input_source,
-            project_name=project_name,
-            source_language=source_language,
-            force_whisper=force_whisper,
-            translation_style=translation_style,
-            audio_mode=audio_mode,
-            sfx_mode=sfx_mode,
-            sfx_volume=sfx_volume,
-            render_video=render_video,
-            video_format=video_format,
-            resolution=resolution,
-            subtitle_style=subtitle_style,
-            blur_mode=blur_mode,
-            mirror=mirror,
-            color_grading=color_grading,
-            blur_height=blur_height,
-            audio_anti_copyright=audio_anti_copyright,
-            stage_toggles=stage_toggles,
-            context_hint=context_hint,
-        )
-
-        job_cancel_ev = cancel_events.get(job_id)
-        if (job_cancel_ev and job_cancel_ev.is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            with jobs_lock:
-                jobs[job_id]['status'] = 'done'
-                jobs[job_id]['phase'] = 'Done'
-            try:
-                update_job(job_id, status='done', phase='Done')
-            except Exception:
-                pass
-    except Exception as e:
-        job_cancel_ev = cancel_events.get(job_id)
-        is_cancel = isinstance(e, (InterruptedError, KeyboardInterrupt)) or (job_cancel_ev and job_cancel_ev.is_set()) or (os.environ.get("CURRENT_JOB_CANCELLED") == "1")
-        if is_cancel:
-            print(f"\n[STOP] Job {job_id} was force-stopped by user.")
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            traceback.print_exc()
-            err_msg = str(e) or type(e).__name__
-            with jobs_lock:
-                jobs[job_id]['status'] = 'error'
-                jobs[job_id]['error'] = err_msg
-                jobs[job_id]['phase'] = f"Error: {err_msg[:60]}"
-            try:
-                update_job(job_id, status='error', phase=f"Error: {err_msg[:60]}")
-            except Exception:
-                pass
-    finally:
-        if hasattr(thread_stdout, 'buffers'):
-            thread_stdout.buffers.pop(job_id, None)
-
-def hardsub_worker(
-    job_id,
-    input_source,
-    project_name=None,
-    source_language="auto",
-    force_whisper=False,
-    video_format="both",
-    resolution="1080p",
-    subtitle_style="box_black",
-    blur_mode="auto",
-    mirror=False,
-    color_grading=True,
-    blur_height=None,
-    audio_anti_copyright=False,
-    translation_style="persona",
-    audio_mode="original",
-    sfx_mode="original_sfx",
-    sfx_volume=0.15,
-    render_video=True,
-    stage_toggles=None,
-    context_hint=None,
-):
-    """
-    Executes the Anti-Copyright Hardsub Video Compositing Engine.
-    မူပိုင်ခွင့် အကာအကွယ် စစ်ထုတ်မှုများနှင့် စာတန်းထိုး ဗီဒီယို ပေါင်းစပ် ထုတ်လုပ်ပေးသည့် Worker ဖြစ်ပါသည်။
-    
-    Features:
-      - Persona-level spoken dialogue translation
-      - AI Subtitle Boxblur detection (Y-axis region masking)
-      - Video zoom (1.02x), EQ color grading, mirroring
-      - Audio anti-copyright frequency tempo shield (atempo=1.008)
-      - Hardware-accelerated H.264 video encoding (Intel QSV, NVENC, Apple VideoToolbox, libx264)
-    """
-    current_job_id.set(job_id)
-    cancel_events[job_id] = threading.Event()
-    os.environ["CURRENT_JOB_CANCELLED"] = "0"
-    buffer = io.StringIO()
-    thread_stdout.buffers[job_id] = buffer
-    with jobs_lock:
-        jobs[job_id]['buffer'] = buffer
-
-    try:
-        create_job(job_id, str(input_source), phase="Starting Hardsub Studio...")
-    except Exception:
-        pass
-
-    try:
-        from hardsub_engine import HardsubEngine
-        engine = HardsubEngine(output_base_dir="outputs", cancel_event=cancel_events[job_id])
-        with jobs_lock:
-            jobs[job_id]['phase'] = 'Processing Hardsub Video...'
-        print(f"[*] Hardsub Studio: Starting job {job_id} for {input_source} (Format: {video_format}, Res: {resolution})...")
-        engine.run(
-            input_source=input_source,
-            project_name=project_name,
-            source_language=source_language,
-            force_whisper=force_whisper,
-            video_format=video_format,
-            resolution=resolution,
-            subtitle_style=subtitle_style,
-            blur_mode=blur_mode,
-            blur_height=blur_height,
-            mirror=mirror,
-            color_grading=color_grading,
-            audio_anti_copyright=audio_anti_copyright,
-            translation_style=translation_style,
-            audio_mode=audio_mode,
-            sfx_mode=sfx_mode,
-            sfx_volume=sfx_volume,
-            render_video=render_video,
-            stage_toggles=stage_toggles,
-            context_hint=context_hint,
-        )
-
-        job_cancel_ev = cancel_events.get(job_id)
-        if (job_cancel_ev and job_cancel_ev.is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            with jobs_lock:
-                jobs[job_id]['status'] = 'done'
-                jobs[job_id]['phase'] = 'Done'
-            try:
-                update_job(job_id, status='done', phase='Done')
-            except Exception:
-                pass
-    except Exception as e:
-        job_cancel_ev = cancel_events.get(job_id)
-        is_cancel = isinstance(e, (InterruptedError, KeyboardInterrupt)) or (job_cancel_ev and job_cancel_ev.is_set()) or (os.environ.get("CURRENT_JOB_CANCELLED") == "1")
-        if is_cancel:
-            print(f"\n[STOP] Hardsub job {job_id} was force-stopped by user.")
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            traceback.print_exc()
-            err_msg = str(e) or type(e).__name__
-            with jobs_lock:
-                jobs[job_id]['status'] = 'error'
-                jobs[job_id]['error'] = err_msg
-                jobs[job_id]['phase'] = f"Error: {err_msg[:60]}"
-            try:
-                update_job(job_id, status='error', phase=f"Error: {err_msg[:60]}")
-            except Exception:
-                pass
-    finally:
-        if hasattr(thread_stdout, 'buffers'):
-            thread_stdout.buffers.pop(job_id, None)
-
-def batch_worker(
-    job_id,
-    inputs_list,
-    language="burmese",
-    subtitle_mode="burn",
-    resolution="1080p",
-    tts_engine=None,
-    custom_thumb_title=None,
-    watermark_enabled=None,
-    watermark_text=None,
-    watermark_opacity=None,
-    reels_enabled=True,
-    video_format="both",
-    subtitle_style="box_black",
-    thumbnail_intro=False,
-    source_language="auto",
-    skip_demucs=False,
-    detect_scenes=False,
-    resume=True,
-    tts_voice=None,
-    script_engine="recap",
-    engine_mode="recap",
-    blur_mode="auto",
-    blur_height=None,
-    mirror=False,
-    color_grading=True,
-    audio_anti_copyright=False,
-    force_whisper=False,
-    translation_style=None,
-    audio_mode=None,
-    sfx_mode="original_sfx",
-    sfx_volume=0.15,
-    render_video=True,
-    stage_toggles=None,
-    context_hint=None,
-):
-    """
-    Executes Multi-Video Batch Processing across any of the 3 production engines.
-    ဗီဒီယို အများအပြားကို တစ်ပြိုင်နက် သို့မဟုတ် အစဉ်လိုက် အလိုအလျောက် ထုတ်လုပ်ပေးသည့် Batch Worker ဖြစ်ပါသည်။
-    
-    Supported Engine Modes:
-      - 'recap': Full movie recap workflow via BatchProcessor
-      - 'subtitle': Whisper transcription and translation batch
-      - 'hardsub': Anti-copyright subtitle compositing batch
-    """
-    from brain.planner import BatchProcessor
-    current_job_id.set(job_id)
-    cancel_events[job_id] = threading.Event()
-    os.environ["CURRENT_JOB_CANCELLED"] = "0"
-    if skip_demucs:
-        os.environ["SKIP_DEMUCS"] = "true"
-    else:
-        os.environ.pop("SKIP_DEMUCS", None)
-
-    if detect_scenes:
-        os.environ["SKIP_SCENES"] = "0"
-    else:
-        os.environ["SKIP_SCENES"] = "1"
-
-    if video_format == "16:9" or reels_enabled is False:
-        os.environ["DISABLE_REELS"] = "true"
-        os.environ.pop("ENABLE_REELS", None)
-    elif video_format in ["9:16", "both"] or reels_enabled is True:
-        os.environ["ENABLE_REELS"] = "true"
-        os.environ.pop("DISABLE_REELS", None)
-
-    buffer = io.StringIO()
-    thread_stdout.buffers[job_id] = buffer
-    with jobs_lock:
-        jobs[job_id]['buffer'] = buffer
-    
-    try:
-        create_job(job_id, f"Batch ({len(inputs_list)} items)", phase="Starting...")
-    except Exception:
-        pass
-    
-    try:
-        total_items = len(inputs_list)
-        if engine_mode == "hardsub":
-            from hardsub_engine import HardsubEngine
-            print(f"[*] Batch Hardsub Studio: Starting batch of {total_items} items...")
-            hardsub_eng = HardsubEngine(output_base_dir="outputs", cancel_event=cancel_events.get(job_id))
-            for idx, item in enumerate(inputs_list, 1):
-                if (cancel_events.get(job_id) and cancel_events[job_id].is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-                    break
-                with jobs_lock:
-                    jobs[job_id]['phase'] = f"Hardsub Item {idx}/{total_items}: {os.path.basename(item)[:30]}..."
-                print(f"\n{'='*65}\n[BATCH HARDSUB] Item {idx}/{total_items}: {item}\n{'='*65}")
-                try:
-                    hardsub_eng.run(
-                        input_source=item,
-                        source_language=source_language or "auto",
-                        force_whisper=force_whisper,
-                        video_format=video_format or "both",
-                        resolution=resolution or "1080p",
-                        subtitle_style=subtitle_style or "box_black",
-                        blur_mode=blur_mode or "auto",
-                        blur_height=blur_height,
-                        mirror=mirror,
-                        color_grading=color_grading,
-                        audio_anti_copyright=audio_anti_copyright,
-                        translation_style=translation_style or "persona",
-                        audio_mode=audio_mode or "original",
-                        sfx_mode=sfx_mode or "original_sfx",
-                        sfx_volume=sfx_volume,
-                        render_video=render_video if render_video is not None else True,
-                        stage_toggles=stage_toggles,
-                        context_hint=context_hint,
-                    )
-                except Exception as item_err:
-                    print(f"[ERROR] Batch item {idx} failed: {item_err}")
-        elif engine_mode == "subtitle":
-            from subtitle_engine import SubtitleEngine
-            print(f"[*] Batch Subtitle Engine: Starting batch of {total_items} items...")
-            sub_eng = SubtitleEngine(output_base_dir="outputs", cancel_event=cancel_events.get(job_id))
-            for idx, item in enumerate(inputs_list, 1):
-                if (cancel_events.get(job_id) and cancel_events[job_id].is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-                    break
-                with jobs_lock:
-                    jobs[job_id]['phase'] = f"Subtitle Item {idx}/{total_items}: {os.path.basename(item)[:30]}..."
-                print(f"\n{'='*65}\n[BATCH SUBTITLE] Item {idx}/{total_items}: {item}\n{'='*65}")
-                try:
-                    sub_eng.run(
-                        input_source=item,
-                        source_language=source_language or "auto",
-                        force_whisper=force_whisper,
-                        translation_style=translation_style or "dialogue",
-                        audio_mode=audio_mode or "original",
-                        sfx_mode=sfx_mode or "original_sfx",
-                        sfx_volume=sfx_volume,
-                        render_video=render_video if render_video is not None else False,
-                        video_format=video_format or "16:9",
-                        resolution=resolution or "1080p",
-                        subtitle_style=subtitle_style or "box_black",
-                        blur_mode=blur_mode or "auto",
-                        mirror=mirror,
-                        color_grading=color_grading,
-                        blur_height=blur_height,
-                        audio_anti_copyright=audio_anti_copyright,
-                        stage_toggles=stage_toggles,
-                        context_hint=context_hint,
-                    )
-                except Exception as item_err:
-                    print(f"[ERROR] Batch item {idx} failed: {item_err}")
-        else:
-            urls = [i for i in inputs_list if DownloaderAgent.is_url(i)]
-            local_paths = [_resolve_input_source(i) for i in inputs_list if not DownloaderAgent.is_url(i)]
-            # Multi-Voice Mapping
-            tts_voice_override = tts_voice
-            clean_lang = language
-            if tts_voice_override:
-                if tts_voice_override in ["thiha", "male", "burmese_thiha"]:
-                    tts_voice_override = "my-MM-ThihaNeural"
-                elif tts_voice_override in ["nilar", "female", "burmese_nilar"]:
-                    tts_voice_override = "my-MM-NilarNeural"
-                elif tts_voice_override in ["guy", "english_guy"]:
-                    tts_voice_override = "en-US-GuyNeural"
-                elif tts_voice_override in ["jenny", "english_jenny"]:
-                    tts_voice_override = "en-US-JennyNeural"
-            elif language in ["burmese_thiha", "thiha"]:
-                clean_lang = "burmese"
-                tts_voice_override = "my-MM-ThihaNeural"
-            elif language in ["burmese_nilar", "nilar"]:
-                clean_lang = "burmese"
-                tts_voice_override = "my-MM-NilarNeural"
-            elif language in ["burmese", "mm", "myanmar"]:
-                clean_lang = "burmese"
-                tts_voice_override = "my-MM-ThihaNeural"
-            elif language in ["english_guy", "guy"]:
-                clean_lang = "english"
-                tts_voice_override = "en-US-GuyNeural"
-            elif language in ["english_jenny", "jenny"]:
-                clean_lang = "english"
-                tts_voice_override = "en-US-JennyNeural"
-            elif language in ["english", "en"]:
-                clean_lang = "english"
-                tts_voice_override = "en-US-GuyNeural"
-
-            processor = BatchProcessor(
-                movies_folder="movies",
-                skip_completed=True,
-                language=clean_lang,
-                subtitle_mode=subtitle_mode,
-                subtitle_style=subtitle_style,
-                resolution=resolution,
-                tts_engine=tts_engine,
-                tts_voice=tts_voice_override,
-                custom_thumb_title=custom_thumb_title,
-                watermark_enabled=watermark_enabled,
-                watermark_text=watermark_text,
-                watermark_opacity=watermark_opacity,
-                video_format=video_format,
-                thumbnail_intro=thumbnail_intro,
-                source_language=source_language,
-                script_engine=script_engine,
-                resume=resume,
-                cancel_event=cancel_events.get(job_id),
-                skip_demucs=skip_demucs,
-                detect_scenes=detect_scenes,
-                translation_style=translation_style or "recap",
-                audio_mode=audio_mode or "ai_voiceover",
-                sfx_mode=sfx_mode or "original_sfx",
-                sfx_volume=sfx_volume,
-                blur_mode=blur_mode,
-                blur_height=blur_height,
-                mirror=mirror,
-                audio_anti_copyright=audio_anti_copyright,
-                render_video=render_video if render_video is not None else True,
-                stage_toggles=stage_toggles,
-                context_hint=context_hint,
-            )
-            print(f"[*] Batch Mode: Starting batch run for {len(inputs_list)} item(s)...")
-            processor.process_all(url_list=urls, local_paths=local_paths)
-        
-        job_cancel_ev = cancel_events.get(job_id)
-        if (job_cancel_ev and job_cancel_ev.is_set()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            with jobs_lock:
-                jobs[job_id]['status'] = 'done'
-            try:
-                update_job(job_id, status='done', phase='Done')
-            except Exception:
-                pass
-    except Exception as e:
-        job_cancel_ev = cancel_events.get(job_id)
-        is_cancel = isinstance(e, (InterruptedError, KeyboardInterrupt)) or (job_cancel_ev and job_cancel_ev.is_set()) or (os.environ.get("CURRENT_JOB_CANCELLED") == "1")
-        if is_cancel:
-            print(f"\n[STOP] Batch job {job_id} was force-stopped by user.")
-            with jobs_lock:
-                jobs[job_id]['status'] = 'cancelled'
-                jobs[job_id]['phase'] = 'Stopped by user'
-            try:
-                update_job(job_id, status='cancelled', phase='Stopped by user')
-            except Exception:
-                pass
-        else:
-            traceback.print_exc()
-            err_msg = str(e) or type(e).__name__
-            with jobs_lock:
-                jobs[job_id]['status'] = 'error'
-                jobs[job_id]['error'] = err_msg
-                jobs[job_id]['phase'] = f"Error: {err_msg[:60]}"
-            try:
-                update_job(job_id, status='error', phase=f"Error: {err_msg[:60]}")
-            except Exception:
-                pass
-    finally:
-        # Free log buffer immediately on batch job end
-        if hasattr(thread_stdout, 'buffers'):
-            thread_stdout.buffers.pop(job_id, None)
-
-def downloader_worker(job_id, url, resolution="1080p", custom_filename=None):
-    """
-    Executes a dedicated video download job in the background.
-    ဗီဒီယို ဖိုင်ကို movies/ ဖိုဒါထဲသို့ သီးသန့် ဒေါင်းလုဒ်ဆွဲပေးသည့် Worker ဖြစ်ပါသည်။
-    """
-    current_job_id.set(job_id)
-    cancel_events[job_id] = threading.Event()
-    os.environ["CURRENT_JOB_CANCELLED"] = "0"
-    buffer = io.StringIO()
-    thread_stdout.buffers[job_id] = buffer
-    with jobs_lock:
-        jobs[job_id]['buffer'] = buffer
-
-    try:
-        create_job(job_id, str(url), phase="Downloading Video...", status="running")
-    except Exception:
-        pass
-
-    try:
-        with jobs_lock:
-            jobs[job_id]['phase'] = f'Downloading Video ({resolution})...'
-        print(f"[*] Downloader: Starting dedicated download for {url} (Res: {resolution})...")
-        downloader = DownloaderAgent(output_dir="movies")
-        downloaded = downloader.download_video(url, resolution=resolution, custom_filename=custom_filename)
-        fname = os.path.basename(downloaded)
-        with jobs_lock:
-            jobs[job_id]['status'] = 'done'
-            jobs[job_id]['phase'] = f'Downloaded: {fname}'
-        try:
-            update_job(job_id, status='done', phase='Done')
-        except Exception:
-            pass
-        print(f"[OK] Downloader: Video saved successfully -> {downloaded}")
-    except Exception as e:
-        traceback.print_exc()
-        err_msg = str(e) or type(e).__name__
-        with jobs_lock:
-            jobs[job_id]['status'] = 'error'
-            jobs[job_id]['error'] = err_msg
-            jobs[job_id]['phase'] = f"Error: {err_msg[:60]}"
-        try:
-            update_job(job_id, status='error', phase=f"Error: {err_msg[:60]}")
-        except Exception:
-            pass
-    finally:
-        if hasattr(thread_stdout, 'buffers'):
-            thread_stdout.buffers.pop(job_id, None)
-
-# =============================================================================
-# SECTION 6: PYDANTIC DATA SCHEMAS & REQUEST MODELS
-# (API ဆိုင်ရာ Data Validation နှင့် Request Model များ)
-# =============================================================================
-
-class StartRequest(BaseModel):
-    """
-    Schema for initiating a single video production pipeline job.
-    ဗီဒီယို တစ်ခုချင်းစီ ထုတ်လုပ်ရန် API သို့ ပေးပို့ရမည့် အချက်အလက်များ ပုံစံခွက်။
-    """
-    input: str
-    engine_mode: Optional[str] = "recap"
-    project_name: Optional[str] = None
-    force_whisper: Optional[bool] = False
-    language: Optional[str] = "burmese"
-    subtitle_mode: Optional[str] = "burn"
-    resolution: Optional[str] = "1080p"
-    tts_engine: Optional[str] = None
-    tts_voice: Optional[str] = None
-    custom_thumb_title: Optional[str] = None
-    watermark_enabled: Optional[bool] = True
-    watermark_text: Optional[str] = None
-    watermark_opacity: Optional[float] = None
-    reels_enabled: Optional[bool] = True
-    video_format: Optional[str] = "both"
-    subtitle_style: Optional[str] = "box_black"
-    thumbnail_intro: Optional[bool] = False
-    source_language: Optional[str] = "auto"
-    skip_demucs: Optional[bool] = False
-    detect_scenes: Optional[bool] = False
-    script_engine: Optional[str] = "recap"
-    resume: Optional[bool] = True
-    trim_end: Optional[float] = None
-    no_smart_trim: Optional[bool] = False
-    outro_card: Optional[bool] = False
-    blur_mode: Optional[str] = "auto"
-    blur_height: Optional[float] = None
-    mirror: Optional[bool] = False
-    color_grading: Optional[bool] = True
-    audio_anti_copyright: Optional[bool] = False
-    translation_style: Optional[str] = "recap"
-    audio_mode: Optional[str] = "ai_voiceover"
-    sfx_mode: Optional[str] = "original_sfx"
-    sfx_volume: Optional[float] = 0.15
-    render_video: Optional[bool] = True
-    stage_toggles: Optional[Dict[str, bool]] = None
-    context_hint: Optional[str] = None
+        return "UNREACHABLE", 0
 
 
-class BatchStartRequest(BaseModel):
-    """
-    Schema for initiating multi-video batch execution.
-    ဗီဒီယို အများအပြားကို အလိုအလျောက် ဆက်တိုက် ထုတ်လုပ်ရန် ပေးပို့ရမည့် ပုံစံခွက်။
-    """
-    inputs: List[str]
-    engine_mode: Optional[str] = "recap"
-    force_whisper: Optional[bool] = False
-    language: Optional[str] = "burmese"
-    subtitle_mode: Optional[str] = "burn"
-    resolution: Optional[str] = "1080p"
-    tts_engine: Optional[str] = None
-    tts_voice: Optional[str] = None
-    custom_thumb_title: Optional[str] = None
-    watermark_enabled: Optional[bool] = True
-    watermark_text: Optional[str] = None
-    watermark_opacity: Optional[float] = None
-    reels_enabled: Optional[bool] = True
-    video_format: Optional[str] = "both"
-    subtitle_style: Optional[str] = "box_black"
-    thumbnail_intro: Optional[bool] = False
-    source_language: Optional[str] = "auto"
-    skip_demucs: Optional[bool] = False
-    detect_scenes: Optional[bool] = False
-    script_engine: Optional[str] = "recap"
-    resume: Optional[bool] = True
-    blur_mode: Optional[str] = "auto"
-    blur_height: Optional[float] = None
-    mirror: Optional[bool] = False
-    color_grading: Optional[bool] = True
-    audio_anti_copyright: Optional[bool] = False
-    translation_style: Optional[str] = "recap"
-    audio_mode: Optional[str] = "ai_voiceover"
-    sfx_mode: Optional[str] = "original_sfx"
-    sfx_volume: Optional[float] = 0.15
-    render_video: Optional[bool] = True
-    stage_toggles: Optional[Dict[str, bool]] = None
-    context_hint: Optional[str] = None
-
-
-class SubtitleConfigRequest(BaseModel):
-    """Schema for updating default subtitle style presets."""
-    preset: str = "box_black"
-
-
-class BrandingConfigRequest(BaseModel):
-    """Schema for updating watermark overlay parameters."""
-    watermark_enabled: bool = True
-    watermark_text: str = "Pai Ai Movie Studio"
-    watermark_opacity: float = 0.4
-    watermark_margin: int = 30
-    watermark_font_size: int = 40
-
-
-class RenameRequest(BaseModel):
-    """Schema for renaming movie projects in storage."""
-    old_name: str
-    new_name: str
-
-
-class SaveKeysRequest(BaseModel):
-    """Schema for updating and reconciling Gemini API keys."""
-    keys: List[str]
-
-
-class CookieSaveRequest(BaseModel):
-    """Schema for uploading Netscape format cookies text."""
-    content: str
-
-
-class DownloadVideoRequest(BaseModel):
-    """Schema for dedicated video download request from URL."""
-    url: str
-    resolution: Optional[str] = "1080p"
-    custom_name: Optional[str] = None
+def _ping_gemini_keys(keys: List[str], timeout: float = 8.0) -> List[tuple]:
+    """Pings several keys in parallel (blocking – call from a worker thread / sync endpoint)."""
+    if not keys:
+        return []
+    with ThreadPoolExecutor(max_workers=min(10, len(keys))) as executor:
+        return list(executor.map(lambda k: _ping_gemini_key(k, timeout), keys))
 
 
 # =============================================================================
@@ -1323,6 +609,39 @@ def system_info():
         "platform": sys.platform,
         "active_jobs": active
     }
+
+@app.get("/api/system/update-status")
+def get_update_status():
+    """Checks git repository status against remote origin."""
+    try:
+        import subprocess
+        # Get current commit hash and branch
+        commit_res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3)
+        commit = commit_res.stdout.strip() if commit_res.returncode == 0 else "unknown"
+        
+        branch_res = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, timeout=3)
+        branch = branch_res.stdout.strip() if branch_res.returncode == 0 else "main"
+
+        # Check rev-list behind origin/main
+        behind_res = subprocess.run(["git", "rev-list", "--count", "HEAD..origin/main"], capture_output=True, text=True, timeout=3)
+        behind = int(behind_res.stdout.strip()) if (behind_res.returncode == 0 and behind_res.stdout.strip().isdigit()) else 0
+
+        return {
+            "status": "ok",
+            "branch": branch,
+            "commit": commit,
+            "updates_available": behind > 0,
+            "commits_behind": behind,
+            "message": f"{behind} new update(s) available on GitHub." if behind > 0 else "System is up to date with origin/main."
+        }
+    except Exception as e:
+        return {
+            "status": "warning",
+            "updates_available": False,
+            "commits_behind": 0,
+            "error": str(e),
+            "message": "Git status check unavailable."
+        }
 
 @app.get("/api/system/health-check")
 async def system_health_check():
@@ -1352,41 +671,32 @@ async def system_health_check():
         results["checks"]["ffmpeg"] = {"status": "error", "installed": False, "healthy": False, "error": str(e), "details": str(e)}
         results["status"] = "warning"
 
-    # 2. Gemini API Keys Health
+    # 2. Gemini API Keys Health (probed in worker threads so the event loop / SSE streams never stall)
     try:
         c = cfg.load_config()
-        keys = c.get("gemini", {}).get("api_keys", []) or []
+        keys = list(c.get("gemini", {}).get("api_keys", []) or [])   # copy: never mutate the cached config
         env_k = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY")
         if env_k:
             for ek in env_k.replace(";", ",").split(","):
                 if ek.strip() and ek.strip() not in keys:
                     keys.append(ek.strip())
 
+        keys = [str(k).strip() for k in keys if str(k).strip()]
+        ping_results = await asyncio.get_running_loop().run_in_executor(None, _ping_gemini_keys, keys, 4.0)
+        state_map = {"ONLINE": "active", "RATE LIMITED (429)": "rate_limited", "INVALID KEY": "invalid_key",
+                     "UNREACHABLE": "connection_error", "UNKNOWN": "unexpected"}
+
         key_reports = []
         valid_keys = 0
-        for k in keys:
-            k = str(k).strip()
-            if not k:
-                continue
+        for k, (state, code) in zip(keys, ping_results):
             masked = (k[:6] + "..." + k[-4:]) if len(k) > 10 else "***"
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={k}"
-            try:
-                req = urllib.request.Request(url, method="GET")
-                with urllib.request.urlopen(req, timeout=4.0) as resp:
-                    if resp.status == 200:
-                        key_reports.append({"key": masked, "key_preview": masked, "status": "active", "code": 200})
-                        valid_keys += 1
-                    else:
-                        key_reports.append({"key": masked, "key_preview": masked, "status": "unexpected", "code": resp.status})
-            except urllib.error.HTTPError as he:
-                if he.code == 429:
-                    key_reports.append({"key": masked, "key_preview": masked, "status": "rate_limited", "code": 429})
-                elif he.code in (400, 403):
-                    key_reports.append({"key": masked, "key_preview": masked, "status": "invalid_key", "code": he.code})
-                else:
-                    key_reports.append({"key": masked, "key_preview": masked, "status": f"http_{he.code}", "code": he.code})
-            except Exception as ex:
-                key_reports.append({"key": masked, "key_preview": masked, "status": "connection_error", "error": str(ex)[:60], "code": 0})
+            status = state_map.get(state, state.lower().replace(" ", "_"))
+            if status == "active":
+                valid_keys += 1
+            report = {"key": masked, "key_preview": masked, "status": status, "code": code}
+            if status == "connection_error":
+                report["error"] = "unreachable"
+            key_reports.append(report)
 
         gemini_healthy = valid_keys > 0
         gemini_status = "ok" if gemini_healthy else ("rate_limited" if any(r.get("status") == "rate_limited" for r in key_reports) else "warning")
@@ -1499,8 +809,8 @@ def _save_cookie_content(content_bytes: bytes) -> List[str]:
             with open(p, "wb") as f:
                 f.write(content_bytes)
             saved_paths.append(p)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui._save_cookie_content", _exc)
     # 2. Google Drive for Colab persistent storage
     drive_out = "/content/drive/MyDrive/MovieRecapOutputs"
     if os.path.exists(drive_out):
@@ -1509,8 +819,8 @@ def _save_cookie_content(content_bytes: bytes) -> List[str]:
             with open(dp, "wb") as df:
                 df.write(content_bytes)
             saved_paths.append(dp)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui._save_cookie_content", _exc)
     # 3. Kaggle working directory
     for kp in ["/kaggle/working/cookies.txt", "/kaggle/working/pai-ai-movie-studio/cookies.txt"]:
         if os.path.exists(os.path.dirname(kp)):
@@ -1518,8 +828,8 @@ def _save_cookie_content(content_bytes: bytes) -> List[str]:
                 with open(kp, "wb") as kf:
                     kf.write(content_bytes)
                 saved_paths.append(kp)
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui._save_cookie_content", _exc)
     return saved_paths
 
 
@@ -1550,8 +860,8 @@ def get_cookies_status():
                     text = f.read()
                 has_youtube = "youtube.com" in text.lower()
                 cookie_count = len([line for line in text.splitlines() if line.strip() and not line.startswith("#")])
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.get_cookies_status", _exc)
             break
 
     return {
@@ -1596,8 +906,8 @@ def delete_cookies():
             try:
                 os.remove(c)
                 deleted.append(c)
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.delete_cookies", _exc)
     return {"success": True, "deleted": deleted}
 
 
@@ -1622,7 +932,9 @@ async def upload_file(video: UploadFile = File(...)):
     filename = _secure_filename(video.filename)
     # Support automatic YouTube cookies.txt installation
     if filename.lower() in ["cookies.txt", "cookie.txt"] or filename.lower().endswith(".txt"):
-        content = await video.read()
+        content = await video.read(MAX_COOKIE_FILE_BYTES + 1)
+        if len(content) > MAX_COOKIE_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="Cookies file is too large")
         if b"youtube" in content.lower() or b"# Netscape" in content or b"# HTTP Cookie File" in content:
             with open("cookies.txt", "wb") as f:
                 f.write(content)
@@ -1635,16 +947,16 @@ async def upload_file(video: UploadFile = File(...)):
                     with open(os.path.join(drive_out, "cookies.txt"), "wb") as df:
                         df.write(content)
                     print("[*] Upload: cookies.txt permanently saved to Google Drive!")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("web_ui.upload_file", _exc)
             for kp in ["/kaggle/working/cookies.txt", "/kaggle/working/pai-ai-movie-studio/cookies.txt"]:
                 if os.path.exists(os.path.dirname(kp)):
                     try:
                         with open(kp, "wb") as kf:
                             kf.write(content)
                         print(f"[*] Upload: cookies.txt saved to {kp}!")
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("web_ui.upload_file", _exc)
             print("[*] Upload: cookies.txt installed successfully into root and assets/!")
             return {"success": True, "filename": "cookies.txt", "message": "YouTube cookies installed successfully!"}
 
@@ -1654,13 +966,27 @@ async def upload_file(video: UploadFile = File(...)):
         
     os.makedirs("movies", exist_ok=True)
     save_path = os.path.join("movies", filename)
-    with open(save_path, "wb") as f:
-        # BUG-M3 Fix: Stream in 1MB chunks — avoids loading a 4GB file entirely into RAM
-        while True:
-            chunk = await video.read(1024 * 1024)
-            if not chunk:
-                break
-            f.write(chunk)
+    written = 0
+    try:
+        with open(save_path, "wb") as f:
+            # BUG-M3 Fix: Stream in 1MB chunks — avoids loading a 4GB file entirely into RAM
+            while True:
+                chunk = await video.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit (set MAX_UPLOAD_MB to change it)",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        try:
+            os.remove(save_path)  # never keep a truncated upload
+        except OSError:
+            pass
+        raise
 
 
     return {"success": True, "filename": filename}
@@ -1678,12 +1004,18 @@ async def download_video_endpoint(req: DownloadVideoRequest):
         raise HTTPException(status_code=400, detail="Invalid video URL. Please provide a valid HTTP/HTTPS video URL.")
 
     def _do_download():
-        downloader = DownloaderAgent(output_dir="movies")
-        return downloader.download_video(
-            url,
-            resolution=req.resolution or "1080p",
-            custom_filename=req.custom_name,
-        )
+        # Own owner id: stopping the pipeline must not kill this download's ffmpeg (and vice versa).
+        token = current_job_id.set(_STANDALONE_DOWNLOAD_JOB)
+        try:
+            downloader = DownloaderAgent(output_dir="movies")
+            return downloader.download_video(
+                url,
+                resolution=req.resolution or "1080p",
+                custom_filename=req.custom_name,
+            )
+        finally:
+            current_job_id.reset(token)
+            process_registry.release(_STANDALONE_DOWNLOAD_JOB)
 
     try:
         loop = asyncio.get_event_loop()
@@ -1738,8 +1070,8 @@ async def start_pipeline(req: StartRequest):
         }
         try:
             create_job(job_id, str(input_source), phase=initial_phase, status=initial_status)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui.start_pipeline", _exc)
 
     try:
         if req.engine_mode == "hardsub":
@@ -1877,6 +1209,7 @@ async def start_pipeline(req: StartRequest):
                 return {"job_id": job_id, "status": "running"}
             else:
                 job_queue.append(job_entry)
+                _persist_queued_job(job_entry)
                 _ensure_queue_dispatcher()
                 pos = len(job_queue)
                 return {"job_id": job_id, "status": "queued", "position": pos, "message": f"Job queued at position #{pos}"}
@@ -1886,8 +1219,8 @@ async def start_pipeline(req: StartRequest):
             jobs[job_id]["phase"] = f"Failed to initialize job: {str(e)}"
             try:
                 update_job(job_id, status="error", phase=f"Init error: {str(e)[:60]}")
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.start_pipeline", _exc)
         raise HTTPException(status_code=500, detail=f"Failed to initialize job: {str(e)}")
 
 @app.post("/api/batch/start")
@@ -1925,8 +1258,8 @@ async def start_batch_pipeline(req: BatchStartRequest):
         }
         try:
             create_job(job_id, f"Batch ({len(inputs)} items)", phase=initial_phase, status=initial_status)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui.start_batch_pipeline", _exc)
 
     try:
         job_entry = {
@@ -1982,6 +1315,7 @@ async def start_batch_pipeline(req: BatchStartRequest):
                 return {"job_id": job_id, "status": "running"}
             else:
                 job_queue.append(job_entry)
+                _persist_queued_job(job_entry)
                 _ensure_queue_dispatcher()
                 pos = len(job_queue)
                 return {"job_id": job_id, "status": "queued", "position": pos, "message": f"Batch job queued at position #{pos}"}
@@ -1991,8 +1325,8 @@ async def start_batch_pipeline(req: BatchStartRequest):
             jobs[job_id]["phase"] = f"Failed to initialize batch: {str(e)}"
             try:
                 update_job(job_id, status="error", phase=f"Init error: {str(e)[:60]}")
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.start_batch_pipeline", _exc)
         raise HTTPException(status_code=500, detail=f"Failed to initialize batch: {str(e)}")
 
 # =============================================================================
@@ -2048,8 +1382,8 @@ def delete_from_queue(job_id: str):
             jobs[job_id]["phase"] = "Cancelled from queue"
             try:
                 update_job(job_id, status="cancelled", phase="Cancelled from queue")
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.delete_from_queue", _exc)
     if removed:
         return {"success": True, "message": f"Job {job_id} removed from queue."}
     raise HTTPException(status_code=404, detail="Job not found in queue")
@@ -2065,32 +1399,43 @@ def delete_from_queue(job_id: str):
 @app.post("/api/cancel/{job_id}")
 async def stop_pipeline(job_id: Optional[str] = None):
     """
-    Force-stops any currently running single or batch pipeline job, terminates
-    associated ffmpeg/demucs/yt-dlp child processes, and drains the queue.
-    
-    လုပ်ဆောင်ဆဲ သို့မဟုတ် တန်းစီနေသော အလုပ်များကို ချက်ချင်း ရပ်တန့်စေပြီး
-    နောက်ကွယ် Process များကို သတ်ပစ်သည်။
+    Force-stops running and/or queued jobs.
+      - No job_id  : stop everything (running job + whole queue).
+      - With job_id: stop ONLY that job. Cancelling a queued job never disturbs the job that is
+                     currently rendering (the process-wide stop flag and ffmpeg/demucs kill are
+                     applied only when the running job itself is the target).
+
+    job_id မပါပါက အားလုံးကို ရပ်ပြီး၊ ပါပါက ထို job ကိုသာ ရပ်သည်။ တန်းစီနေသော job တစ်ခုကို ဖျက်ရုံဖြင့်
+    လက်ရှိ run နေသော job ကို မထိခိုက်စေရန် ဒီအတိုင်း ပြင်ထားသည်။
     """
     stopped_count = 0
-    os.environ["CURRENT_JOB_CANCELLED"] = "1"
-    
+    stops_running_job = False
+    stopped_running_ids = []
+
     with jobs_lock:
         if job_id:
             target_jids = [job_id]
         else:
             target_jids = [jid for jid, j in jobs.items() if j.get("status") in ("running", "queued")]
-            
+
         for jid in target_jids:
             if jid in jobs:
+                if jobs[jid].get("status") == "running":
+                    stops_running_job = True
+                    stopped_running_ids.append(jid)
                 cancel_events.setdefault(jid, threading.Event()).set()
                 jobs[jid]["status"] = "cancelled"
                 jobs[jid]["phase"] = "Stopped by user"
                 stopped_count += 1
                 try:
                     update_job(jid, status="cancelled", phase="Stopped by user")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("web_ui.stop_pipeline", _exc)
                 print(f"\n[STOP] Force-stop signal received! Cancelled job {jid}.")
+
+    # The env flag is read by every pipeline stage of the *currently running* job.
+    if stops_running_job:
+        os.environ["CURRENT_JOB_CANCELLED"] = "1"
 
     with queue_lock:
         if job_id:
@@ -2104,20 +1449,31 @@ async def stop_pipeline(job_id: Optional[str] = None):
                         jobs[q_jid]["phase"] = "Stopped by user"
             job_queue.clear()
 
-    # Safely terminate child processes (ffmpeg, ffprobe, yt-dlp, demucs) spawned by THIS process tree only
-    try:
-        import psutil
-        current_process = psutil.Process()
-        children = current_process.children(recursive=True)
-        for child in children:
-            try:
-                cname = child.name().lower()
-                if any(x in cname for x in ["ffmpeg", "ffprobe", "yt-dlp", "demucs"]):
-                    child.kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-    except Exception:
-        pass
+    # Terminate the processes owned by the job(s) that were stopped: first the exactly-tracked
+    # process trees, then a name-based sweep (ffmpeg / ffprobe / yt-dlp / demucs children of this
+    # server) as a safety net for processes whose owner could not be resolved. The sweep never
+    # touches processes that are registered to a different job (e.g. a standalone download).
+    if stops_running_job:
+        for jid in stopped_running_ids:
+            process_registry.kill_job_processes(jid)
+        try:
+            import psutil
+            spared = set()
+            for other in list(jobs.keys()):
+                if other not in stopped_running_ids:
+                    spared |= process_registry.tracked_pids(other)
+            spared |= process_registry.tracked_pids(_STANDALONE_DOWNLOAD_JOB)
+            for child in psutil.Process().children(recursive=True):
+                try:
+                    if child.pid in spared:
+                        continue
+                    cname = child.name().lower()
+                    if any(x in cname for x in ["ffmpeg", "ffprobe", "yt-dlp", "demucs"]):
+                        child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied) as _exc:
+                    log_suppressed("web_ui.stop_pipeline", _exc)
+        except Exception as _exc:
+            log_suppressed("web_ui.stop_pipeline", _exc)
 
     return {"success": True, "stopped_count": stopped_count, "message": "Pipeline force-stopped successfully."}
 
@@ -2465,8 +1821,8 @@ def list_outputs():
                         entry["phase_durations"] = state_data.get("phase_durations", {})
                         entry["engine_type"] = state_data.get("engine_type", "subtitle" if any("subtitle_burmese" in x for x in files) else "recap")
                         entry["total_records"] = state_data.get("total_records")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("web_ui.list_outputs", _exc)
                 continue
             entry["files"].append(posixpath.join(rel_dir, f) if rel_dir else f)
 
@@ -2559,15 +1915,27 @@ def download_project_zip(movie: Optional[str] = Query(None), job_id: Optional[st
 
     # 2. Resolve from job_id if not resolved yet
     elif job_id:
-        subdirs = [
-            os.path.join(outputs_dir, d) for d in os.listdir(outputs_dir)
-            if os.path.isdir(os.path.join(outputs_dir, d)) and d not in ["voiceover", "temp", "__pycache__"]
-        ]
-        if not subdirs:
-            raise HTTPException(status_code=404, detail="No output projects available for this job")
-        subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        selected_dir = subdirs[0]
-        safe_movie = os.path.basename(selected_dir)
+        # Prefer the exact project folder recorded for this job; fall back to the newest one
+        # only for jobs that pre-date the recording (e.g. after a server restart).
+        with jobs_lock:
+            known_job = jobs.get(job_id)
+        if known_job is None:
+            raise HTTPException(status_code=404, detail="Unknown job id")
+        recorded = known_job.get("project_dir")
+        job_dir = resolve_inside(outputs_dir, recorded) if recorded else None
+        if job_dir and os.path.isdir(job_dir):
+            selected_dir = job_dir
+            safe_movie = os.path.basename(job_dir)
+        else:
+            subdirs = [
+                os.path.join(outputs_dir, d) for d in os.listdir(outputs_dir)
+                if os.path.isdir(os.path.join(outputs_dir, d)) and d not in ["voiceover", "temp", "__pycache__"]
+            ]
+            if not subdirs:
+                raise HTTPException(status_code=404, detail="No output projects available for this job")
+            subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            selected_dir = subdirs[0]
+            safe_movie = os.path.basename(selected_dir)
 
     from starlette.background import BackgroundTask
     temp_dir = os.path.abspath("temp")
@@ -2598,8 +1966,8 @@ def download_project_zip(movie: Optional[str] = Query(None), job_id: Optional[st
         try:
             if os.path.exists(p):
                 os.remove(p)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui._cleanup_temp_zip", _exc)
 
     return FileResponse(
         zip_path,
@@ -2644,18 +2012,19 @@ async def clear_cache():
                     else:
                         os.remove(p)
                     cleared += 1
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("web_ui.clear_cache", _exc)
 
     for root, dirs, files in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in ('.venv', 'venv', '.git', 'node_modules')]
         for d in list(dirs):
             if d == '__pycache__':
                 try:
                     shutil.rmtree(os.path.join(root, d), ignore_errors=True)
                     dirs.remove(d)
                     cleared += 1
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("web_ui.clear_cache", _exc)
 
     # Clean any MoviePy intermediate temp files in root/cwd
     for f in os.listdir("."):
@@ -2663,8 +2032,8 @@ async def clear_cache():
             try:
                 os.remove(f)
                 cleared += 1
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.clear_cache", _exc)
 
     return {"success": True, "cleared_items": cleared}
 
@@ -2693,7 +2062,9 @@ async def handle_config(request: Request):
             if "thumbnail_intro" not in config_data:
                 config_data["thumbnail_intro"] = {}
             if isinstance(data["thumbnail_intro"], dict):
-                config_data["thumbnail_intro"].update(data["thumbnail_intro"])
+                config_data["thumbnail_intro"].update(
+                    {k: v for k, v in data["thumbnail_intro"].items() if k in ("enabled", "duration_sec")}
+                )
             elif isinstance(data["thumbnail_intro"], bool):
                 config_data["thumbnail_intro"]["enabled"] = data["thumbnail_intro"]
             cfg.save_config(config_data)
@@ -2701,7 +2072,9 @@ async def handle_config(request: Request):
             if "audio_ducking" not in config_data:
                 config_data["audio_ducking"] = {}
             if isinstance(data["audio_ducking"], dict):
-                config_data["audio_ducking"].update(data["audio_ducking"])
+                config_data["audio_ducking"].update(
+                    {k: v for k, v in data["audio_ducking"].items() if k in ("enabled", "duck_volume", "ambient_volume")}
+                )
             elif isinstance(data["audio_ducking"], bool):
                 config_data["audio_ducking"]["enabled"] = data["audio_ducking"]
             cfg.save_config(config_data)
@@ -2750,39 +2123,10 @@ def get_key_status():
         recorded_keys = db.get("keys", {})
         current_utc = get_google_utc_date()
         
-        def ping_google_key(key):
-            key_str = str(key).strip()
-            if not key_str:
-                return "EMPTY", 0
-            url = "https://generativelanguage.googleapis.com/v1beta/models"
-            try:
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Recap/2.2",
-                        "x-goog-api-key": key_str
-                    },
-                    method="GET"
-                )
-                with urllib.request.urlopen(req, timeout=8.0) as resp:
-                    if resp.status == 200:
-                        return "ONLINE", 200
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    return "RATE LIMITED (429)", 429
-                elif e.code in [400, 401, 403]:
-                    return "INVALID KEY", e.code
-                return f"HTTP {e.code}", e.code
-            except Exception:
-                return "UNREACHABLE", 0
-            return "UNKNOWN", 0
-
         key_statuses = []
         total_remaining = 0
         
-        workers = min(10, max(1, len(configured_keys)))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            ping_results = list(executor.map(ping_google_key, configured_keys))
+        ping_results = _ping_gemini_keys([str(k) for k in configured_keys], 8.0)
 
         for idx, key in enumerate(configured_keys):
             if not key or not str(key).strip(): continue
@@ -2837,6 +2181,9 @@ def get_key_status():
 
 @app.delete("/api/delete/{folder_type}/{item_name:path}")
 async def delete_item(folder_type: str, item_name: str):
+    with jobs_lock:
+        if _has_running_job():
+            raise HTTPException(status_code=409, detail="Cannot delete files while a pipeline job is running.")
     target_path = _safe_child_path(folder_type, item_name)
     if not target_path:
         raise HTTPException(status_code=400, detail="Invalid target")
@@ -2949,6 +2296,7 @@ def save_keys(req: SaveKeysRequest):
 
         new_keys = req.keys
         cleaned_keys = []
+        unresolved_masks = []
         for line in new_keys:
             tokens = [t.strip() for t in str(line).replace(',', '\n').split('\n') if t.strip()]
             for k in tokens:
@@ -2957,18 +2305,27 @@ def save_keys(req: SaveKeysRequest):
                 if '...' in k:
                     parts = k.split('...')
                     prefix, suffix = parts[0].strip(), parts[-1].strip()
-                    matched = None
-                    for ek in existing_keys:
-                        if ek.startswith(prefix) and ek.endswith(suffix):
-                            matched = ek
-                            break
-                    if matched:
-                        k = matched
-                    else:
+                    # A mask must carry both ends (6 + 4 chars as produced by the UI); a bare
+                    # "AIza..." must never be accepted as a wildcard that reveals a stored key.
+                    matches = [
+                        ek for ek in existing_keys
+                        if len(prefix) >= 4 and len(suffix) >= 4 and ek.startswith(prefix) and ek.endswith(suffix)
+                    ]
+                    if len(matches) != 1:  # unknown or ambiguous mask -> refuse the whole save
+                        unresolved_masks.append(k)
                         continue
+                    k = matches[0]
                 if k and k not in cleaned_keys:
                     cleaned_keys.append(k)
                 
+        if unresolved_masks:
+            # Never "save what we understood": that would silently delete the keys behind the masks.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(unresolved_masks)} masked key(s) do not match a stored key. "
+                       "Paste the full key, or leave the masked line exactly as shown. Nothing was saved.",
+            )
+
         config_data.setdefault("gemini", {})["api_keys"] = cleaned_keys
         cfg.save_config(config_data)
             
@@ -2984,10 +2341,14 @@ def save_keys(req: SaveKeysRequest):
                         if os.path.exists(src_path):
                             shutil.copy2(src_path, os.path.join(drive_out, db_name))
                 print("[*] WebUI: Permanently synced config.json and database to Google Drive!")
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("web_ui.save_keys", _exc)
 
-        return {"success": True, "keys_count": len(cleaned_keys), "keys": cleaned_keys}
+        # Only masked values leave the server – raw keys are never echoed back.
+        masked = [k[:6] + "..." + k[-4:] if len(k) > 10 else "***" for k in cleaned_keys]
+        return {"success": True, "keys_count": len(cleaned_keys), "keys": masked}
+    except HTTPException:
+        raise  # validation errors (400) must not be turned into a 500
     except Exception as e:
         print(f"[ERROR] Failed to save API keys: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3041,8 +2402,8 @@ def preview_subtitle_project(movie_name: str):
         try:
             with open(json_file, "r", encoding="utf-8", errors="replace") as f:
                 raw_records = json.load(f)
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("web_ui.preview_subtitle_project", _exc)
 
     normalized_records = []
     for r in raw_records[:300]:
@@ -3090,6 +2451,15 @@ if __name__ == '__main__':
     default_host = "0.0.0.0" if is_cloud_env else "127.0.0.1"
     host = args.host or os.getenv("HOST", default_host)
     port = args.port or int(os.getenv("PORT", 5000))
+
+    # Exposed beyond this machine (Colab / Kaggle / Docker / --host 0.0.0.0) without a password?
+    # Generate a one-time token instead of serving the whole API anonymously.
+    app.state.bind_host = host
+    generated_token = security.ensure_remote_access_secret(host)
+    if generated_token:
+        print("[SECURITY] Server is reachable from the network and WEB_UI_PASSWORD / WEB_UI_TOKEN is not set.")
+        print(f"[SECURITY] A random access token was generated for this session: {generated_token}")
+        print(f"[SECURITY] Open: http://<server-address>:{port}/?token={generated_token}")
 
     print(f"[*] Starting Pai AI Movie Studio Web Server on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level='info')

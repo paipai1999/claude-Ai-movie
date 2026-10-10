@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,9 +16,27 @@ def get_db_path(output_dir: str = "outputs") -> str:
     return os.path.join(output_dir, "movie_metadata.db")
 
 
+# Database files whose schema was already created in this process (schema DDL runs once per file,
+# not on every job-update / quota call). The existence check re-creates it if the file is deleted.
+_SCHEMA_READY: set = set()
+_SCHEMA_LOCK = threading.Lock()
+
+
 def ensure_db(output_dir: str = "outputs") -> str:
     """Ensures database exists and all tables are initialized with WAL mode."""
     db_path = get_db_path(output_dir)
+    if db_path in _SCHEMA_READY and os.path.exists(db_path):
+        return db_path
+    with _SCHEMA_LOCK:  # many threads may hit a brand-new database at once (quota tracker + jobs)
+        if db_path in _SCHEMA_READY and os.path.exists(db_path):
+            return db_path
+        _create_schema(db_path)
+        _SCHEMA_READY.add(db_path)
+    return db_path
+
+
+def _create_schema(db_path: str) -> None:
+    """Creates tables / indexes (idempotent) and switches the file to WAL mode."""
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -68,13 +87,19 @@ def ensure_db(output_dir: str = "outputs") -> str:
             )
             """
         )
+        # Queue persistence columns (added by ALTER so databases created by older versions upgrade in place)
+        job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("worker", "payload_json", "meta_json"):
+            if column not in job_columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+
         # Indexes for fast lookup
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);")
         conn.commit()
     finally:
         conn.close()
-    return db_path
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,6 +310,62 @@ def update_job(job_id: str, status: Optional[str] = None, phase: Optional[str] =
         conn.close()
 
 
+def store_queued_job(job_id: str, worker: str, args: list, meta: dict, output_dir: str = "outputs") -> bool:
+    """
+    Saves everything needed to re-create a queued job after a server restart:
+    the worker function name, its positional arguments (JSON) and display metadata.
+    Returns False when the arguments are not JSON-serialisable (the job then simply is not persisted).
+
+    တန်းစီနေသော အလုပ်ကို Server ပြန်စတင်ပြီးနောက် ပြန်လည်ဖန်တီးနိုင်ရန် SQLite ထဲ သိမ်းဆည်းသည်။
+    """
+    try:
+        payload = json.dumps(list(args), ensure_ascii=False)
+        meta_json = json.dumps(meta or {}, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    db_path = ensure_db(output_dir)
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    try:
+        conn.execute(
+            "UPDATE jobs SET worker = ?, payload_json = ?, meta_json = ? WHERE job_id = ?",
+            (worker, payload, meta_json, job_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def load_queued_jobs(output_dir: str = "outputs") -> list:
+    """Returns persisted jobs that were still waiting in the queue (oldest first)."""
+    db_path = get_db_path(output_dir)
+    if not os.path.exists(db_path):
+        return []
+    ensure_db(output_dir)
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    try:
+        cursor = conn.execute(
+            "SELECT job_id, worker, payload_json, meta_json, created_at FROM jobs "
+            "WHERE status = 'queued' AND worker IS NOT NULL AND payload_json IS NOT NULL "
+            "ORDER BY created_at ASC"
+        )
+        jobs = []
+        for job_id, worker, payload_json, meta_json, created_at in cursor.fetchall():
+            try:
+                jobs.append({
+                    "job_id": job_id,
+                    "worker": worker,
+                    "args": json.loads(payload_json),
+                    "meta": json.loads(meta_json) if meta_json else {},
+                    "created_at": created_at,
+                })
+            except (TypeError, ValueError):
+                continue
+        return jobs
+    finally:
+        conn.close()
+
+
 def clean_stale_running_jobs(output_dir: str = "outputs") -> int:
     """Marks any lingering 'running' jobs from prior interrupted server runs as 'interrupted'."""
     db_path = get_db_path(output_dir)
@@ -366,12 +447,15 @@ def reserve_sqlite_model_usage(masked_key: str, model_name: str, limit: int, utc
 
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     try:
+        # BEGIN IMMEDIATE takes the write lock *before* the read, so two threads/processes can
+        # never both read the same counter and both write N+1 (lost update).
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "SELECT used_today, utc_date FROM api_key_usage WHERE masked_key = ? AND model_name = ?",
             (masked_key, model_name)
         )
         row = cursor.fetchone()
-        
+
         used = 0
         if row:
             rec_used, rec_utc = row[0], row[1]
@@ -381,9 +465,9 @@ def reserve_sqlite_model_usage(masked_key: str, model_name: str, limit: int, utc
                 used = 0  # Date rolled over, reset to 0
 
         if used >= limit:
+            conn.rollback()
             return False
 
-        # Atomically increment
         new_used = used + 1
         conn.execute(
             """
@@ -394,6 +478,9 @@ def reserve_sqlite_model_usage(masked_key: str, model_name: str, limit: int, utc
         )
         conn.commit()
         return True
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -405,6 +492,7 @@ def record_sqlite_model_usage(masked_key: str, model_name: str, status: str, utc
 
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     try:
+        conn.execute("BEGIN IMMEDIATE")  # read-modify-write must be one atomic unit
         cursor = conn.execute(
             "SELECT used_today FROM api_key_usage WHERE masked_key = ? AND model_name = ?",
             (masked_key, model_name)

@@ -9,65 +9,52 @@ aspect ratio dimensions, and natural Burmese syllable wrapping.
 TikTok Yellow စသည့် ဒီဇိုင်းပုံစံများ၊ မြန်မာစာလုံး ပိုင်းဖြတ်မှုများကို စနစ်တကျ စီမံပေးပါသည်။
 """
 
+import sys
 from typing import List, Dict, Any
-from brain.burmese_utils import strip_trailing_subtitle_punctuation
+from brain.burmese_utils import (
+    strip_trailing_subtitle_punctuation,
+    normalize_standard_burmese_spelling,
+)
+from brain.config import SUBTITLE_PRESETS
+
+
+def resolve_font_name(font_name: str = "Myanmar Text") -> str:
+    """
+    Resolves font name for target OS.
+    On Linux/Darwin/Docker/Colab/Kaggle, automatically falls back 'Myanmar Text'
+    to 'Padauk' (bundled in assets/fonts/Padauk.ttf).
+    """
+    if not font_name:
+        return "Padauk"
+    cleaned = str(font_name).strip()
+    if sys.platform != "win32" and cleaned in ("Myanmar Text", "Myanmar3", "Pyidaungsu"):
+        return "Padauk"
+    return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Subtitle Style Presets Configuration (ဒီဇိုင်းပုံစံ အဓိပ္ပာယ်ဖွင့်ဆိုချက်များ)
+# Subtitle Style Presets (ဒီဇိုင်းပုံစံ အဓိပ္ပာယ်ဖွင့်ဆိုချက်များ)
 # ─────────────────────────────────────────────────────────────────────────────
-SUBTITLE_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
-    "box_black": {
-        "name": "Cinema Box",
-        "description": "Netflix-style high contrast subtitle with dark background box",
-        "primary_color": "&H00FFFFFF",   # Pure White text
-        "outline_color": "&H00000000",   # Black outline
-        "back_color": "&HB0000000",      # 70% Opaque black background box
-        "border_style": 3,               # 3 = Opaque rectangle box
-        "outline_w": 2,
-        "shadow": 0,
-    },
-    "yellow_pop": {
-        "name": "TikTok Yellow",
-        "description": "Vibrant yellow typography with bold black stroke outline",
-        "primary_color": "&H0000FFFF",   # BGR format: Yellow (Blue=0, Green=255, Red=255)
-        "outline_color": "&H00000000",   # Solid black stroke
-        "back_color": "&H80000000",      # Soft shadow
-        "border_style": 1,               # 1 = Outline with shadow
-        "outline_w": 3,
-        "shadow": 2,
-    },
-    "white_stroke": {
-        "name": "Classic White",
-        "description": "Clean white typography with deep black shadow stroke",
-        "primary_color": "&H00FFFFFF",   # Pure white
-        "outline_color": "&H00000000",   # Black outline
-        "back_color": "&H80000000",      # Shadow
-        "border_style": 1,               # Outline + shadow
-        "outline_w": 3,
-        "shadow": 1,
-    },
-    "cyan_cyber": {
-        "name": "Cyber Cyan",
-        "description": "Modern cyber cyan neon text with opaque box",
-        "primary_color": "&H00FFFF00",   # BGR: Cyan (Blue=255, Green=255, Red=0)
-        "outline_color": "&H00000000",
-        "back_color": "&HB0000000",
-        "border_style": 3,
-        "outline_w": 2,
-        "shadow": 0,
-    },
-    "crimson_box": {
-        "name": "Thriller Red",
-        "description": "Dramatic crimson background box for thriller and suspense films",
-        "primary_color": "&H00FFFFFF",   # White text
-        "outline_color": "&H00000000",
-        "back_color": "&HB00000B0",      # Deep dark red box
-        "border_style": 3,
-        "outline_w": 2,
-        "shadow": 0,
-    },
-}
+# SINGLE SOURCE OF TRUTH is brain.config.SUBTITLE_PRESETS (also used by the hardsub engine, the
+# recap merger and the dashboard preview). This view only renames the fields the ASS builder
+# below expects, so the on-screen preview and the rendered subtitles can never drift apart.
+def _derive_style_presets() -> Dict[str, Dict[str, Any]]:
+    return {
+        preset_id: {
+            "name": p.get("name", preset_id),
+            "description": p.get("desc", ""),
+            "primary_color": p["primary_color"],
+            "outline_color": p["outline_color"],
+            "back_color": p["back_color"],
+            "border_style": p["border_style"],
+            "outline_w": p["outline_width"],
+            "shadow": p["shadow"],
+        }
+        for preset_id, p in SUBTITLE_PRESETS.items()
+    }
+
+
+SUBTITLE_STYLE_PRESETS: Dict[str, Dict[str, Any]] = _derive_style_presets()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +153,8 @@ def build_ass_script(
     Builds a complete, formatted ASS subtitle script string.
     ရွေးချယ်ထားသော style preset နှင့် video resolution အလိုက် အပြည့်အစုံ ASS စာသားကို တည်ဆောက်ပေးသည်။
     """
+    font_name = resolve_font_name(font_name)
+
     # 1. Resolve Style Preset Parameters
     style_info = SUBTITLE_STYLE_PRESETS.get(preset, SUBTITLE_STYLE_PRESETS["box_black"])
     primary_color = style_info["primary_color"]
@@ -205,7 +194,9 @@ def build_ass_script(
 
     # 4. Generate dialogue lines with timecodes and wrapping
     for seg in segments:
-        txt = strip_trailing_subtitle_punctuation(seg.get(text_key, "").strip())
+        raw_val = seg.get(text_key, "").strip()
+        norm_val = normalize_standard_burmese_spelling(raw_val)
+        txt = strip_trailing_subtitle_punctuation(norm_val)
         if not txt:
             continue
 
@@ -251,7 +242,9 @@ def build_srt_script(
     blocks = []
     idx = 1
     for seg in segments:
-        txt = strip_trailing_subtitle_punctuation(seg.get(text_key, "").strip())
+        raw_val = seg.get(text_key, "").strip()
+        norm_val = normalize_standard_burmese_spelling(raw_val)
+        txt = strip_trailing_subtitle_punctuation(norm_val)
         if not txt:
             continue
 
@@ -271,3 +264,27 @@ def build_srt_script(
         idx += 1
 
     return "\n".join(blocks)
+
+
+def write_srt_file(
+    output_path: str,
+    segments_or_content: Any,
+    text_key: str = "burmese",
+    with_bom: bool = True,
+) -> str:
+    """
+    Writes an SRT subtitle file to disk with UTF-8 BOM encoding for CapCut compatibility.
+    CapCut PC/Mobile တွင် မြန်မာစာ ယူနီကုဒ် font များ စာလုံးမပျက်စေရန် UTF-8 with BOM (utf-8-sig) ဖြင့် သိမ်းဆည်းပေးသည်။
+    """
+    import os
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    if isinstance(segments_or_content, list):
+        content = build_srt_script(segments_or_content, text_key=text_key)
+    else:
+        content = str(segments_or_content)
+
+    encoding = "utf-8-sig" if with_bom else "utf-8"
+    with open(output_path, "w", encoding=encoding) as f:
+        f.write(content)
+    return output_path
+

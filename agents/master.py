@@ -1,8 +1,10 @@
+from brain.diagnostics import log_suppressed
 import os
 import sys
 import io
 import time
 import json
+import hashlib
 import datetime
 from copy import deepcopy
 from brain.memory import MovieState
@@ -12,7 +14,7 @@ from agents.video_agent import VideoAgent
 from agents.audio_agent import AudioAgent
 from agents.writer_agent import WriterAgent
 from agents.seo_agent import SEOAgent
-from agents.voice_agent import VoiceAgent
+from agents.voice_agent import VoiceAgent, VOICE_MANIFEST_NAME
 from agents.video_merger_agent import VideoMergerAgent
 from agents.thumbnail_agent import ThumbnailAgent
 from agents.qa_agent import QAAgent
@@ -150,6 +152,9 @@ class MasterAgent:
         elif raw_style in ["cinematic", "persona", "character", "kinship"]:
             self.translation_style = "persona"
             self.script_engine = "translate"
+        elif raw_style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+            self.translation_style = "drama_novel"
+            self.script_engine = "translate"
         elif raw_style in ["dialogue", "translate", "dubbing", "1:1"]:
             self.translation_style = "dialogue"
             self.script_engine = "translate"
@@ -227,115 +232,8 @@ class MasterAgent:
         whisper_model  = cfg["pipeline"]["whisper_model"]
         output_dir     = cfg["paths"]["output_dir"]
 
-        # Checkpoint Resume: restore existing state, completed phases, and artifacts
-        state_file = os.path.join(output_dir, self.state.project_dir, "state.json")
-        ckpt_file = os.path.join(output_dir, self.state.project_dir, "checkpoint.json")
-
-        if self.resume and os.path.exists(state_file):
-            try:
-                prev_state = MovieState.load_from_json(state_file)
-                self.state.completed_phases = getattr(prev_state, "completed_phases", []) or []
-                self.state.phase_checkpoints = getattr(prev_state, "phase_checkpoints", {}) or {}
-                self.state.speaker_profiles = getattr(prev_state, "speaker_profiles", {}) or {}
-                self.state.subtitle_detection = prev_state.subtitle_detection
-
-                if getattr(prev_state, "duration_sec", 0) > 0:
-                    self.state.duration_sec = prev_state.duration_sec
-                if getattr(prev_state, "transcript", None) and len(prev_state.transcript) > 0:
-                    self.state.transcript = prev_state.transcript
-                if getattr(prev_state, "timeline", None) and isinstance(prev_state.timeline, list) and len(prev_state.timeline) > 0:
-                    self.state.timeline = prev_state.timeline
-                for path_field in ("movie_path", "file_path", "audio_path", "thumbnail_path", "clean_video_path", "reels_video_path"):
-                    restored_path = self._portable_path(getattr(prev_state, path_field, None))
-                    if restored_path and os.path.exists(restored_path):
-                        setattr(self.state, path_field, restored_path)
-                restored_movie = self._portable_path(getattr(prev_state, "movie_path", None))
-                if restored_movie and os.path.exists(restored_movie):
-                    self.movie_path = restored_movie
-
-                # Track changes between saved state and current invocation parameters
-                prev_engine = getattr(prev_state, "script_engine", None)
-                prev_res = getattr(prev_state, "resolution", None)
-                prev_fmt = getattr(prev_state, "video_format", None)
-                prev_title = getattr(prev_state, "custom_thumb_title", None)
-                prev_voice = getattr(prev_state, "tts_voice", None)
-
-                # Prioritize explicit parameters over prev_state
-                if not resolution and prev_res:
-                    self.state.resolution = prev_res
-                    self.resolution = prev_res
-                if not custom_thumb_title and prev_title:
-                    self.state.custom_thumb_title = prev_title
-                    self.custom_thumb_title = prev_title
-                if not script_engine and prev_engine:
-                    self.state.script_engine = prev_engine
-                    self.script_engine = prev_engine
-                if not video_format and prev_fmt:
-                    self.state.video_format = prev_fmt
-                    self.video_format = prev_fmt
-
-                engine_changed = bool(prev_engine and (prev_engine != self.script_engine))
-                title_changed = bool(self.custom_thumb_title and prev_title and (prev_title != self.custom_thumb_title))
-                res_changed = bool(prev_res and (prev_res != self.resolution))
-                fmt_changed = bool(prev_fmt and (prev_fmt != self.video_format))
-                voice_changed = bool(tts_voice and prev_voice and (prev_voice != tts_voice))
-
-                # Invalidate phases based on parameter changes
-                invalidated_phases = set()
-                if engine_changed:
-                    print(f"[*] MasterAgent: Script engine changed ({prev_engine} -> {self.script_engine}). Invalidating Phase 4+ checkpoints.")
-                    invalidated_phases.update([PHASE_4_SCRIPT, PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
-                    self.state.generated_script = []
-                    self.state.audio_path = None
-                    self.state.clean_video_path = None
-                    self.state.reels_video_path = None
-                else:
-                    if getattr(prev_state, "generated_script", None) and len(prev_state.generated_script) > 0:
-                        self.state.generated_script = prev_state.generated_script
-                    if getattr(prev_state, "seo_metadata", None):
-                        self.state.seo_metadata = prev_state.seo_metadata
-
-                if voice_changed:
-                    print(f"[*] MasterAgent: TTS voice changed ({prev_voice} -> {tts_voice}). Invalidating Phase 5+ checkpoints.")
-                    invalidated_phases.update([PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
-                    self.state.clean_video_path = None
-                    self.state.reels_video_path = None
-
-                if title_changed:
-                    print("[*] MasterAgent: Custom thumbnail title changed. Invalidating Phase 4, 6, 7.")
-                    invalidated_phases.update([PHASE_4_SCRIPT, PHASE_6_MERGE, PHASE_7_QA])
-                    self.state.thumbnail_path = None
-                elif getattr(prev_state, "thumbnail_path", None) and os.path.exists(prev_state.thumbnail_path):
-                    self.state.thumbnail_path = prev_state.thumbnail_path
-
-                if res_changed or fmt_changed:
-                    print(f"[*] MasterAgent: Resolution or format changed ({prev_res}/{prev_fmt} -> {self.resolution}/{self.video_format}). Invalidating Phase 6 & 7.")
-                    invalidated_phases.update([PHASE_6_MERGE, PHASE_7_QA])
-                    self.state.clean_video_path = None
-                    self.state.reels_video_path = None
-
-                # Filter completed phases
-                self.state.completed_phases = [p for p in self.state.completed_phases if p not in invalidated_phases]
-
-                # Check checkpoint.json to ensure any completed phases are synchronized, but respect invalidated phases
-                if os.path.exists(ckpt_file):
-                    try:
-                        with open(ckpt_file, "r", encoding="utf-8") as cf:
-                            cdata = json.load(cf)
-                        for ph in cdata.get("completed_phases", []):
-                            if ph not in self.state.completed_phases and ph not in invalidated_phases:
-                                self.state.completed_phases.append(ph)
-                    except Exception:
-                        pass
-
-                if getattr(prev_state, "phase_durations", None):
-                    self.state.phase_durations = prev_state.phase_durations
-
-                print(f"[*] MasterAgent: Checkpoint Resume loaded. Completed phases: {self.state.completed_phases}")
-            except Exception as e:
-                print(f"[WARN] MasterAgent: Failed to restore state for resume: {e}")
-        elif not self.resume:
-            print("[*] MasterAgent: Fresh run requested (--fresh). Bypassing checkpoints.")
+        # Checkpoint Resume: restore completed phases / artifacts of a previous run
+        self._restore_previous_run(output_dir, resolution, custom_thumb_title, script_engine, video_format, tts_voice)
 
         # Determine active language and corresponding TTS voice
         self.language  = language or cfg["pipeline"].get("language", "burmese")
@@ -358,34 +256,92 @@ class MasterAgent:
                 or "en-US-GuyNeural"
             )
 
+        self.state.tts_voice = self.tts_voice
+
         self.whisper_model          = whisper_model
         self.tts_enabled            = cfg["voice"]["enabled"]
         if self.audio_mode in ["original", "none"] or self.stage_toggles.get("tts") is False:
             self.tts_enabled = False
         self.subtitle_blur_override = self.blur_mode if self.blur_mode in ["yes", "no", "auto"] else None
         self.output_dir             = output_dir
+        self._reconcile_cached_artifacts()
 
         # Instantiate all agents
-        self.video_agent     = VideoAgent(movie_path=self.movie_path)
-        self.audio_agent     = AudioAgent(movie_path=self.movie_path)
-        self.writer_agent    = WriterAgent(language=self.language, script_engine=self.script_engine)
-        self.seo_agent       = SEOAgent(language=self.language)
-        self.voice_agent     = VoiceAgent(
-            voice=self.tts_voice,
-            output_dir=output_dir,
-            tts_engine=self.tts_engine,
-        )
-        self.video_merger    = VideoMergerAgent(
-            output_dir=output_dir,
-            subtitle_blur_override=self.subtitle_blur_override,
-            subtitle_mode=self.subtitle_mode,
-            resolution=self.resolution,
-        )
-        self.thumbnail_agent = ThumbnailAgent()
-        self.qa_agent        = QAAgent(
-            output_dir=output_dir,
-            auto_rewrite_threshold=cfg.get("qa", {}).get("auto_rewrite_threshold", 6),
-        )
+        self._build_agents(output_dir, cfg)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Resume integrity: never reuse artifacts produced with different options
+    # (Resume တွင် option ပြောင်းထားပါက အရင် run ၏ ဖိုင်အဟောင်းများကို ပြန်မသုံးစေရန်)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _script_signature(self) -> str:
+        """Fingerprint of everything that changes the written script (not the voice)."""
+        parts = [
+            str(self.language).lower(),
+            str(self.translation_style),
+            str(self.script_engine),
+            str(self.context_hint or "").strip(),
+        ]
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _voice_signature(self) -> str:
+        """Fingerprint of everything that changes the synthesized voice clips."""
+        parts = [str(self.tts_engine).lower(), str(self.tts_voice), str(self.audio_mode)]
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _clear_voiceover_clips(self, output_dir: str) -> int:
+        """Deletes cached scene_*.mp3 clips (and their manifest) of this project. Returns count removed."""
+        vo_dir = os.path.join(output_dir, self.state.project_dir, "voiceover")
+        if not os.path.isdir(vo_dir):
+            return 0
+        removed = 0
+        for name in os.listdir(vo_dir):
+            if (name.startswith("scene_") and name.endswith(".mp3")) or name == VOICE_MANIFEST_NAME:
+                try:
+                    os.remove(os.path.join(vo_dir, name))
+                    removed += 1
+                except OSError as _exc:
+                    log_suppressed("agents.master._clear_voiceover_clips", _exc)
+        if removed:
+            print(f"[*] MasterAgent: Removed {removed} stale voiceover file(s) from the previous run.")
+        return removed
+
+    def _reconcile_cached_artifacts(self) -> None:
+        """
+        Compares the options of this run with the fingerprints stored by the previous run and
+        invalidates every downstream artifact that was built with different options:
+          - script options changed (style / language / context hint / engine)
+              -> script, voiceover, merged video, QA are regenerated
+          - voice options changed (TTS engine / voice / audio mode)
+              -> voiceover, merged video, QA are regenerated
+        Legacy states without fingerprints are left untouched.
+        """
+        script_sig = self._script_signature()
+        voice_sig = self._voice_signature()
+        invalidated = set()
+        clear_voice = False
+
+        if self._prev_script_sig and self._prev_script_sig != script_sig:
+            print("[*] MasterAgent: Script options changed (style / language / hint). Regenerating script & voiceover.")
+            invalidated.update([PHASE_4_SCRIPT, PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
+            self.state.generated_script = []
+            clear_voice = True
+
+        if self._prev_voice_sig and self._prev_voice_sig != voice_sig:
+            print("[*] MasterAgent: Voice options changed (engine / voice). Regenerating voiceover.")
+            invalidated.update([PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
+            clear_voice = True
+
+        if invalidated:
+            self.state.clean_video_path = None
+            self.state.reels_video_path = None
+            self.state.completed_phases = [p for p in self.state.completed_phases if p not in invalidated]
+            for phase in invalidated:
+                self.state.phase_checkpoints.pop(phase, None)
+        if clear_voice:
+            self._clear_voiceover_clips(self.output_dir)
+
+        self.state.script_signature = script_sig
+        self.state.voice_signature = voice_sig
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -515,418 +471,14 @@ class MasterAgent:
         sys.stderr = pipe_logger
 
         try:
-            hw_str = "💻 CPU Multi-Core"
-            try:
-                from agents.video_merger_agent import detect_hardware_encoder
-                enc = detect_hardware_encoder()
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        gpu_name = torch.cuda.get_device_name(0)
-                        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                        hw_str = f"🚀 Dedicated GPU: {gpu_name} ({vram_gb:.1f} GB VRAM) [Encoder: {enc['label']}]"
-                    else:
-                        hw_str = f"💻 CPU Multi-Core [Encoder: {enc['label']}]"
-                except Exception:
-                    hw_str = f"💻 CPU Multi-Core [Encoder: {enc.get('label', 'Default')}]"
-            except Exception:
-                pass
-
-            print(f"\n{'='*60}")
-            print("[MOVIE RECAP AI] End-to-End Autonomous Pipeline")
-            print(f"[INPUT] {self.movie_path}")
-            print(f"[HARDWARE] {hw_str}")
-            print(f"[CONFIG] Lang: {self.language.upper()} | Subtitles: {self.subtitle_mode.upper()} | Res: {self.resolution} | Voice: {self.tts_voice} | Engine: {self.tts_engine.upper()} | Resume: {self.resume}")
-            print(f"[LOG FILE] {log_path}")
-            print(f"{'='*60}")
-
-            # Phase 1: Foundation
-            if self._should_run_phase(PHASE_1_ANALYSIS):
-                p1_t0 = time.time()
-                self._phase("Phase 1: Video & Metadata Analysis", progress=10)
-                self.state = self.video_agent.analyze_metadata(self.state)
-                self.state.phase_durations["Phase 1: Video Analysis"] = round(time.time() - p1_t0, 2)
-                print(f"[TIMING] Phase 1 finished in {self.state.phase_durations['Phase 1: Video Analysis']}s")
-                self.save_checkpoint(PHASE_1_ANALYSIS, "Phase 1: Video & Metadata Analysis")
-            else:
-                print("[*] Phase 1: Video & Metadata Analysis skipped (reusing cached metadata).")
-
-            # Phase 2 & 3: Audio STT and Scene Detection (Parallel)
-            run_p2 = self._should_run_phase(PHASE_2_AUDIO)
-            run_p3 = self._should_run_phase(PHASE_3_SCENES)
-
-            if run_p2 or run_p3:
-                p23_t0 = time.time()
-                self._phase("Phase 2 & 3: Audio STT and Scene Detection", progress=25)
-                temp_audio_dir = os.path.join("temp", self.state.project_dir, "audio")
-
-                def run_audio_pipeline(state):
-                    if not run_p2:
-                        print(f"[*] MasterAgent: Reusing cached transcript ({len(getattr(state, 'transcript', []) or [])} segments)...")
-                        return state
-                    state = self.audio_agent.extract_audio(state, temp_audio_dir, skip_demucs=self.skip_demucs)
-                    if getattr(state, "transcript", None) and len(state.transcript) > 0:
-                        print(f"[*] MasterAgent: Reusing cached transcript ({len(state.transcript)} segments)...")
-                        return state
-                    print("[*] MasterAgent: Running Whisper Transcription...")
-                    state = self.audio_agent.transcribe_audio(state, self.whisper_model)
-                    if not state.transcript:
-                        print("[WARN] MasterAgent: No transcript available.")
-                    state = self.audio_agent.correct_transcript(state)
-                    return state
-                    
-                def run_scene_pipeline(state):
-                    if not run_p3:
-                        print(f"[*] MasterAgent: Reusing cached scene detection ({len(getattr(state, 'timeline', []) or [])} scenes)...")
-                        return state
-                    if getattr(state, "timeline", None) and isinstance(state.timeline, list) and len(state.timeline) > 0:
-                        print(f"[*] MasterAgent: Reusing cached scene detection ({len(state.timeline)} scenes)...")
-                        return state
-                    cfg_data = config.load_config()
-                    scene_cfg = cfg_data.get("pipeline", {}).get("scene_detection", False)
-                    if self.detect_scenes is not None:
-                        skip_scenes = not self.detect_scenes
-                    else:
-                        skip_scenes = os.environ.get("SKIP_SCENES", "").lower() in ("1", "true", "yes") or not scene_cfg
-                    if skip_scenes:
-                        print("[*] MasterAgent: Scene detection skipped (1:1 dialogue mode uses Whisper timestamps). Populating fallback macro scene.")
-                        dur = getattr(state, "duration_sec", 0.0) or 0.0
-                        if dur <= 0.0:
-                            try:
-                                from moviepy import VideoFileClip
-                                clip = VideoFileClip(self.movie_path)
-                                dur = clip.duration
-                                clip.close()
-                            except Exception:
-                                try:
-                                    import moviepy.editor as mp
-                                    clip = mp.VideoFileClip(self.movie_path)
-                                    dur = clip.duration
-                                    clip.close()
-                                except Exception:
-                                    dur = 120.0
-                        from brain.memory import SceneData
-                        max_dur = max(float(dur), 120.0)
-                        state.timeline = [SceneData(scene_id=1, start_sec=0.0, end_sec=max_dur, start_time="00:00:00", end_time=f"{int(max_dur//60):02d}:{int(max_dur%60):02d}")]
-                        return state
-                    from agents.scene_agent import SceneAgent
-                    scene_agent = SceneAgent()
-                    return scene_agent.extract_scenes(state, self.movie_path)
-                    
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    ctx_audio = contextvars.copy_context()
-                    ctx_scene = contextvars.copy_context()
-                    audio_future = executor.submit(ctx_audio.run, run_audio_pipeline, deepcopy(self.state))
-                    scene_future = executor.submit(ctx_scene.run, run_scene_pipeline, deepcopy(self.state))
-                    
-                    futures = [audio_future, scene_future]
-                    done, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
-                    
-                    for f in done:
-                        if f.exception() is not None:
-                            print(f"[CRITICAL ERROR] MasterAgent: Phase 2/3 thread failed: {f.exception()}")
-                            for pending in not_done:
-                                pending.cancel()
-                            self.state.current_phase = "Error"
-                            self.state.progress = -1
-                            self.save_state()
-                            raise f.exception()
-                    
-                    try:
-                        audio_state = audio_future.result()
-                        scene_state = scene_future.result()
-
-                        self.state.transcript = getattr(audio_state, "transcript", self.state.transcript)
-                        if hasattr(audio_state, "speaker_transcript") and audio_state.speaker_transcript:
-                            self.state.speaker_transcript = audio_state.speaker_transcript
-                        if hasattr(audio_state, "characters") and audio_state.characters:
-                            self.state.characters = audio_state.characters
-                        self.state.timeline = getattr(scene_state, "timeline", self.state.timeline)
-                    except Exception as e:
-                        print(f"[CRITICAL ERROR] MasterAgent: Audio/Scene pipeline failed: {e}")
-                        self.state.current_phase = "Error"
-                        self.state.progress = -1
-                        self.save_state()
-                        raise e
-                self.state.phase_durations["Phase 2 & 3: Audio STT and Scenes"] = round(time.time() - p23_t0, 2)
-                print(f"[TIMING] Phase 2 & 3 finished in {self.state.phase_durations['Phase 2 & 3: Audio STT and Scenes']}s")
-                if run_p2:
-                    self.save_checkpoint(PHASE_2_AUDIO, "Phase 2: Audio STT Transcription")
-                if run_p3:
-                    self.save_checkpoint(PHASE_3_SCENES, "Phase 3: Scene Detection")
-            else:
-                print("[*] Phase 2 & 3 skipped (reusing cached audio transcript & scene timeline).")
-
-            # Phase 4: Script Writing, SEO & Thumbnail
-            if self._should_run_phase(PHASE_4_SCRIPT):
-                p4_t0 = time.time()
-                self._phase("Phase 4: Script Writing, SEO & Thumbnail", progress=65)
-                
-                # 4.1 Script Writing (Needs Phase 2 & 3 outputs)
-                if getattr(self.state, "generated_script", None) and len(self.state.generated_script) > 0:
-                    print(f"[*] MasterAgent: Reusing cached script ({len(self.state.generated_script)} blocks)...")
-                else:
-                    self.state = self.writer_agent.generate_script(self.state, movie_path=self.movie_path)
-                    # 4.1b Auto-Rewrite Over-length Blocks (QA Sync)
-                    self.state = self.qa_agent.enforce_duration_constraints(self.state)
-                    # 4.1c Pre-TTS Language Check & Natural Burmese Auto-Rewrite
-                    self.state = self.qa_agent.review_and_rewrite_script(self.state)
-                
-                # 4.2 SEO and Thumbnail Frame Extraction (Parallel)
-                def run_seo(state):
-                    return self.seo_agent.generate_seo(state)
-                    
-                def run_thumbnail_base(state):
-                    return self.thumbnail_agent.extract_base_frame(state, self.movie_path)
-                    
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    ctx_seo = contextvars.copy_context()
-                    ctx_thumb = contextvars.copy_context()
-                    seo_future = executor.submit(ctx_seo.run, run_seo, deepcopy(self.state))
-                    thumb_future = executor.submit(ctx_thumb.run, run_thumbnail_base, deepcopy(self.state))
-                    
-                    futures_p4 = [seo_future, thumb_future]
-                    done_p4, not_done_p4 = concurrent.futures.wait(futures_p4, return_when=concurrent.futures.FIRST_EXCEPTION)
-                    
-                    for f in done_p4:
-                        if f.exception() is not None:
-                            print(f"[CRITICAL ERROR] MasterAgent: Phase 4 thread failed: {f.exception()}")
-                            for pending in not_done_p4:
-                                pending.cancel()
-                            self.state.current_phase = "Error"
-                            self.state.progress = -1
-                            self.save_state()
-                            raise f.exception()
-                    
-                    # Merge SEO state back
-                    seo_state = seo_future.result()
-                    self.state.seo_metadata = seo_state.seo_metadata
-                    if not self.state.custom_thumb_title and getattr(seo_state, "custom_thumb_title", None):
-                        self.state.custom_thumb_title = seo_state.custom_thumb_title
-                    
-                    temp_base_path = thumb_future.result()
-                    
-                # 4.3 Thumbnail Text Overlay (Depends on SEO)
-                if temp_base_path:
-                    self.state = self.thumbnail_agent.overlay_text(self.state, temp_base_path)
-                    
-                self.state.phase_durations["Phase 4: Script, SEO & Thumbnail"] = round(time.time() - p4_t0, 2)
-                print(f"[TIMING] Phase 4 finished in {self.state.phase_durations['Phase 4: Script, SEO & Thumbnail']}s")
-                self.save_checkpoint(PHASE_4_SCRIPT, "Phase 4: Script Writing, SEO & Thumbnail")
-            else:
-                print("[*] Phase 4: Script Writing, SEO & Thumbnail skipped (reusing cached script & thumbnail).")
-
-            # Phase 5: Voice Generation
-            if self.tts_enabled:
-                if self._should_run_phase(PHASE_5_VOICE):
-                    p5_t0 = time.time()
-                    self._phase("Phase 5: Text-to-Speech Voice Generation", progress=80)
-                    self.state = self.voice_agent.generate_voiceover(self.state)
-                    self.state.phase_durations["Phase 5: Voice Generation"] = round(time.time() - p5_t0, 2)
-                    print(f"[TIMING] Phase 5 finished in {self.state.phase_durations['Phase 5: Voice Generation']}s")
-                    self.save_checkpoint(PHASE_5_VOICE, "Phase 5: Voice Generation")
-                else:
-                    print("[*] Phase 5: Voice Generation skipped (all voice clips already synthesized).")
-            else:
-                print("\n[*] VoiceAgent: Skipped (disabled in config.json -> voice.enabled = false)")
-                self.state.phase_durations["Phase 5: Voice Generation"] = 0.0
-
-            # Phase 6: Video Merge & Subtitle Blur Pass
-            if not self.render_video:
-                print("\n[*] Phase 6: Video Merge skipped (render_video = False). Exporting standalone subtitles.")
-                sub_timings = getattr(self.state, "subtitle_timings", None) or []
-                if not sub_timings and self.state.generated_script:
-                    for block in self.state.generated_script:
-                        if isinstance(block, dict):
-                            s_start = float(block.get("start_sec") or 0.0)
-                            s_end = float(block.get("end_sec") or (s_start + 3.0))
-                            txt = str(block.get("narration") or block.get("text") or "").strip()
-                            if txt:
-                                sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
-                if sub_timings:
-                    out_p = os.path.join(self.output_dir, self.state.project_dir)
-                    self.video_merger._export_standalone_srt(sub_timings, out_p)
-                self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Subtitle Export Only (Video Render Disabled)")
-            elif self._should_run_phase(PHASE_6_MERGE):
-                p6_t0 = time.time()
-                self._phase("Phase 6: Merging Video + Voiceover + Subtitle Blur", progress=90)
-                self.state = self.video_merger.merge_video(self.state, self.movie_path)
-                self.state.phase_durations["Phase 6: Video Merge & Subtitles"] = round(time.time() - p6_t0, 2)
-                print(f"[TIMING] Phase 6 finished in {self.state.phase_durations['Phase 6: Video Merge & Subtitles']}s")
-
-                # Phase 6b: 9:16 Facebook Reels / TikTok Canvas Video Export
-                cfg_data = config.load_config()
-                reels_cfg = cfg_data.get("reels", {})
-                reels_enabled = (self.video_format in ["9:16", "both"]) and reels_cfg.get("enabled", True)
-                if os.getenv("ENABLE_REELS") == "true":
-                    reels_enabled = True
-                elif os.getenv("DISABLE_REELS") == "true" or self.video_format == "16:9":
-                    reels_enabled = False
-
-                if reels_enabled:
-                    final_video_path = getattr(self.state, "final_video_path", None) or os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
-                    clean_vid = getattr(self.state, "clean_video_path", None)
-                    src_to_use = clean_vid if (clean_vid and os.path.exists(clean_vid)) else final_video_path
-                    if src_to_use and os.path.exists(src_to_use):
-                        self._phase("Phase 6b: Generating 9:16 Facebook Reels Canvas Video", progress=95)
-                        hook_title = (
-                            self.custom_thumb_title
-                            or (self.state.seo_metadata.get("title") if isinstance(self.state.seo_metadata, dict) else "")
-                            or self.state.movie_name
-                        )
-                        if hook_title and "|" in hook_title:
-                            hook_title = hook_title.split("|")[0].strip()
-                        sub_timings = getattr(self.state, "subtitle_timings", None) or []
-                        if not sub_timings and self.state.generated_script:
-                            for block in self.state.generated_script:
-                                if isinstance(block, dict):
-                                    s_start = float(block.get("start_sec") or 0.0)
-                                    s_end = float(block.get("end_sec") or (s_start + 3.0))
-                                    txt = str(block.get("narration") or block.get("text") or "").strip()
-                                    if txt:
-                                        sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
-
-                        try:
-                            reels_path = self.video_merger.generate_reels_video(
-                                source_video_path=src_to_use,
-                                output_dir=os.path.join(self.output_dir, self.state.project_dir),
-                                hook_title=hook_title,
-                                subtitle_timings=sub_timings,
-                                duration_sec=self.state.duration_sec,
-                                subtitle_mode=self.subtitle_mode,
-                                resolution=self.resolution,
-                                preset=self.subtitle_style,
-                                state=self.state,
-                            )
-                            self.state.reels_video_path = reels_path
-                            if reels_path and os.path.exists(reels_path) and self.video_format == "9:16":
-                                recap_16_9 = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
-                                if os.path.exists(recap_16_9):
-                                    try:
-                                        os.remove(recap_16_9)
-                                    except Exception:
-                                        pass
-                                recap_clean = os.path.join(self.output_dir, self.state.project_dir, "final_recap_clean.mp4")
-                                if os.path.exists(recap_clean):
-                                    try:
-                                        os.remove(recap_clean)
-                                    except Exception:
-                                        pass
-                                print("[*] MasterAgent: Video format '9:16' (Vertical Only) -> Kept only final_reels.mp4.")
-                        except Exception as e:
-                            print(f"[WARN] MasterAgent: Failed to generate Reels video: {e}")
-                            self.state.warnings.append(f"Reels generation failed: {e}")
-                else:
-                    print(f"[*] Phase 6b (9:16 Reels): Skipped (Video format is '{self.video_format}')")
-
-                self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Video Merge & Subtitle Pass")
-            else:
-                print("[*] Phase 6: Video Merge skipped (reusing completed final recap video).")
-
-            # Phase 7: QA Review — Gemini checks sync accuracy & language naturalness
-            if self._should_run_phase(PHASE_7_QA):
-                p7_t0 = time.time()
-                qa_cfg = config.load_config().get("qa", {})
-                if qa_cfg.get("enabled", False):
-                    final_video_path = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
-                    if not os.path.exists(final_video_path):
-                        reels_candidate = os.path.join(self.output_dir, self.state.project_dir, "final_reels.mp4")
-                        if os.path.exists(reels_candidate):
-                            final_video_path = reels_candidate
-                    if os.path.exists(final_video_path):
-                        self.state = self.qa_agent.review(
-                            state=self.state,
-                            original_video_path=self.movie_path,
-                            recap_video_path=final_video_path,
-                        )
-                        self.state.phase_durations["Phase 7: QA Review"] = round(time.time() - p7_t0, 2)
-                        print(f"[TIMING] Phase 7 finished in {self.state.phase_durations['Phase 7: QA Review']}s")
-                        if isinstance(getattr(self.state, "qa_results", None), dict) and self.state.qa_results.get("status") == "completed":
-                            self.save_checkpoint(PHASE_7_QA, "Phase 7: QA Review")
-                        else:
-                            print("[WARN] QA did not complete successfully; Phase 7 will remain pending for resume.")
-                    else:
-                        print(f"[!] QA: No output video (recap/reels) found at '{final_video_path}' — skipping QA phase.")
-                        self.state.warnings.append("QA pending: Output video was not found")
-                        self.state.phase_durations["Phase 7: QA Review"] = 0.0
-                else:
-                    print("[*] QA Phase: Disabled (set qa.enabled=true in config.json to enable)")
-                    self.state.phase_durations["Phase 7: QA Review"] = 0.0
-            else:
-                print("[*] Phase 7: QA Review skipped.")
-
-            # Calculate total duration
-            total_elapsed = round(time.time() - total_start, 2)
-            self.state.total_duration_sec = total_elapsed
-            self.state.total_duration_formatted = self._format_duration(total_elapsed)
-            self.state.end_time = datetime.datetime.now().isoformat()
-
-            # Final status is explicit: a rendered video is not automatically QA-complete.
-            self.state.progress = 100
-            qa_enabled = config.load_config().get("qa", {}).get("enabled", False)
-            qa_complete = isinstance(getattr(self.state, "qa_results", None), dict) and self.state.qa_results.get("status") == "completed"
-            if qa_enabled and not qa_complete:
-                self.state.pipeline_status = "QA_PENDING"
-                self.state.current_phase = "QA Pending"
-                self.state.progress = 95
-            elif self.state.warnings:
-                self.state.pipeline_status = "COMPLETED_WITH_WARNINGS"
-                self.state.current_phase = "Completed with warnings"
-            else:
-                self.state.pipeline_status = "COMPLETED"
-                self.state.current_phase = "Completed"
-            self.save_state()
-
-            print(f"\n{'='*60}")
-            print(f"🎉 [{self.state.pipeline_status}] Pipeline finished in {self.state.total_duration_formatted} ({total_elapsed}s)!")
-            print(f"{'='*60}")
-            print("⏱️  PHASE DURATION BREAKDOWN:")
-            for phase_name, dur in self.state.phase_durations.items():
-                print(f"   • {phase_name:<42} : {dur:>7.2f}s ({self._format_duration(dur)})")
-            print(f"   {'-'*56}")
-            print(f"   🌟 TOTAL DURATION                          : {total_elapsed:>7.2f}s ({self.state.total_duration_formatted})")
-            print(f"\n📦 OUTPUT DIRECTORY: outputs/{self.state.project_dir}/")
-            if self.video_format in ["16:9", "both"]:
-                print("   ├─ final_recap.mp4         (16:9 YouTube Video)")
-            if getattr(self.state, "reels_video_path", None) and os.path.exists(self.state.reels_video_path):
-                print("   ├─ final_reels.mp4         (9:16 Facebook Reels Canvas Video)")
-            print("   ├─ thumbnail.jpg           (High-CTR Thumbnail)")
-            print("   ├─ final_recap_script.txt  (Narration Script + SEO)")
-            print("   ├─ seo_metadata.json       (Title/Tags/Hashtags)")
-            print("   ├─ pipeline.log            (Complete Process Log)")
-            print("   ├─ state.json              (Full State Metadata)")
-            print("   └─ voiceover/              (Audio Clips per Scene)")
-            print(f"{'='*60}\n")
-
-            # Auto Cleanup of intermediate temp files if enabled
-            config_data = config.load_config()
-            if config_data.get("paths", {}).get("clean_temp_after_merge", True):
-                self._cleanup_temp_files()
-
-            # Select preferred output video for media player auto-launch
-            reels_file = getattr(self.state, "reels_video_path", None)
-            final_16_9 = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
-            
-            if self.video_format == "9:16" and reels_file and os.path.exists(reels_file):
-                preferred_open_video = reels_file
-            elif os.path.exists(final_16_9):
-                preferred_open_video = final_16_9
-            elif reels_file and os.path.exists(reels_file):
-                preferred_open_video = reels_file
-            else:
-                preferred_open_video = None
-
-            if preferred_open_video and os.name == 'nt':
-                print(f"\n[VIDEO READY] Auto-opening video in your media player: {os.path.basename(preferred_open_video)}")
-                try:
-                    os.startfile(os.path.abspath(preferred_open_video))
-                except Exception as e:
-                    print(f"[!] Could not auto-open video: {e}")
-                    output_folder = os.path.join(self.output_dir, self.state.project_dir)
-                    try:
-                        os.startfile(os.path.abspath(output_folder))
-                    except Exception:
-                        pass
+            self._print_run_banner(log_path)
+            self._run_phase_1_analysis()
+            self._run_phase_2_3_audio_and_scenes()
+            self._run_phase_4_script()
+            self._run_phase_5_voice()
+            self._run_phase_6_merge()
+            self._run_phase_7_qa()
+            self._finish_run(total_start)
 
         except InterruptedError as error:
             self.state.pipeline_status = "CANCELLED"
@@ -943,6 +495,594 @@ class MasterAgent:
         finally:
             sys.stdout = orig_stdout
             sys.stderr = orig_stderr
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Resume: load state.json / checkpoint.json of the previous run
+    # ─────────────────────────────────────────────────────────────────────────
+    def _restore_previous_run(self, output_dir, resolution, custom_thumb_title, script_engine, video_format, tts_voice):
+        """Restores finished phases, transcript, timeline and artifact paths; invalidates what changed."""
+        # Checkpoint Resume: restore existing state, completed phases, and artifacts
+        state_file = os.path.join(output_dir, self.state.project_dir, "state.json")
+        ckpt_file = os.path.join(output_dir, self.state.project_dir, "checkpoint.json")
+
+        self._prev_script_sig = None
+        self._prev_voice_sig = None
+
+        if self.resume and os.path.exists(state_file):
+            try:
+                prev_state = MovieState.load_from_json(state_file)
+                self._prev_script_sig = getattr(prev_state, "script_signature", None)
+                self._prev_voice_sig = getattr(prev_state, "voice_signature", None)
+                self.state.completed_phases = getattr(prev_state, "completed_phases", []) or []
+                self.state.phase_checkpoints = getattr(prev_state, "phase_checkpoints", {}) or {}
+                self.state.speaker_profiles = getattr(prev_state, "speaker_profiles", {}) or {}
+                self.state.subtitle_detection = prev_state.subtitle_detection
+
+                if getattr(prev_state, "duration_sec", 0) > 0:
+                    self.state.duration_sec = prev_state.duration_sec
+                if getattr(prev_state, "transcript", None) and len(prev_state.transcript) > 0:
+                    self.state.transcript = prev_state.transcript
+                if getattr(prev_state, "timeline", None) and isinstance(prev_state.timeline, list) and len(prev_state.timeline) > 0:
+                    self.state.timeline = prev_state.timeline
+                for path_field in ("movie_path", "file_path", "audio_path", "thumbnail_path", "clean_video_path", "reels_video_path"):
+                    restored_path = self._portable_path(getattr(prev_state, path_field, None))
+                    if restored_path and os.path.exists(restored_path):
+                        setattr(self.state, path_field, restored_path)
+                restored_movie = self._portable_path(getattr(prev_state, "movie_path", None))
+                if restored_movie and os.path.exists(restored_movie):
+                    self.movie_path = restored_movie
+
+                # Track changes between saved state and current invocation parameters
+                prev_engine = getattr(prev_state, "script_engine", None)
+                prev_res = getattr(prev_state, "resolution", None)
+                prev_fmt = getattr(prev_state, "video_format", None)
+                prev_title = getattr(prev_state, "custom_thumb_title", None)
+                prev_voice = getattr(prev_state, "tts_voice", None)
+
+                # Prioritize explicit parameters over prev_state
+                if not resolution and prev_res:
+                    self.state.resolution = prev_res
+                    self.resolution = prev_res
+                if not custom_thumb_title and prev_title:
+                    self.state.custom_thumb_title = prev_title
+                    self.custom_thumb_title = prev_title
+                if not script_engine and prev_engine:
+                    self.state.script_engine = prev_engine
+                    self.script_engine = prev_engine
+                if not video_format and prev_fmt:
+                    self.state.video_format = prev_fmt
+                    self.video_format = prev_fmt
+
+                engine_changed = bool(prev_engine and (prev_engine != self.script_engine))
+                title_changed = bool(self.custom_thumb_title and prev_title and (prev_title != self.custom_thumb_title))
+                res_changed = bool(prev_res and (prev_res != self.resolution))
+                fmt_changed = bool(prev_fmt and (prev_fmt != self.video_format))
+                voice_changed = bool(tts_voice and prev_voice and (prev_voice != tts_voice))
+
+                # Invalidate phases based on parameter changes
+                invalidated_phases = set()
+                if engine_changed:
+                    print(f"[*] MasterAgent: Script engine changed ({prev_engine} -> {self.script_engine}). Invalidating Phase 4+ checkpoints.")
+                    invalidated_phases.update([PHASE_4_SCRIPT, PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
+                    self.state.generated_script = []
+                    self.state.audio_path = None
+                    self.state.clean_video_path = None
+                    self.state.reels_video_path = None
+                    self._clear_voiceover_clips(output_dir)
+                else:
+                    if getattr(prev_state, "generated_script", None) and len(prev_state.generated_script) > 0:
+                        self.state.generated_script = prev_state.generated_script
+                    if getattr(prev_state, "seo_metadata", None):
+                        self.state.seo_metadata = prev_state.seo_metadata
+
+                if voice_changed:
+                    print(f"[*] MasterAgent: TTS voice changed ({prev_voice} -> {tts_voice}). Invalidating Phase 5+ checkpoints.")
+                    invalidated_phases.update([PHASE_5_VOICE, PHASE_6_MERGE, PHASE_7_QA])
+                    self.state.clean_video_path = None
+                    self.state.reels_video_path = None
+
+                if title_changed:
+                    print("[*] MasterAgent: Custom thumbnail title changed. Invalidating Phase 4, 6, 7.")
+                    invalidated_phases.update([PHASE_4_SCRIPT, PHASE_6_MERGE, PHASE_7_QA])
+                    self.state.thumbnail_path = None
+                elif getattr(prev_state, "thumbnail_path", None) and os.path.exists(prev_state.thumbnail_path):
+                    self.state.thumbnail_path = prev_state.thumbnail_path
+
+                if res_changed or fmt_changed:
+                    print(f"[*] MasterAgent: Resolution or format changed ({prev_res}/{prev_fmt} -> {self.resolution}/{self.video_format}). Invalidating Phase 6 & 7.")
+                    invalidated_phases.update([PHASE_6_MERGE, PHASE_7_QA])
+                    self.state.clean_video_path = None
+                    self.state.reels_video_path = None
+
+                # Filter completed phases
+                self.state.completed_phases = [p for p in self.state.completed_phases if p not in invalidated_phases]
+
+                # Check checkpoint.json to ensure any completed phases are synchronized, but respect invalidated phases
+                if os.path.exists(ckpt_file):
+                    try:
+                        with open(ckpt_file, "r", encoding="utf-8") as cf:
+                            cdata = json.load(cf)
+                        for ph in cdata.get("completed_phases", []):
+                            if ph not in self.state.completed_phases and ph not in invalidated_phases:
+                                self.state.completed_phases.append(ph)
+                    except Exception as _exc:
+                        log_suppressed("agents.master._restore_previous_run", _exc)
+
+                if getattr(prev_state, "phase_durations", None):
+                    self.state.phase_durations = prev_state.phase_durations
+
+                print(f"[*] MasterAgent: Checkpoint Resume loaded. Completed phases: {self.state.completed_phases}")
+            except Exception as e:
+                print(f"[WARN] MasterAgent: Failed to restore state for resume: {e}")
+        elif not self.resume:
+            print("[*] MasterAgent: Fresh run requested (--fresh). Bypassing checkpoints.")
+
+    def _build_agents(self, output_dir, cfg):
+        """Creates the per-phase agents from the resolved options."""
+        self.video_agent     = VideoAgent(movie_path=self.movie_path)
+        self.audio_agent     = AudioAgent(movie_path=self.movie_path)
+        self.writer_agent    = WriterAgent(language=self.language, script_engine=self.script_engine)
+        self.seo_agent       = SEOAgent(language=self.language)
+        self.voice_agent     = VoiceAgent(
+            voice=self.tts_voice,
+            output_dir=output_dir,
+            tts_engine=self.tts_engine,
+        )
+        self.video_merger    = VideoMergerAgent(
+            output_dir=output_dir,
+            subtitle_blur_override=self.subtitle_blur_override,
+            subtitle_mode=self.subtitle_mode,
+            resolution=self.resolution,
+        )
+        self.thumbnail_agent = ThumbnailAgent()
+        self.qa_agent        = QAAgent(
+            output_dir=output_dir,
+            auto_rewrite_threshold=cfg.get("qa", {}).get("auto_rewrite_threshold", 6),
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pipeline phases (Phase တစ်ခုချင်းစီ၏ လုပ်ဆောင်ချက်များ)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _print_run_banner(self, log_path):
+        """Prints hardware + configuration summary at the start of a run."""
+        hw_str = "💻 CPU Multi-Core"
+        try:
+            from agents.video_merger_agent import detect_hardware_encoder
+            enc = detect_hardware_encoder()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    hw_str = f"🚀 Dedicated GPU: {gpu_name} ({vram_gb:.1f} GB VRAM) [Encoder: {enc['label']}]"
+                else:
+                    hw_str = f"💻 CPU Multi-Core [Encoder: {enc['label']}]"
+            except Exception:
+                hw_str = f"💻 CPU Multi-Core [Encoder: {enc.get('label', 'Default')}]"
+        except Exception as _exc:
+            log_suppressed("agents.master._print_run_banner", _exc)
+
+        print(f"\n{'='*60}")
+        print("[MOVIE RECAP AI] End-to-End Autonomous Pipeline")
+        print(f"[INPUT] {self.movie_path}")
+        print(f"[HARDWARE] {hw_str}")
+        print(f"[CONFIG] Lang: {self.language.upper()} | Subtitles: {self.subtitle_mode.upper()} | Res: {self.resolution} | Voice: {self.tts_voice} | Engine: {self.tts_engine.upper()} | Resume: {self.resume}")
+        print(f"[LOG FILE] {log_path}")
+        print(f"{'='*60}")
+
+    def _run_phase_1_analysis(self):
+        """Phase 1: video metadata (duration, fps, resolution)."""
+        # Phase 1: Foundation
+        if self._should_run_phase(PHASE_1_ANALYSIS):
+            p1_t0 = time.time()
+            self._phase("Phase 1: Video & Metadata Analysis", progress=10)
+            self.state = self.video_agent.analyze_metadata(self.state)
+            self.state.phase_durations["Phase 1: Video Analysis"] = round(time.time() - p1_t0, 2)
+            print(f"[TIMING] Phase 1 finished in {self.state.phase_durations['Phase 1: Video Analysis']}s")
+            self.save_checkpoint(PHASE_1_ANALYSIS, "Phase 1: Video & Metadata Analysis")
+        else:
+            print("[*] Phase 1: Video & Metadata Analysis skipped (reusing cached metadata).")
+
+    def _run_phase_2_3_audio_and_scenes(self):
+        """Phase 2 & 3 (parallel): audio extraction + STT, and scene detection."""
+        # Phase 2 & 3: Audio STT and Scene Detection (Parallel)
+        run_p2 = self._should_run_phase(PHASE_2_AUDIO)
+        run_p3 = self._should_run_phase(PHASE_3_SCENES)
+
+        if run_p2 or run_p3:
+            p23_t0 = time.time()
+            self._phase("Phase 2 & 3: Audio STT and Scene Detection", progress=25)
+            temp_audio_dir = os.path.join("temp", self.state.project_dir, "audio")
+
+            def run_audio_pipeline(state):
+                if not run_p2:
+                    print(f"[*] MasterAgent: Reusing cached transcript ({len(getattr(state, 'transcript', []) or [])} segments)...")
+                    return state
+                state = self.audio_agent.extract_audio(state, temp_audio_dir, skip_demucs=self.skip_demucs)
+                if getattr(state, "transcript", None) and len(state.transcript) > 0:
+                    print(f"[*] MasterAgent: Reusing cached transcript ({len(state.transcript)} segments)...")
+                    return state
+                print("[*] MasterAgent: Running Whisper Transcription...")
+                state = self.audio_agent.transcribe_audio(state, self.whisper_model)
+                if not state.transcript:
+                    print("[WARN] MasterAgent: No transcript available.")
+                state = self.audio_agent.correct_transcript(state)
+                return state
+                
+            def run_scene_pipeline(state):
+                if not run_p3:
+                    print(f"[*] MasterAgent: Reusing cached scene detection ({len(getattr(state, 'timeline', []) or [])} scenes)...")
+                    return state
+                if getattr(state, "timeline", None) and isinstance(state.timeline, list) and len(state.timeline) > 0:
+                    print(f"[*] MasterAgent: Reusing cached scene detection ({len(state.timeline)} scenes)...")
+                    return state
+                cfg_data = config.load_config()
+                scene_cfg = cfg_data.get("pipeline", {}).get("scene_detection", False)
+                if self.detect_scenes is not None:
+                    skip_scenes = not self.detect_scenes
+                else:
+                    skip_scenes = os.environ.get("SKIP_SCENES", "").lower() in ("1", "true", "yes") or not scene_cfg
+                if skip_scenes:
+                    print("[*] MasterAgent: Scene detection skipped (1:1 dialogue mode uses Whisper timestamps). Populating fallback macro scene.")
+                    dur = getattr(state, "duration_sec", 0.0) or 0.0
+                    if dur <= 0.0:
+                        try:
+                            from moviepy import VideoFileClip
+                            clip = VideoFileClip(self.movie_path)
+                            dur = clip.duration
+                            clip.close()
+                        except Exception:
+                            try:
+                                import moviepy.editor as mp
+                                clip = mp.VideoFileClip(self.movie_path)
+                                dur = clip.duration
+                                clip.close()
+                            except Exception:
+                                dur = 120.0
+                    from brain.memory import SceneData
+                    max_dur = max(float(dur), 120.0)
+                    state.timeline = [SceneData(scene_id=1, start_sec=0.0, end_sec=max_dur, start_time="00:00:00", end_time=f"{int(max_dur//60):02d}:{int(max_dur%60):02d}")]
+                    return state
+                from agents.scene_agent import SceneAgent
+                scene_agent = SceneAgent()
+                return scene_agent.extract_scenes(state, self.movie_path)
+                
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                ctx_audio = contextvars.copy_context()
+                ctx_scene = contextvars.copy_context()
+                audio_future = executor.submit(ctx_audio.run, run_audio_pipeline, deepcopy(self.state))
+                scene_future = executor.submit(ctx_scene.run, run_scene_pipeline, deepcopy(self.state))
+                
+                futures = [audio_future, scene_future]
+                done, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+                
+                for f in done:
+                    if f.exception() is not None:
+                        print(f"[CRITICAL ERROR] MasterAgent: Phase 2/3 thread failed: {f.exception()}")
+                        for pending in not_done:
+                            pending.cancel()
+                        self.state.current_phase = "Error"
+                        self.state.progress = -1
+                        self.save_state()
+                        raise f.exception()
+                
+                try:
+                    audio_state = audio_future.result()
+                    scene_state = scene_future.result()
+
+                    self.state.transcript = getattr(audio_state, "transcript", self.state.transcript)
+                    # The audio worker runs on a deep copy: bring its extracted/separated audio
+                    # path back, otherwise resume can never validate (and re-runs) Phase 2.
+                    if getattr(audio_state, "audio_path", None):
+                        self.state.audio_path = audio_state.audio_path
+                    if hasattr(audio_state, "speaker_transcript") and audio_state.speaker_transcript:
+                        self.state.speaker_transcript = audio_state.speaker_transcript
+                    if hasattr(audio_state, "characters") and audio_state.characters:
+                        self.state.characters = audio_state.characters
+                    self.state.timeline = getattr(scene_state, "timeline", self.state.timeline)
+                except Exception as e:
+                    print(f"[CRITICAL ERROR] MasterAgent: Audio/Scene pipeline failed: {e}")
+                    self.state.current_phase = "Error"
+                    self.state.progress = -1
+                    self.save_state()
+                    raise e
+            if not self.state.transcript:
+                # No speech text = nothing to translate or dub. Fail the job with a clear reason
+                # instead of "completing" with an un-narrated copy of the source video.
+                raise RuntimeError(
+                    "No dialogue could be transcribed (speech-to-text failed, timed out, or the video has "
+                    "no speech). Check Whisper / ffmpeg logs, or provide an .srt next to the video. "
+                    "စကားပြောအသံ စာသားပြောင်းမရပါ - Whisper log ကိုစစ်ပါ သို့မဟုတ် video နှင့်အတူ .srt ဖိုင်ထားပါ။"
+                )
+            self.state.phase_durations["Phase 2 & 3: Audio STT and Scenes"] = round(time.time() - p23_t0, 2)
+            print(f"[TIMING] Phase 2 & 3 finished in {self.state.phase_durations['Phase 2 & 3: Audio STT and Scenes']}s")
+            if run_p2:
+                self.save_checkpoint(PHASE_2_AUDIO, "Phase 2: Audio STT Transcription")
+            if run_p3:
+                self.save_checkpoint(PHASE_3_SCENES, "Phase 3: Scene Detection")
+        else:
+            print("[*] Phase 2 & 3 skipped (reusing cached audio transcript & scene timeline).")
+
+    def _run_phase_4_script(self):
+        """Phase 4: script writing, QA rewrite, SEO and thumbnail."""
+        # Phase 4: Script Writing, SEO & Thumbnail
+        if self._should_run_phase(PHASE_4_SCRIPT):
+            p4_t0 = time.time()
+            self._phase("Phase 4: Script Writing, SEO & Thumbnail", progress=65)
+            
+            # 4.1 Script Writing (Needs Phase 2 & 3 outputs)
+            if getattr(self.state, "generated_script", None) and len(self.state.generated_script) > 0:
+                print(f"[*] MasterAgent: Reusing cached script ({len(self.state.generated_script)} blocks)...")
+            else:
+                self.state = self.writer_agent.generate_script(self.state, movie_path=self.movie_path)
+                # 4.1b Auto-Rewrite Over-length Blocks (QA Sync)
+                self.state = self.qa_agent.enforce_duration_constraints(self.state)
+                # 4.1c Pre-TTS Language Check & Natural Burmese Auto-Rewrite
+                self.state = self.qa_agent.review_and_rewrite_script(self.state)
+            
+            # 4.2 SEO and Thumbnail Frame Extraction (Parallel)
+            def run_seo(state):
+                return self.seo_agent.generate_seo(state)
+                
+            def run_thumbnail_base(state):
+                return self.thumbnail_agent.extract_base_frame(state, self.movie_path)
+                
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                ctx_seo = contextvars.copy_context()
+                ctx_thumb = contextvars.copy_context()
+                seo_future = executor.submit(ctx_seo.run, run_seo, deepcopy(self.state))
+                thumb_future = executor.submit(ctx_thumb.run, run_thumbnail_base, deepcopy(self.state))
+                
+                futures_p4 = [seo_future, thumb_future]
+                done_p4, not_done_p4 = concurrent.futures.wait(futures_p4, return_when=concurrent.futures.FIRST_EXCEPTION)
+                
+                for f in done_p4:
+                    if f.exception() is not None:
+                        print(f"[CRITICAL ERROR] MasterAgent: Phase 4 thread failed: {f.exception()}")
+                        for pending in not_done_p4:
+                            pending.cancel()
+                        self.state.current_phase = "Error"
+                        self.state.progress = -1
+                        self.save_state()
+                        raise f.exception()
+                
+                # Merge SEO state back
+                seo_state = seo_future.result()
+                self.state.seo_metadata = seo_state.seo_metadata
+                if not self.state.custom_thumb_title and getattr(seo_state, "custom_thumb_title", None):
+                    self.state.custom_thumb_title = seo_state.custom_thumb_title
+                
+                temp_base_path = thumb_future.result()
+                
+            # 4.3 Thumbnail Text Overlay (Depends on SEO)
+            if temp_base_path:
+                self.state = self.thumbnail_agent.overlay_text(self.state, temp_base_path)
+                
+            self.state.phase_durations["Phase 4: Script, SEO & Thumbnail"] = round(time.time() - p4_t0, 2)
+            print(f"[TIMING] Phase 4 finished in {self.state.phase_durations['Phase 4: Script, SEO & Thumbnail']}s")
+            self.save_checkpoint(PHASE_4_SCRIPT, "Phase 4: Script Writing, SEO & Thumbnail")
+        else:
+            print("[*] Phase 4: Script Writing, SEO & Thumbnail skipped (reusing cached script & thumbnail).")
+
+    def _run_phase_5_voice(self):
+        """Phase 5: text-to-speech voiceover clips."""
+        # Phase 5: Voice Generation
+        if self.tts_enabled:
+            if self._should_run_phase(PHASE_5_VOICE):
+                p5_t0 = time.time()
+                self._phase("Phase 5: Text-to-Speech Voice Generation", progress=80)
+                self.state = self.voice_agent.generate_voiceover(self.state)
+                self.state.phase_durations["Phase 5: Voice Generation"] = round(time.time() - p5_t0, 2)
+                print(f"[TIMING] Phase 5 finished in {self.state.phase_durations['Phase 5: Voice Generation']}s")
+                self.save_checkpoint(PHASE_5_VOICE, "Phase 5: Voice Generation")
+            else:
+                print("[*] Phase 5: Voice Generation skipped (all voice clips already synthesized).")
+        else:
+            print("\n[*] VoiceAgent: Skipped (disabled in config.json -> voice.enabled = false)")
+            self.state.phase_durations["Phase 5: Voice Generation"] = 0.0
+
+    def _run_phase_6_merge(self):
+        """Phase 6 / 6b: final merge, subtitles, 9:16 Reels export."""
+        # Phase 6: Video Merge & Subtitle Blur Pass
+        if not self.render_video:
+            print("\n[*] Phase 6: Video Merge skipped (render_video = False). Exporting standalone subtitles.")
+            sub_timings = getattr(self.state, "subtitle_timings", None) or []
+            if not sub_timings and self.state.generated_script:
+                for block in self.state.generated_script:
+                    if isinstance(block, dict):
+                        s_start = float(block.get("start_sec") or 0.0)
+                        s_end = float(block.get("end_sec") or (s_start + 3.0))
+                        txt = str(block.get("narration") or block.get("text") or "").strip()
+                        if txt:
+                            sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
+            if sub_timings:
+                out_p = os.path.join(self.output_dir, self.state.project_dir)
+                self.video_merger._export_standalone_srt(sub_timings, out_p)
+            self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Subtitle Export Only (Video Render Disabled)")
+        elif self._should_run_phase(PHASE_6_MERGE):
+            p6_t0 = time.time()
+            self._phase("Phase 6: Merging Video + Voiceover + Subtitle Blur", progress=90)
+            self.state = self.video_merger.merge_video(self.state, self.movie_path)
+            self.state.phase_durations["Phase 6: Video Merge & Subtitles"] = round(time.time() - p6_t0, 2)
+            print(f"[TIMING] Phase 6 finished in {self.state.phase_durations['Phase 6: Video Merge & Subtitles']}s")
+
+            # Phase 6b: 9:16 Facebook Reels / TikTok Canvas Video Export
+            cfg_data = config.load_config()
+            reels_cfg = cfg_data.get("reels", {})
+            reels_enabled = (self.video_format in ["9:16", "both"]) and reels_cfg.get("enabled", True)
+            if os.getenv("ENABLE_REELS") == "true":
+                reels_enabled = True
+            elif os.getenv("DISABLE_REELS") == "true" or self.video_format == "16:9":
+                reels_enabled = False
+
+            if reels_enabled:
+                final_video_path = getattr(self.state, "final_video_path", None) or os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
+                clean_vid = getattr(self.state, "clean_video_path", None)
+                src_to_use = clean_vid if (clean_vid and os.path.exists(clean_vid)) else final_video_path
+                if src_to_use and os.path.exists(src_to_use):
+                    self._phase("Phase 6b: Generating 9:16 Facebook Reels Canvas Video", progress=95)
+                    hook_title = (
+                        self.custom_thumb_title
+                        or (self.state.seo_metadata.get("title") if isinstance(self.state.seo_metadata, dict) else "")
+                        or self.state.movie_name
+                    )
+                    if hook_title and "|" in hook_title:
+                        hook_title = hook_title.split("|")[0].strip()
+                    sub_timings = getattr(self.state, "subtitle_timings", None) or []
+                    if not sub_timings and self.state.generated_script:
+                        for block in self.state.generated_script:
+                            if isinstance(block, dict):
+                                s_start = float(block.get("start_sec") or 0.0)
+                                s_end = float(block.get("end_sec") or (s_start + 3.0))
+                                txt = str(block.get("narration") or block.get("text") or "").strip()
+                                if txt:
+                                    sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
+
+                    try:
+                        reels_path = self.video_merger.generate_reels_video(
+                            source_video_path=src_to_use,
+                            output_dir=os.path.join(self.output_dir, self.state.project_dir),
+                            hook_title=hook_title,
+                            subtitle_timings=sub_timings,
+                            duration_sec=self.state.duration_sec,
+                            subtitle_mode=self.subtitle_mode,
+                            resolution=self.resolution,
+                            preset=self.subtitle_style,
+                            state=self.state,
+                        )
+                        self.state.reels_video_path = reels_path
+                        if reels_path and os.path.exists(reels_path) and self.video_format == "9:16":
+                            recap_16_9 = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
+                            if os.path.exists(recap_16_9):
+                                try:
+                                    os.remove(recap_16_9)
+                                except Exception:
+                                    pass
+                            recap_clean = os.path.join(self.output_dir, self.state.project_dir, "final_recap_clean.mp4")
+                            if os.path.exists(recap_clean):
+                                try:
+                                    os.remove(recap_clean)
+                                except Exception:
+                                    pass
+                            print("[*] MasterAgent: Video format '9:16' (Vertical Only) -> Kept only final_reels.mp4.")
+                    except Exception as e:
+                        print(f"[WARN] MasterAgent: Failed to generate Reels video: {e}")
+                        self.state.warnings.append(f"Reels generation failed: {e}")
+            else:
+                print(f"[*] Phase 6b (9:16 Reels): Skipped (Video format is '{self.video_format}')")
+
+            self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Video Merge & Subtitle Pass")
+        else:
+            print("[*] Phase 6: Video Merge skipped (reusing completed final recap video).")
+
+    def _run_phase_7_qa(self):
+        """Phase 7: Gemini QA review of sync accuracy and language naturalness."""
+        # Phase 7: QA Review — Gemini checks sync accuracy & language naturalness
+        if self._should_run_phase(PHASE_7_QA):
+            p7_t0 = time.time()
+            qa_cfg = config.load_config().get("qa", {})
+            if qa_cfg.get("enabled", False):
+                final_video_path = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
+                if not os.path.exists(final_video_path):
+                    reels_candidate = os.path.join(self.output_dir, self.state.project_dir, "final_reels.mp4")
+                    if os.path.exists(reels_candidate):
+                        final_video_path = reels_candidate
+                if os.path.exists(final_video_path):
+                    self.state = self.qa_agent.review(
+                        state=self.state,
+                        original_video_path=self.movie_path,
+                        recap_video_path=final_video_path,
+                    )
+                    self.state.phase_durations["Phase 7: QA Review"] = round(time.time() - p7_t0, 2)
+                    print(f"[TIMING] Phase 7 finished in {self.state.phase_durations['Phase 7: QA Review']}s")
+                    if isinstance(getattr(self.state, "qa_results", None), dict) and self.state.qa_results.get("status") == "completed":
+                        self.save_checkpoint(PHASE_7_QA, "Phase 7: QA Review")
+                    else:
+                        print("[WARN] QA did not complete successfully; Phase 7 will remain pending for resume.")
+                else:
+                    print(f"[!] QA: No output video (recap/reels) found at '{final_video_path}' — skipping QA phase.")
+                    self.state.warnings.append("QA pending: Output video was not found")
+                    self.state.phase_durations["Phase 7: QA Review"] = 0.0
+            else:
+                print("[*] QA Phase: Disabled (set qa.enabled=true in config.json to enable)")
+                self.state.phase_durations["Phase 7: QA Review"] = 0.0
+        else:
+            print("[*] Phase 7: QA Review skipped.")
+
+    def _finish_run(self, total_start):
+        """Final status, timing summary, temp cleanup and optional media-player launch."""
+        # Calculate total duration
+        total_elapsed = round(time.time() - total_start, 2)
+        self.state.total_duration_sec = total_elapsed
+        self.state.total_duration_formatted = self._format_duration(total_elapsed)
+        self.state.end_time = datetime.datetime.now().isoformat()
+
+        # Final status is explicit: a rendered video is not automatically QA-complete.
+        self.state.progress = 100
+        qa_enabled = config.load_config().get("qa", {}).get("enabled", False)
+        qa_complete = isinstance(getattr(self.state, "qa_results", None), dict) and self.state.qa_results.get("status") == "completed"
+        if qa_enabled and not qa_complete:
+            self.state.pipeline_status = "QA_PENDING"
+            self.state.current_phase = "QA Pending"
+            self.state.progress = 95
+        elif self.state.warnings:
+            self.state.pipeline_status = "COMPLETED_WITH_WARNINGS"
+            self.state.current_phase = "Completed with warnings"
+        else:
+            self.state.pipeline_status = "COMPLETED"
+            self.state.current_phase = "Completed"
+        self.save_state()
+
+        print(f"\n{'='*60}")
+        print(f"🎉 [{self.state.pipeline_status}] Pipeline finished in {self.state.total_duration_formatted} ({total_elapsed}s)!")
+        print(f"{'='*60}")
+        print("⏱️  PHASE DURATION BREAKDOWN:")
+        for phase_name, dur in self.state.phase_durations.items():
+            print(f"   • {phase_name:<42} : {dur:>7.2f}s ({self._format_duration(dur)})")
+        print(f"   {'-'*56}")
+        print(f"   🌟 TOTAL DURATION                          : {total_elapsed:>7.2f}s ({self.state.total_duration_formatted})")
+        print(f"\n📦 OUTPUT DIRECTORY: outputs/{self.state.project_dir}/")
+        if self.video_format in ["16:9", "both"]:
+            print("   ├─ final_recap.mp4         (16:9 YouTube Video)")
+        if getattr(self.state, "reels_video_path", None) and os.path.exists(self.state.reels_video_path):
+            print("   ├─ final_reels.mp4         (9:16 Facebook Reels Canvas Video)")
+        print("   ├─ thumbnail.jpg           (High-CTR Thumbnail)")
+        print("   ├─ final_recap_script.txt  (Narration Script + SEO)")
+        print("   ├─ seo_metadata.json       (Title/Tags/Hashtags)")
+        print("   ├─ pipeline.log            (Complete Process Log)")
+        print("   ├─ state.json              (Full State Metadata)")
+        print("   └─ voiceover/              (Audio Clips per Scene)")
+        print(f"{'='*60}\n")
+
+        # Auto Cleanup of intermediate temp files if enabled
+        config_data = config.load_config()
+        if config_data.get("paths", {}).get("clean_temp_after_merge", True):
+            self._cleanup_temp_files()
+
+        # Select preferred output video for media player auto-launch
+        reels_file = getattr(self.state, "reels_video_path", None)
+        final_16_9 = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
+        
+        if self.video_format == "9:16" and reels_file and os.path.exists(reels_file):
+            preferred_open_video = reels_file
+        elif os.path.exists(final_16_9):
+            preferred_open_video = final_16_9
+        elif reels_file and os.path.exists(reels_file):
+            preferred_open_video = reels_file
+        else:
+            preferred_open_video = None
+
+        if preferred_open_video and os.name == 'nt' and os.environ.get("PAI_DISABLE_AUTO_OPEN") != "1":
+            print(f"\n[VIDEO READY] Auto-opening video in your media player: {os.path.basename(preferred_open_video)}")
+            try:
+                os.startfile(os.path.abspath(preferred_open_video))
+            except Exception as e:
+                print(f"[!] Could not auto-open video: {e}")
+                output_folder = os.path.join(self.output_dir, self.state.project_dir)
+                try:
+                    os.startfile(os.path.abspath(output_folder))
+                except Exception as _exc:
+                    log_suppressed("agents.master._finish_run", _exc)
 
     def _is_cancelled(self) -> bool:
         if self.cancel_event and getattr(self.cancel_event, "is_set", lambda: False)():
@@ -1003,14 +1143,14 @@ class MasterAgent:
                                 os.remove(item_path)
                                 cleaned_count += 1
                                 cleaned_bytes += size
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                log_suppressed("agents.master._cleanup_temp_files", _exc)
                     # Remove empty subdirectories after cleaning
                     try:
                         if root != temp_dir and not os.listdir(root):
                             os.rmdir(root)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("agents.master._cleanup_temp_files", _exc)
                 # Also clean up any MoviePy intermediate temp files left in root/cwd
                 for f in os.listdir("."):
                     if "TEMP_MPY" in f and (f.endswith(".mp4") or f.endswith(".wav")):
@@ -1019,8 +1159,8 @@ class MasterAgent:
                             os.remove(f)
                             cleaned_count += 1
                             cleaned_bytes += size
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            log_suppressed("agents.master._cleanup_temp_files", _exc)
                 if cleaned_count > 0:
                     mb = cleaned_bytes / (1024 * 1024)
                     print(f"[*] Disk Optimizer: Cleaned up {cleaned_count} temp files ({mb:.1f} MB freed).")

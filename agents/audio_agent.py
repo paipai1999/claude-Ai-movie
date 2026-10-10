@@ -1,5 +1,7 @@
+from brain.diagnostics import log_suppressed
 import os
 from brain.memory import MovieState, TranscriptSegment
+from core.whisper_settings import resolve_whisper_model, resolve_beam_size
 
 class AudioAgent:
     def __init__(self, movie_path: str):
@@ -12,35 +14,38 @@ class AudioAgent:
         audio_filename = f"{state.movie_name}.wav"
         audio_path = os.path.join(output_dir, audio_filename)
 
-        # If already extracted, skip
-        if os.path.exists(audio_path):
+        def _wav_ready() -> bool:
+            return os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000
+
+        if _wav_ready():
+            # Extracted on a previous run: reuse the WAV but still go through vocal separation below
+            # (it has its own cache) so a resumed run feeds Whisper the same audio as the first run.
             print(f"[*] AudioAgent: Audio already exists, reusing -> {audio_path}")
             state.audio_path = audio_path
-            return state
-
-        # Direct FFmpeg extraction first (instant C-speed, zero RAM overhead)
-        result = self._ffmpeg_extract_audio(audio_path)
-        if result and os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-            state.audio_path = result
-            print(f"[*] AudioAgent: Audio extracted via FFmpeg -> {audio_path}")
         else:
-            # Fallback to MoviePy if FFmpeg direct extraction failed
-            try:
+            # Direct FFmpeg extraction first (instant C-speed, zero RAM overhead)
+            self._ffmpeg_extract_audio(audio_path)
+            if _wav_ready():
+                state.audio_path = audio_path
+                print(f"[*] AudioAgent: Audio extracted via FFmpeg -> {audio_path}")
+            else:
+                # Fallback to MoviePy if FFmpeg direct extraction failed
                 try:
-                    from moviepy.editor import VideoFileClip
-                except ImportError:
-                    from moviepy import VideoFileClip
+                    try:
+                        from moviepy.editor import VideoFileClip
+                    except ImportError:
+                        from moviepy import VideoFileClip
 
-                video = VideoFileClip(self.movie_path)
-                if video.audio is not None:
-                    video.audio.write_audiofile(audio_path, logger=None)
-                    state.audio_path = audio_path
-                    print(f"[*] AudioAgent: Audio extracted via MoviePy fallback -> {audio_path}")
-                else:
-                    print("[!] AudioAgent: No audio stream detected in the video.")
-                video.close()
-            except Exception as e:
-                print(f"[!] AudioAgent: MoviePy fallback failed ({e}). Transcription will be skipped.")
+                    video = VideoFileClip(self.movie_path)
+                    if video.audio is not None:
+                        video.audio.write_audiofile(audio_path, logger=None)
+                        state.audio_path = audio_path
+                        print(f"[*] AudioAgent: Audio extracted via MoviePy fallback -> {audio_path}")
+                    else:
+                        print("[!] AudioAgent: No audio stream detected in the video.")
+                    video.close()
+                except Exception as e:
+                    print(f"[!] AudioAgent: MoviePy fallback failed ({e}). Transcription will be skipped.")
 
         if getattr(state, 'audio_path', None):
             should_skip = skip_demucs if skip_demucs is not None else getattr(state, 'skip_demucs', None)
@@ -236,6 +241,7 @@ class AudioAgent:
             return state
 
         source_lang = getattr(state, "source_language", "auto") or "auto"
+        model_size = resolve_whisper_model(model_size)   # "auto" -> medium on GPU / base on CPU
         print(f"[*] AudioAgent: Starting local Speech-to-Text (Whisper model: {model_size}, source_lang: {source_lang})...")
 
         import subprocess, sys, json, tempfile
@@ -247,8 +253,8 @@ class AudioAgent:
                 r = subprocess.run([sys.executable, "-c", "import faster_whisper"], capture_output=True, timeout=10)
                 if r.returncode == 0:
                     return sys.executable
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("agents.audio_agent._find_python312", _exc)
 
             # 2. If current interpreter is Python 3.10-3.12, use it
             if sys.version_info[:2] in [(3, 10), (3, 11), (3, 12)]:
@@ -262,8 +268,8 @@ class AudioAgent:
                 )
                 if r.returncode == 0 and os.path.exists(r.stdout.strip()):
                     return r.stdout.strip()
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("agents.audio_agent._find_python312", _exc)
 
             for candidate in [
                 r"C:\Python312\python.exe",
@@ -296,6 +302,7 @@ model_size  = sys.argv[2]
 output_path = sys.argv[3]
 movie_name  = sys.argv[4]
 source_lang = sys.argv[5] if len(sys.argv) > 5 else "auto"
+beam_size   = int(sys.argv[6]) if len(sys.argv) > 6 else 1
 whisper_lang = None if source_lang in ["auto", "", None] else source_lang
 
 results = []
@@ -320,7 +327,7 @@ try:
     segments, info = model.transcribe(
         audio_path,
         language=whisper_lang,
-        beam_size=1,
+        beam_size=beam_size,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
         initial_prompt=f"This is a dialogue transcript for the movie {movie_name}."
@@ -360,8 +367,13 @@ print(f"[Whisper] Transcribed {len(results)} segments in language: {detected_lan
 
         whisper_timeout = int(os.getenv("WHISPER_TIMEOUT", "1800"))
         try:
+            import brain.config as _cfg
+            whisper_beam = resolve_beam_size(_cfg.load_config().get("pipeline", {}))
+        except Exception:
+            whisper_beam = 1
+        try:
             proc = subprocess.run(
-                [python_exe, helper_path, state.audio_path, model_size, result_path, state.movie_name, source_lang],
+                [python_exe, helper_path, state.audio_path, model_size, result_path, state.movie_name, source_lang, str(whisper_beam)],
                 capture_output=True, text=True, timeout=whisper_timeout,
                 encoding="utf-8", errors="replace"
             )
@@ -380,13 +392,13 @@ print(f"[Whisper] Transcribed {len(results)} segments in language: {detected_lan
                       f"(lang: {data.get('language','?')}).")
             else:
                 err = (proc.stderr or "")[-400:]
-                print(f"[WARN] AudioAgent: Whisper subprocess failed (exit {proc.returncode}): {err}. Proceeding with Native Video Mode.")
+                print(f"[WARN] AudioAgent: Whisper subprocess failed (exit {proc.returncode}): {err}. The pipeline will stop: no transcript, nothing to translate.")
                 state.transcript = []
         except subprocess.TimeoutExpired:
-            print("[WARN] AudioAgent: Whisper timed out. Proceeding smoothly with Native Video Mode.")
+            print(f"[WARN] AudioAgent: Whisper timed out after {whisper_timeout}s (raise WHISPER_TIMEOUT or use a smaller model). The pipeline will stop: no transcript.")
             state.transcript = []
         except Exception as e:
-            print(f"[WARN] AudioAgent: Unexpected error during transcription: {e}. Proceeding with Native Video Mode.")
+            print(f"[WARN] AudioAgent: Unexpected error during transcription: {e}. The pipeline will stop: no transcript.")
             state.transcript = []
         finally:
             for f in [helper_path, result_path]:
@@ -544,7 +556,7 @@ def detect_pitch_gender(audio_path: str, start_sec: float, end_sec: float) -> st
                 return "female"
             else:
                 return "male"
-    except Exception:
-        pass
+    except Exception as _exc:
+        log_suppressed("agents.audio_agent.detect_pitch_gender", _exc)
     return "unknown"
 

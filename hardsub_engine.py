@@ -14,6 +14,7 @@ A specialized, end-to-end cinematic movie translation & hardsub engine that:
 မြန်မာစာတန်းထိုး အသစ်အား ဗီဒီယိုထဲသို့ အပြီးတိုင် ထည့်သွင်း (Hardsub) ထုတ်လုပ်ပေးပါသည်။
 """
 
+from brain.diagnostics import log_suppressed
 import os
 import sys
 import re
@@ -36,6 +37,7 @@ from brain.prompts import (
     HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT,
     FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT,
     MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT,
+    AUDIO_DRAMA_BURMESE_RECAP_PROMPT,
     WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT,
 )
 from brain.burmese_utils import (
@@ -48,7 +50,7 @@ from brain.burmese_utils import (
     strip_trailing_subtitle_punctuation,
     format_dual_speaker_subtitles,
     merge_short_gap_segments,
-    localize_common_idioms,
+    normalize_standard_burmese_spelling,
 )
 from agents.downloader_agent import DownloaderAgent
 from agents.video_merger_agent import (
@@ -56,6 +58,8 @@ from agents.video_merger_agent import (
     _get_ffmpeg_bin,
     _get_safe_ascii_id,
 )
+from core.paths import sanitize_project_name, resolve_inside
+from core.whisper_settings import load_faster_whisper, resolve_beam_size
 from core.subtitle_builder import (
     format_srt_timestamp,
     parse_srt_timestamp,
@@ -78,7 +82,8 @@ class HardsubEngine:
         cancel_event=None,
     ):
         self.output_base_dir = os.path.abspath(output_base_dir)
-        self.cookies_path = cookies_path
+        # Explicit --cookies wins; otherwise reuse the cookie file uploaded through the dashboard.
+        self.cookies_path = cookies_path or DownloaderAgent.find_cookies_file()
         self.cancel_event = cancel_event
         self.config_data = cfg.load_config()
         self.ffmpeg_bin = _get_ffmpeg_bin()
@@ -138,16 +143,16 @@ class HardsubEngine:
                 try:
                     shutil.copy2(video_file, dest_video)
                     video_file = dest_video
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("hardsub_engine._ingest_video", _exc)
 
                 if sub_file and os.path.exists(sub_file):
                     dest_sub = os.path.join(project_dir, "01_extracted_sub" + os.path.splitext(sub_file)[1])
                     try:
                         shutil.copy2(sub_file, dest_sub)
                         sub_file = dest_sub
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("hardsub_engine._ingest_video", _exc)
 
                 # Clean up temp download directory to prevent storage buildup
                 shutil.rmtree(temp_dl_dir, ignore_errors=True)
@@ -232,8 +237,8 @@ class HardsubEngine:
                         if os.path.getsize(full_p) > 100:
                             print(f"[OK] YouTube native subtitles extracted -> {f}")
                             return full_p
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("hardsub_engine._try_extract_youtube_subs", _exc)
         return None
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -337,13 +342,14 @@ class HardsubEngine:
                 print("[WARN] Audio extraction produced empty file or failed. Attempting direct file inspection...")
                 audio_target = video_path
 
-            from faster_whisper import WhisperModel
-            model_size = self.config_data.get("pipeline", {}).get("whisper_model", "base")
-            print(f"[*] Loading Faster-Whisper ({model_size}) on CPU/auto...")
-            model = WhisperModel(model_size, device="auto", compute_type="default")
+            pipeline_cfg = self.config_data.get("pipeline", {})
+            model, model_size, device = load_faster_whisper(pipeline_cfg.get("whisper_model", "auto"))
+            print(f"[*] Faster-Whisper ready: model={model_size}, device={device}")
 
             lang = None if source_language in ["auto", "", None] else source_language
-            whisper_segs, _ = model.transcribe(audio_target, language=lang, beam_size=1, vad_filter=True)
+            whisper_segs, _ = model.transcribe(
+                audio_target, language=lang, beam_size=resolve_beam_size(pipeline_cfg), vad_filter=True
+            )
 
             results = []
             for s in whisper_segs:
@@ -377,6 +383,9 @@ class HardsubEngine:
         if style in ["recap", "storyteller"]:
             chosen_sys = MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT
             style_label = "Recap Storyteller Style"
+        elif style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+            chosen_sys = AUDIO_DRAMA_BURMESE_RECAP_PROMPT
+            style_label = "Chinese Drama Audio Novel Style (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်)"
         elif style in ["dialogue", "1:1", "translate"]:
             chosen_sys = FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT
             style_label = "1:1 Spoken Dialogue Subtitles"
@@ -587,8 +596,6 @@ class HardsubEngine:
         4. Guarantees 0% raw foreign characters leaked onto the burned hardsub deliverables.
         """
         api_keys = self._get_api_keys()
-        is_foreign = bool(source_lang and not source_lang.lower().startswith("my") and source_lang.lower() not in ["burmese", "mm"])
-
         damaged_indices = []
         for idx, s in enumerate(segments):
             b_text = str(s.get("burmese", "")).strip()
@@ -663,7 +670,7 @@ class HardsubEngine:
                         parsed_repair = parsed_repair["translations"]
                     if isinstance(parsed_repair, list) and len(parsed_repair) > 0:
                         break
-                except Exception as ex:
+                except Exception:
                     time.sleep(2)
 
             if isinstance(parsed_repair, list):
@@ -797,7 +804,7 @@ class HardsubEngine:
 
         lines = [header]
         for s in segments:
-            burmese_txt = strip_trailing_subtitle_punctuation(s.get("burmese", "").strip())
+            burmese_txt = strip_trailing_subtitle_punctuation(normalize_standard_burmese_spelling(s.get("burmese", "").strip()))
             if not burmese_txt:
                 continue
             # Wrap long sentences
@@ -941,8 +948,8 @@ class HardsubEngine:
             meta = self._probe_video_metadata(video_path)
             dur_sec = float(meta.get("duration") or 0.0)
             has_audio = bool(meta.get("has_audio", True))
-        except Exception:
-            pass
+        except Exception as _exc:
+            log_suppressed("hardsub_engine._render_hardsub_video", _exc)
         render_timeout = max(3600, int((dur_sec or 1800.0) * 4.0))
 
         audio_map = "0:a?"
@@ -993,6 +1000,10 @@ class HardsubEngine:
                 os.remove(output_path)
             except Exception:
                 pass
+
+        # A killed ffmpeg (Stop button) looks like a failed render – never start a second, full CPU
+        # render for a job the user already cancelled.
+        self._check_cancellation()
 
         try:
             fallback_cmd = [
@@ -1113,7 +1124,7 @@ class HardsubEngine:
         srt_path = os.path.join(project_dir, "05_subtitle_burmese.srt")
         with open(srt_path, "w", encoding="utf-8") as f:
             for s in segments:
-                b_text = strip_trailing_subtitle_punctuation(s.get("burmese", ""))
+                b_text = strip_trailing_subtitle_punctuation(normalize_standard_burmese_spelling(s.get("burmese", "")))
                 f.write(f"{s['id']}\n")
                 f.write(f"{s['start_ts']} --> {s['end_ts']}\n")
                 f.write(f"{b_text}\n\n")
@@ -1125,8 +1136,8 @@ class HardsubEngine:
             try:
                 shutil.copy2(ass_path, ass_dest)
                 print(f"[SAVED] ASS Subtitles: {os.path.basename(ass_dest)}")
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("hardsub_engine._export_reports", _exc)
 
         # 2. Structured JSON
         json_path = os.path.join(project_dir, "records_data.json")
@@ -1218,8 +1229,12 @@ class HardsubEngine:
     ) -> Dict:
         start_time = time.time()
         safe_id = _get_safe_ascii_id(project_name or input_source, prefix="proj")
-        clean_proj_name = project_name or f"hardsub_{safe_id}"
-        project_dir = os.path.join(self.output_base_dir, clean_proj_name)
+        # project_name is user input (API / CLI): reduce it to ONE safe folder name so '../..' or an
+        # absolute path can never place files outside the outputs directory.
+        clean_proj_name = sanitize_project_name(project_name, fallback=f"hardsub_{safe_id}")
+        project_dir = resolve_inside(self.output_base_dir, clean_proj_name)
+        if not project_dir:
+            raise ValueError(f"Invalid project name: {project_name!r}")
         os.makedirs(project_dir, exist_ok=True)
 
         if stage_toggles:

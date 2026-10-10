@@ -72,6 +72,9 @@ class MovieState(BaseModel):
     mirror: Optional[bool] = False  # Horizontal mirror for anti-copyright
     audio_anti_copyright: Optional[bool] = False  # Subtle audio tempo perturbation (atempo=1.008)
     context_hint: Optional[str] = None  # Optional user story/character guidance for translation and scriptwriting
+    tts_voice: Optional[str] = None  # Effective TTS voice used for the cached voiceover clips
+    script_signature: Optional[str] = None  # Fingerprint of the options that shaped generated_script (style/lang/hint)
+    voice_signature: Optional[str] = None  # Fingerprint of the options that shaped the voiceover clips (engine/voice)
 
     model_config = {"extra": "allow"}
     qa_results: Optional[Dict[str, Any]] = None  # Phase 7: QA Agent review results

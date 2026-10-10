@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import os
 import sys
 import argparse
@@ -87,8 +88,8 @@ def regenerate_thumbnail(target_input: str, custom_title: str = None, output_dir
     # 5. Persist updated state
     try:
         state.save_to_json(state_path)
-    except Exception:
-        pass
+    except Exception as _exc:
+        log_suppressed("regenerate_thumbnail.regenerate_thumbnail", _exc)
 
     thumb_path = getattr(state, "thumbnail_path", os.path.join(project_dir, "thumbnail.jpg"))
     print("\n🎉 [SUCCESS] Thumbnail regenerated successfully!")

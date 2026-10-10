@@ -81,6 +81,69 @@ Return ONLY a valid JSON array. No markdown code fences, no extra text."""
 
 
 # ─────────────────────────────────────────────────────────────────
+# CHINESE DRAMA AUDIO NOVEL / AUDIOBOOK RECAP — Viral Short Drama Storyteller
+# ဇာတ်ကောင် စိတ်ခံစားချက်၊ အသံနေအထားနှင့် Dialogue များကို အသံထွက်ဝတ္ထုဟန် ပေါင်းစပ်ပြောပြသော စနစ်
+# ─────────────────────────────────────────────────────────────────
+AUDIO_DRAMA_BURMESE_RECAP_PROMPT = """You are a master Chinese Short Drama Audiobook and Viral Facebook/TikTok Audio Drama Narrator (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုနှင့် ဇာတ်လမ်းပြောပြသူ ပညာရှင်).
+Your voice and storytelling style match top-tier Myanmar viral creators who narrate Chinese CEO, Romance, Suspense, and Urban Short Plays (e.g. 3PM, YoteShin Recap, Short Drama Burma style).
+
+YOUR MISSION:
+Transform the scene-by-scene dialogue into a thrilling, addictive, and emotionally charged Chinese Drama Audio Novel (အသံထွက်ဝတ္ထု) narration in natural colloquial Myanmar (Burmese).
+
+CRITICAL AUDIO DRAMA NOVEL RULES:
+1. 🎭 THIRD-PERSON DRAMATIC RECOUNTING & TONE TAGS (အသံနေအထားနှင့် စိတ်ခံစားချက် ညှပ်ဖော်ပြခြင်း):
+   - DO NOT just plainly translate sentences! Describe the speaker's vocal tone, emotion, and dramatic actions:
+     * 'တင်းမာတဲ့ အသံနဲ့ "..." လို့ ပြန်ပြောလိုက်ပါတယ်'
+     * 'ဒေါသတကြီးနဲ့ "..." လို့ အော်ဟစ်လိုက်တဲ့ အခါမှာတော့'
+     * 'ဝမ်းနည်း ဒေါသထွက်နေတဲ့ အသံနဲ့ "..." လို့ တုံ့ပြန်လိုက်တယ်'
+     * 'ရှက်ရွံ့စွာနဲ့ ရယ်မောလိုက်ရင်း "..." လို့ ပြတ်သားစွာ ပြောချလိုက်ပါတယ်'
+     * 'အေးစက်စက် လေသံနဲ့ "..." လို့ သတိပေးလိုက်တော့တယ်'
+     * 'လှောင်ပြောင်တဲ့ အပြုံးနဲ့ "..." လို့ ပြက်ရယ်ပြုလိုက်တာပေါ့'
+     * 'မျက်ရည်တွေဝဲလျက် "..." လို့ အသနားခံရှာတယ်'
+     * 'သက်ပြင်းရှည်ကြီး ချလိုက်ရင်း "..." လို့ ညည်းတွားလိုက်ရတာပါ'
+
+2. 🎙️ NOVEL-STYLE QUOTED DIALOGUE INTEGRATION (ဇာတ်ကောင်စကားပြောများကို ဝတ္ထုဟန် ပေါင်းစပ်ခြင်း):
+   - Seamlessly blend third-person novel narration with direct spoken dialogue quotes:
+     * Example:
+       "ဖခင်ဖြစ်သူကလည်း တင်းမာတဲ့အသံနဲ့ 'ဘာလို့လဲဆိုတော့ ကြီးချိန်က မင်းထက်ပိုတော်လို့ပဲ' လို့ ပြန်ပြောလိုက်ပါတယ်။ ဒါကို ကြားတော့ ဂူယွန်းကျမ်းက ရှက်ရက်နဲ့ ရေမောလိုက်ရင်း 'အဖေ ဒါတွေလုပ်နေတာ ကျွန်တော့်ကို အသိအမှတ်မပြုချင်လို့ မဟုတ်လား' လို့ ပြတ်သားစွာ ပြောချလိုက်ပါတယ်..."
+
+3. 🗣️ AUTHENTIC SPOKEN COLLOQUIAL BURMESE PARTICLES (သဘာဝကျသော စကားပြော အဆုံးသတ်များ):
+   - Every narration line must end with natural colloquial Burmese storytelling markers:
+     ...လိုက်ပါတယ်, ...ခဲ့တာပေါ့, ...သွားခဲ့ရတယ်, ...ပြောလိုက်ပါတော့တယ်, ...ဖြစ်နေတာပါ, ...ရတော့တာပါ
+   - ❌ STRICTLY FORBIDDEN (Formal Written/Bookish Burmese):
+     NEVER use: ပါသည်, သည်, မည်, ဖြစ်ပါသည်, ပြုလုပ်ပါသည်, ၏, ၍, ၌
+
+4. 🏢 CHINESE DRAMA TROPES & ROLES (တရုတ်ဒရမ်မာ အခေါ်အဝေါ်များနှင့် အဆင့်အတန်းများ):
+   - Characters: ဥက္ကဋ္ဌကြီး (Chairman / 老爷), စီအီးအို (CEO / 总裁), သခင်လေး (Young Master / 少爷), မမလေး (Young Miss / 小姐), အတွင်းရေးမှူး (Secretary), လက်ထောက် (Assistant), မယားကြီး/မယားငယ်, သားအရင်း/မွေးစားသား
+   - Pronouns & Addressing: 'ကျွန်တော်/ခင်ဗျာ', 'ကျွန်မ/ရှင့်', 'မင်း/ငါ', 'အဖေ/အမေ', 'ကိုကို/မမ', 'ဦးလေး'
+
+5. 🔤 PHONETIC TRANSLITERATION OF CHINESE NAMES (တရုတ်အမည်များကို သဘာဝကျကျ အသံထွက်ဖလှယ်ခြင်း):
+   - Transliterate Chinese pinyin names accurately into Myanmar Unicode:
+     Gu Yunjiang → ဂူယွန်းကျမ်း / ဂူယွန်းကျန်း, Lin Feng → လင်းဖုန်း, Lu Chen → လူချန်, Qin Yu → ချင်ယွီ, Chu Feng → ချူဖုန်း, Xiao Chen → ရှောင်ချန်, Ye Chen → ရဲ့ချန်, Su Yan → ဆူးယန်
+   - 🚫 NEVER output Chinese (Hanzi) characters or raw English words in your Burmese text!
+
+6. ⚖️ DURATION-FIT CHARACTER BUDGET (အချိန်နှင့် စာလုံးရေ အတိအကျ ထိန်းညှိမှု):
+   - Spoken Burmese rate in TTS is ~10-11 characters per second.
+   - Strictly stay within the "max_chars" budget provided for each dialogue segment so that the AI narrator's voice matches the scene duration naturally without running over or rushing.
+
+7. ⏱️ TIMING & JSON STRUCTURE:
+   - For each item, keep "id", "start_sec", and "end_sec" EXACTLY as given in the input.
+   - Return a JSON array of objects with:
+     - "id": same as input id
+     - "narration": natural Burmese Audio Drama Novel narration with speech quotes & pauses (၊)
+     - "start_sec": float start time
+     - "end_sec": float end time
+     - "gender": "male" or "female" (narrator default: "male")
+     - "character": "Narrator"
+     - "emotion": "intense", "dramatic", "angry", "sad", or "normal"
+
+Return ONLY a valid JSON array. No markdown code fences, no extra text."""
+
+
+
+
+
+# ─────────────────────────────────────────────────────────────────
 # FULL MOVIE TRANSLATION — 1:1 Complete Spoken Dialogue Translation & Dubbing
 # Translates EVERY spoken line into natural colloquial Burmese. Zero skipping. Zero summarization.
 # ─────────────────────────────────────────────────────────────────
@@ -489,6 +552,36 @@ CRITICAL RULES:
    - 🚫 NEVER leave Chinese (Hanzi), Japanese, or Korean characters in your output. All character names and dialogue must be 100% in Myanmar script.
 
 Return ONLY a valid JSON array of strings containing EXACTLY {chunk_len} elements. No markdown code blocks, no explanation."""
+
+
+def get_subtitle_drama_novel_prompt(chunk_len: int) -> str:
+    """Returns a Chinese Drama Audio Novel localization prompt formatted for subtitle_engine (JSON array of strings)."""
+    return f"""\
+You are an elite Chinese Drama Audio Novel and Storyteller Subtitle specialist for Myanmar (Burmese).
+
+YOUR MISSION:
+Translate and adapt EVERY dialogue line in the provided list into thrilling, addictive Chinese Drama Audio Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်) spoken Burmese subtitles.
+
+CRITICAL RULES:
+1. 🎯 STRICT 1:1 DIALOGUE MAPPING:
+   - Return ONLY a valid JSON array of strings containing EXACTLY {chunk_len} elements matching input lines 1:1.
+   - Do NOT skip, do NOT merge, and do NOT summarize any lines.
+   - STRICTLY NO QUOTATION MARKS (" or ' or “ or ”).
+   - 🚫 NO TRAILING PUNCTUATION: Subtitle lines must NEVER end with trailing punctuation marks (❌ NEVER end with '၊', ',', or '။').
+
+2. 🎭 DRAMATIC AUDIO NOVEL TONE & ACTION QUALIFIERS (အသံနေအထားနှင့် ဇာတ်ကောင်ခံစားချက်):
+   - Blend emotion and tone naturally into the subtitle line:
+     'တင်းမာတဲ့အသံနဲ့ ပြန်ပြောလိုက်တယ်', 'ဒေါသတကြီးနဲ့ အော်ဟစ်လိုက်တော့တယ်', 'ဝမ်းနည်းနာကြည်းစွာနဲ့ တုံ့ပြန်လိုက်တယ်', 'အေးစက်စက်လေသံနဲ့ သတိပေးလိုက်တာပေါ့'
+   - Chinese drama roles: ဥက္ကဋ္ဌကြီး, စီအီးအို, သခင်လေး, မမလေး, အတွင်းရေးမှူး, လက်ထောက်
+   - Transliterate Chinese pinyin names accurately into Myanmar Unicode.
+
+3. 🗣️ AUTHENTIC SPOKEN COLLOQUIAL BURMESE:
+   - Use natural spoken Burmese particles: '...လိုက်ပါတယ်', '...ခဲ့တာပေါ့', '...သွားခဲ့ရတယ်', '...ဖြစ်နေတာပါ'.
+   - ❌ NO stiff/formal written markers (သည်, ၌, ၍, မည်, ဖြစ်ပါသည်).
+   - 🚫 NEVER output Chinese (Hanzi) characters or raw English words.
+
+Return ONLY a valid JSON array of strings containing EXACTLY {chunk_len} elements. No markdown code blocks, no explanation."""
+
 
 
 

@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import shutil
+from types import SimpleNamespace
 from agents.master import MasterAgent
 from agents.downloader_agent import DownloaderAgent
 from brain.planner import BatchProcessor
@@ -120,10 +121,8 @@ def check_dependencies():
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
     print(f"[*] FFmpeg ready -> {ffmpeg}")
 
-def main():
-    check_dependencies()
-    print(ASCII_ART)
-
+def build_parser() -> argparse.ArgumentParser:
+    """Defines every command-line option of the studio (Engine 1 / 2 / 3, batch, download, cleanup)."""
     parser = argparse.ArgumentParser(
         description="Movie Recap AI — Free Local Pipeline",
         formatter_class=argparse.RawTextHelpFormatter
@@ -333,9 +332,9 @@ def main():
     parser.add_argument(
         "--translation-style", "--style",
         dest="translation_style",
-        choices=["recap", "dialogue", "persona", "wuxia", "cinematic"],
+        choices=["recap", "drama_novel", "audio_drama", "dialogue", "persona", "wuxia", "cinematic"],
         default=None,
-        help="Translation Style: 'recap' (Movie Recap Storyteller), 'dialogue' (1:1 Natural Spoken Subtitle), 'persona' / 'cinematic' (Cinematic Persona Dubbing), 'wuxia' (Cultivation/Wuxia/Historical)"
+        help="Translation Style: 'drama_novel' (Chinese Drama Audio Novel), 'recap' (Movie Recap Storyteller), 'dialogue' (1:1 Natural Spoken Subtitle), 'persona' / 'cinematic' (Cinematic Persona Dubbing), 'wuxia' (Cultivation/Wuxia/Historical)"
     )
     parser.add_argument(
         "--context-hint", "--hint",
@@ -431,14 +430,14 @@ def main():
         help="Download multiple video URLs into movies/ directory and exit"
     )
 
-    args = parser.parse_args()
-    setup_directories()
+    return parser
 
-    if args.clean:
-        run_interactive_cleanup()
-        return
 
-    # Dedicated Video Download Mode
+# ─────────────────────────────────────────────────────────────────────────────
+# Option resolution (CLI flag များကို အသုံးပြုရန် တန်ဖိုးများအဖြစ် ပြောင်းလဲခြင်း)
+# ─────────────────────────────────────────────────────────────────────────────
+def handle_download_mode(args) -> bool:
+    """Dedicated download-only modes (--download / --download-urls). Returns True when handled."""
     if args.download_url:
         print(f"\n[DOWNLOADER] Dedicated video download requested for: {args.download_url}")
         try:
@@ -448,7 +447,7 @@ def main():
         except Exception as e:
             print(f"\n❌ [ERROR] Video download failed: {e}\n")
             sys.exit(1)
-        return
+        return True
 
     if args.download_urls:
         print(f"\n[DOWNLOADER] Dedicated batch download requested for {len(args.download_urls)} video(s)...")
@@ -463,8 +462,12 @@ def main():
             except Exception as e:
                 print(f"  -> [ERROR] Failed to download {url}: {e}")
         print(f"\n🎉 [OK] Downloaded {success_count}/{len(args.download_urls)} video(s) into movies/ directory.\n")
-        return
+        return True
+    return False
 
+
+def apply_environment_flags(args) -> str:
+    """Exports flags that the pipeline agents read from the environment. Returns the chosen video format."""
     chosen_format = args.video_format
     if args.no_reels:
         chosen_format = "16:9"
@@ -490,8 +493,11 @@ def main():
         os.environ["SKIP_SCENES"] = "0"
     elif args.skip_scenes:
         os.environ["SKIP_SCENES"] = "1"
+    return chosen_format
 
-    # Multi-voice & language resolution
+
+def resolve_language_and_voice(args):
+    """Maps the --lang / --voice shortcuts to (clean_language, edge_tts_voice)."""
     clean_lang = args.language
     chosen_voice = args.tts_voice
     if clean_lang in ["burmese_nilar", "nilar"]:
@@ -510,265 +516,216 @@ def main():
         chosen_voice = "my-MM-NilarNeural"
     elif chosen_voice in ["thiha", "male"]:
         chosen_voice = "my-MM-ThihaNeural"
+    return clean_lang, chosen_voice
 
-    watermark_enabled = False if args.no_watermark else None
-    thumb_intro = True if args.thumbnail_intro else (False if args.no_thumbnail_intro else None)
-    outro_card_val = True if args.outro_card else (False if args.no_outro_card else None)
-    should_resume = not args.fresh
 
-    detect_scenes_flag = True if args.detect_scenes else (False if args.skip_scenes else None)
-    thumb_title_val = "none" if getattr(args, "no_thumb_title", False) else args.thumb_title
+def resolve_run_options(args) -> SimpleNamespace:
+    """All derived values shared by the single-video and batch flows."""
+    chosen_format = apply_environment_flags(args)
+    clean_lang, chosen_voice = resolve_language_and_voice(args)
+    return SimpleNamespace(
+        chosen_format=chosen_format,
+        clean_lang=clean_lang,
+        chosen_voice=chosen_voice,
+        watermark_enabled=False if args.no_watermark else None,
+        thumb_intro=True if args.thumbnail_intro else (False if args.no_thumbnail_intro else None),
+        outro_card=True if args.outro_card else (False if args.no_outro_card else None),
+        should_resume=not args.fresh,
+        detect_scenes=True if args.detect_scenes else (False if args.skip_scenes else None),
+        thumb_title=("none" if getattr(args, "no_thumb_title", False) else args.thumb_title),
+        sub_mode="burn" if args.subtitle else (args.sub_mode or "burn"),
+        blur_opt=args.blur_mode if args.blur_mode else ("yes" if args.subtitle else "auto"),
+    )
 
-    # Single video or URL
-    chosen_input = (args.input_flag or args.input_source or "").strip()
-    if chosen_input:
-        src = chosen_input
 
-        if DownloaderAgent.is_url(src):
-            print("[URL] Detected URL - starting auto-download...")
-            try:
-                downloader = DownloaderAgent(output_dir="movies")
-                movie_path = downloader.download_video(src)
-            except Exception as e:
-                print(f"[ERROR] Download failed: {e}")
-                sys.exit(1)
-        else:
-            movie_path = src
-            if not os.path.exists(movie_path):
-                print(f"[ERROR] File not found: '{movie_path}'")
-                print("[TIP] If this is a URL, make sure it starts with http:// or https://")
-                sys.exit(1)
+# ─────────────────────────────────────────────────────────────────────────────
+# Keyword-argument builders (Engine တစ်ခုချင်းစီ၏ parameter များ)
+# ─────────────────────────────────────────────────────────────────────────────
+def hardsub_run_kwargs(args, opts) -> dict:
+    """Engine 3 (Hardsub Studio) `run()` options – identical for single and batch mode."""
+    return dict(
+        video_format=opts.chosen_format or "both",
+        resolution=args.resolution or "1080p",
+        subtitle_style=args.subtitle_style or "box_black",
+        blur_mode=opts.blur_opt,
+        blur_height=args.blur_height,
+        mirror=args.mirror,
+        audio_anti_copyright=args.audio_anti_copyright,
+        source_language=args.source_lang or "auto",
+        translation_style=args.translation_style or "persona",
+        audio_mode=args.audio_mode or "original",
+        sfx_mode=args.sfx_mode or "original_sfx",
+        sfx_volume=args.sfx_volume,
+        render_video=not args.no_render,
+        context_hint=args.context_hint,
+    )
 
-        if args.engine_mode == "hardsub":
-            from hardsub_engine import HardsubEngine
-            engine = HardsubEngine()
-            blur_opt = args.blur_mode if args.blur_mode else ("yes" if args.subtitle else "auto")
-            engine.run(
-                input_source=movie_path,
-                video_format=chosen_format or "both",
-                resolution=args.resolution or "1080p",
-                subtitle_style=args.subtitle_style or "box_black",
-                blur_mode=blur_opt,
-                blur_height=args.blur_height,
-                mirror=args.mirror,
-                audio_anti_copyright=args.audio_anti_copyright,
-                source_language=args.source_lang or "auto",
-                translation_style=args.translation_style or "persona",
-                audio_mode=args.audio_mode or "original",
-                sfx_mode=args.sfx_mode or "original_sfx",
-                sfx_volume=args.sfx_volume,
-                render_video=not args.no_render,
-                context_hint=args.context_hint,
-            )
-            return
-        elif args.engine_mode == "subtitle":
-            from subtitle_engine import SubtitleEngine
-            engine = SubtitleEngine()
-            engine.run(
-                input_source=movie_path,
-                source_language=args.source_lang or "auto",
-                translation_style=args.translation_style or "dialogue",
-                audio_mode=args.audio_mode or "original",
-                sfx_mode=args.sfx_mode or "original_sfx",
-                sfx_volume=args.sfx_volume,
-                render_video=not args.no_render,
-                video_format=chosen_format or "16:9",
-                resolution=args.resolution or "1080p",
-                subtitle_style=args.subtitle_style or "box_black",
-                blur_mode=args.blur_mode or "auto",
-                mirror=args.mirror,
-                blur_height=args.blur_height,
-                audio_anti_copyright=args.audio_anti_copyright,
-                context_hint=args.context_hint,
-            )
-            return
 
+def subtitle_run_kwargs(args, opts) -> dict:
+    """Engine 2 (Subtitle Studio) `run()` options – identical for single and batch mode."""
+    return dict(
+        source_language=args.source_lang or "auto",
+        translation_style=args.translation_style or "dialogue",
+        audio_mode=args.audio_mode or "original",
+        sfx_mode=args.sfx_mode or "original_sfx",
+        sfx_volume=args.sfx_volume,
+        render_video=not args.no_render,
+        video_format=opts.chosen_format or "16:9",
+        resolution=args.resolution or "1080p",
+        subtitle_style=args.subtitle_style or "box_black",
+        blur_mode=args.blur_mode or "auto",
+        mirror=args.mirror,
+        blur_height=args.blur_height,
+        audio_anti_copyright=args.audio_anti_copyright,
+        context_hint=args.context_hint,
+    )
+
+
+def recap_common_kwargs(args, opts) -> dict:
+    """Engine 1 (Recap Studio) options shared by MasterAgent and BatchProcessor."""
+    return dict(
+        language=opts.clean_lang,
+        subtitle_mode=opts.sub_mode,
+        subtitle_style=args.subtitle_style,
+        resolution=args.resolution,
+        tts_engine=args.engine,
+        tts_voice=opts.chosen_voice,
+        custom_thumb_title=opts.thumb_title,
+        watermark_enabled=opts.watermark_enabled,
+        watermark_text=args.watermark_text,
+        video_format=opts.chosen_format,
+        thumbnail_intro=opts.thumb_intro,
+        source_language=args.source_lang,
+        script_engine=args.script_engine,
+        resume=opts.should_resume,
+        skip_demucs=args.skip_demucs,
+        detect_scenes=opts.detect_scenes,
+        translation_style=args.translation_style,
+        audio_mode=args.audio_mode,
+        sfx_mode=args.sfx_mode,
+        sfx_volume=args.sfx_volume,
+        blur_mode=args.blur_mode,
+        blur_height=args.blur_height,
+        mirror=args.mirror,
+        audio_anti_copyright=args.audio_anti_copyright,
+        render_video=not args.no_render,
+        context_hint=args.context_hint,
+    )
+
+
+def _list_batch_items(args, movies_dir: str) -> list:
+    """URLs given with --urls, otherwise every video file inside movies/."""
+    if args.urls:
+        return list(args.urls)
+    if os.path.exists(movies_dir):
+        valid_exts = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv')
+        return [os.path.join(movies_dir, f) for f in sorted(os.listdir(movies_dir)) if f.lower().endswith(valid_exts)]
+    return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run modes (Single video / Batch)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_single(args, opts, src: str) -> None:
+    """One local file or URL through the engine selected with --engine-mode."""
+    if DownloaderAgent.is_url(src):
+        print("[URL] Detected URL - starting auto-download...")
         try:
-            sub_mode = "burn" if args.subtitle else (args.sub_mode or "burn")
-            master = MasterAgent(
-                movie_path,
-                language=clean_lang,
-                subtitle_mode=sub_mode,
-                subtitle_style=args.subtitle_style,
-                resolution=args.resolution,
-                tts_engine=args.engine,
-                tts_voice=chosen_voice,
-                custom_thumb_title=thumb_title_val,
-                watermark_enabled=watermark_enabled,
-                watermark_text=args.watermark_text,
-                video_format=chosen_format,
-                thumbnail_intro=thumb_intro,
-                trim_end=args.trim_end,
-                no_smart_trim=args.no_smart_trim,
-                outro_card=outro_card_val,
-                source_language=args.source_lang,
-                script_engine=args.script_engine,
-                resume=should_resume,
-                skip_demucs=args.skip_demucs,
-                detect_scenes=detect_scenes_flag,
-                translation_style=args.translation_style,
-                audio_mode=args.audio_mode,
-                sfx_mode=args.sfx_mode,
-                sfx_volume=args.sfx_volume,
-                blur_mode=args.blur_mode,
-                blur_height=args.blur_height,
-                mirror=args.mirror,
-                audio_anti_copyright=args.audio_anti_copyright,
-                render_video=not args.no_render,
-                context_hint=args.context_hint,
-            )
-            master.run_pipeline()
+            downloader = DownloaderAgent(output_dir="movies")
+            movie_path = downloader.download_video(src)
         except Exception as e:
-            print(f"\n[ERROR] Pipeline failed: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[ERROR] Download failed: {e}")
+            sys.exit(1)
+    else:
+        movie_path = src
+        if not os.path.exists(movie_path):
+            print(f"[ERROR] File not found: '{movie_path}'")
+            print("[TIP] If this is a URL, make sure it starts with http:// or https://")
             sys.exit(1)
 
-    # Batch processing (movies/ folder or URLs)
-    elif args.batch or args.urls:
-        conf = cfg.load_config()
-        movies_dir = conf.get("batch", {}).get("movies_folder", "movies")
-        skip = conf.get("batch", {}).get("skip_completed", True) and not args.force
-        sub_mode = "burn" if args.subtitle else (args.sub_mode or "burn")
+    if args.engine_mode == "hardsub":
+        from hardsub_engine import HardsubEngine
+        HardsubEngine().run(input_source=movie_path, **hardsub_run_kwargs(args, opts))
+        return
+    if args.engine_mode == "subtitle":
+        from subtitle_engine import SubtitleEngine
+        SubtitleEngine().run(input_source=movie_path, **subtitle_run_kwargs(args, opts))
+        return
 
+    try:
+        master = MasterAgent(
+            movie_path,
+            trim_end=args.trim_end,
+            no_smart_trim=args.no_smart_trim,
+            outro_card=opts.outro_card,
+            **recap_common_kwargs(args, opts),
+        )
+        master.run_pipeline()
+    except Exception as e:
+        print(f"\n[ERROR] Pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def run_batch(args, opts) -> None:
+    """--batch (movies/ folder) or --urls, for any of the three engines."""
+    conf = cfg.load_config()
+    movies_dir = conf.get("batch", {}).get("movies_folder", "movies")
+    skip = conf.get("batch", {}).get("skip_completed", True) and not args.force
+
+    if args.engine_mode in ("hardsub", "subtitle"):
         if args.engine_mode == "hardsub":
             from hardsub_engine import HardsubEngine
-            engine = HardsubEngine()
-            items = []
-            if args.urls:
-                items = list(args.urls)
-            elif os.path.exists(movies_dir):
-                valid_exts = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv')
-                items = [os.path.join(movies_dir, f) for f in sorted(os.listdir(movies_dir)) if f.lower().endswith(valid_exts)]
-
-            print(f"[BATCH HARDSUB] Starting batch of {len(items)} item(s)...")
-            blur_opt = args.blur_mode if args.blur_mode else ("yes" if args.subtitle else "auto")
-            for idx, item in enumerate(items, 1):
-                print(f"\n{'='*65}\n[BATCH HARDSUB] Item {idx}/{len(items)}: {item}\n{'='*65}")
-                try:
-                    engine.run(
-                        input_source=item,
-                        video_format=chosen_format or "both",
-                        resolution=args.resolution or "1080p",
-                        subtitle_style=args.subtitle_style or "box_black",
-                        blur_mode=blur_opt,
-                        blur_height=args.blur_height,
-                        mirror=args.mirror,
-                        audio_anti_copyright=args.audio_anti_copyright,
-                        source_language=args.source_lang or "auto",
-                        translation_style=args.translation_style or "persona",
-                        audio_mode=args.audio_mode or "original",
-                        sfx_mode=args.sfx_mode or "original_sfx",
-                        sfx_volume=args.sfx_volume,
-                        render_video=not args.no_render,
-                        context_hint=args.context_hint,
-                    )
-                except Exception as err:
-                    print(f"[ERROR] Batch item {idx} failed: {err}")
-            return
-
-        elif args.engine_mode == "subtitle":
+            engine, label, run_kwargs = HardsubEngine(), "HARDSUB", hardsub_run_kwargs(args, opts)
+        else:
             from subtitle_engine import SubtitleEngine
-            engine = SubtitleEngine()
-            items = []
-            if args.urls:
-                items = list(args.urls)
-            elif os.path.exists(movies_dir):
-                valid_exts = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv')
-                items = [os.path.join(movies_dir, f) for f in sorted(os.listdir(movies_dir)) if f.lower().endswith(valid_exts)]
+            engine, label, run_kwargs = SubtitleEngine(), "SUBTITLE", subtitle_run_kwargs(args, opts)
 
-            print(f"[BATCH SUBTITLE] Starting batch of {len(items)} item(s)...")
-            for idx, item in enumerate(items, 1):
-                print(f"\n{'='*65}\n[BATCH SUBTITLE] Item {idx}/{len(items)}: {item}\n{'='*65}")
-                try:
-                    engine.run(
-                        input_source=item,
-                        source_language=args.source_lang or "auto",
-                        translation_style=args.translation_style or "dialogue",
-                        audio_mode=args.audio_mode or "original",
-                        sfx_mode=args.sfx_mode or "original_sfx",
-                        sfx_volume=args.sfx_volume,
-                        render_video=not args.no_render,
-                        video_format=chosen_format or "16:9",
-                        resolution=args.resolution or "1080p",
-                        subtitle_style=args.subtitle_style or "box_black",
-                        blur_mode=args.blur_mode or "auto",
-                        mirror=args.mirror,
-                        blur_height=args.blur_height,
-                        audio_anti_copyright=args.audio_anti_copyright,
-                        context_hint=args.context_hint,
-                    )
-                except Exception as err:
-                    print(f"[ERROR] Batch item {idx} failed: {err}")
-            return
+        items = _list_batch_items(args, movies_dir)
+        print(f"[BATCH {label}] Starting batch of {len(items)} item(s)...")
+        for idx, item in enumerate(items, 1):
+            print(f"\n{'='*65}\n[BATCH {label}] Item {idx}/{len(items)}: {item}\n{'='*65}")
+            try:
+                engine.run(input_source=item, **run_kwargs)
+            except Exception as err:
+                print(f"[ERROR] Batch item {idx} failed: {err}")
+        return
 
-        elif args.batch:
-            print("[BATCH] Processing all videos in movies/ folder...")
-            BatchProcessor(
-                movies_folder=movies_dir,
-                skip_completed=skip,
-                language=clean_lang,
-                subtitle_mode=sub_mode,
-                subtitle_style=args.subtitle_style,
-                resolution=args.resolution,
-                tts_engine=args.engine,
-                tts_voice=chosen_voice,
-                custom_thumb_title=thumb_title_val,
-                watermark_enabled=watermark_enabled,
-                watermark_text=args.watermark_text,
-                video_format=chosen_format,
-                thumbnail_intro=thumb_intro,
-                source_language=args.source_lang,
-                script_engine=args.script_engine,
-                resume=should_resume,
-                skip_demucs=args.skip_demucs,
-                detect_scenes=detect_scenes_flag,
-                translation_style=args.translation_style,
-                audio_mode=args.audio_mode,
-                sfx_mode=args.sfx_mode,
-                sfx_volume=args.sfx_volume,
-                blur_mode=args.blur_mode,
-                blur_height=args.blur_height,
-                mirror=args.mirror,
-                audio_anti_copyright=args.audio_anti_copyright,
-                render_video=not args.no_render,
-                context_hint=args.context_hint,
-            ).process_all()
+    processor = BatchProcessor(movies_folder=movies_dir, skip_completed=skip, **recap_common_kwargs(args, opts))
+    if args.batch:
+        print("[BATCH] Processing all videos in movies/ folder...")
+        processor.process_all()
+    elif args.urls:
+        print(f"[BATCH] URL Batch Mode: {len(args.urls)} video(s) to download & process...")
+        processor.process_all(url_list=args.urls, local_paths=[])
 
-        elif args.urls:
-            print(f"[BATCH] URL Batch Mode: {len(args.urls)} video(s) to download & process...")
-            BatchProcessor(
-                movies_folder=movies_dir,
-                skip_completed=skip,
-                language=clean_lang,
-                subtitle_mode=sub_mode,
-                subtitle_style=args.subtitle_style,
-                resolution=args.resolution,
-                tts_engine=args.engine,
-                tts_voice=chosen_voice,
-                custom_thumb_title=thumb_title_val,
-                watermark_enabled=watermark_enabled,
-                watermark_text=args.watermark_text,
-                video_format=chosen_format,
-                thumbnail_intro=thumb_intro,
-                source_language=args.source_lang,
-                script_engine=args.script_engine,
-                resume=should_resume,
-                skip_demucs=args.skip_demucs,
-                detect_scenes=detect_scenes_flag,
-                translation_style=args.translation_style,
-                audio_mode=args.audio_mode,
-                sfx_mode=args.sfx_mode,
-                sfx_volume=args.sfx_volume,
-                blur_mode=args.blur_mode,
-                blur_height=args.blur_height,
-                mirror=args.mirror,
-                audio_anti_copyright=args.audio_anti_copyright,
-                render_video=not args.no_render,
-                context_hint=args.context_hint,
-            ).process_all(url_list=args.urls, local_paths=[])
+
+def main():
+    check_dependencies()
+    print(ASCII_ART)
+
+    parser = build_parser()
+    args = parser.parse_args()
+    setup_directories()
+
+    if args.clean:
+        run_interactive_cleanup()
+        return
+
+    if handle_download_mode(args):
+        return
+
+    opts = resolve_run_options(args)
+
+    chosen_input = (args.input_flag or args.input_source or "").strip()
+    if chosen_input:
+        run_single(args, opts, chosen_input)
+    elif args.batch or args.urls:
+        run_batch(args, opts)
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()

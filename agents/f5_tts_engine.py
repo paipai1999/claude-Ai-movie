@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import os
 import shutil
 import subprocess
@@ -21,8 +22,8 @@ try:
             return _orig_torchaudio_load(uri, *args, **kwargs)
 
     torchaudio.load = _safe_torchaudio_load
-except Exception:
-    pass
+except Exception as _exc:
+    log_suppressed("agents.f5_tts_engine.<module>", _exc)
 
 class F5TTSEngine:
     """

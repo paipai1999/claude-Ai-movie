@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import json
 import os
 import re
@@ -62,23 +63,23 @@ class SEOAgent:
             try:
                 parsed = json.loads(cleaned)
                 break
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _exc:
+                log_suppressed("agents.seo_agent._parse_json", _exc)
             start = cleaned.find('{')
             end = cleaned.rfind('}')
             if start != -1 and end != -1 and end > start:
                 try:
                     parsed = json.loads(cleaned[start:end+1])
                     break
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as _exc:
+                    log_suppressed("agents.seo_agent._parse_json", _exc)
             m = re.search(r'\{.*\}', cleaned, re.DOTALL)
             if m:
                 try:
                     parsed = json.loads(m.group())
                     break
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as _exc:
+                    log_suppressed("agents.seo_agent._parse_json", _exc)
 
         if isinstance(parsed, dict):
             # Normalize keywords to clean list

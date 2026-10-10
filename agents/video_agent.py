@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import cv2
 import os
 import subprocess
@@ -28,8 +29,8 @@ class VideoAgent:
                         minutes = int((duration_sec % 3600) // 60)
                         seconds = int(duration_sec % 60)
                         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("agents.video_agent._get_duration_via_ffprobe", _exc)
 
         # Fallback to ffmpeg -i info parsing
         ffmpeg_bin = shutil.which("ffmpeg") or os.environ.get("IMAGEIO_FFMPEG_EXE")
@@ -51,8 +52,8 @@ class VideoAgent:
                 if m:
                     hours, minutes, seconds = int(m.group(1)), int(m.group(2)), int(float(m.group(3)))
                     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("agents.video_agent._get_duration_via_ffprobe", _exc)
         return None
 
     def analyze_metadata(self, state: MovieState) -> MovieState:

@@ -7,6 +7,7 @@ Provides pixel-accurate crop coordinates to eliminate black bars during
 9:16 vertical reels and standard canvas compositing.
 """
 
+from brain.diagnostics import log_suppressed
 import os
 import re
 import subprocess
@@ -49,8 +50,8 @@ def detect_letterbox_crop(
         res_m = re.search(r"Video:.*?(\d{3,5})x(\d{3,5})", res_p.stderr)
         if res_m:
             orig_w, orig_h = int(res_m.group(1)), int(res_m.group(2))
-    except Exception:
-        pass
+    except Exception as _exc:
+        log_suppressed("core.letterbox.detect_letterbox_crop", _exc)
 
     if orig_w <= 0 or orig_h <= 0:
         return None

@@ -1,5 +1,8 @@
+from brain.diagnostics import log_suppressed
 import os
 import re
+import json
+import hashlib
 import shutil
 import asyncio
 import subprocess
@@ -7,6 +10,10 @@ from brain.memory import MovieState
 from agents.f5_tts_engine import F5TTSEngine
 
 _CACHED_AVAILABLE_VOICES = None
+
+# Per-project record of WHICH text/voice each scene_XXXX.mp3 was synthesized from.
+# Lets a resume reuse only clips that still match the current script (and re-synthesize the rest).
+VOICE_MANIFEST_NAME = "voice_manifest.json"
 _KNOWN_EDGE_VOICES = {
     "my-mm-thihaneural",
     "my-mm-nilarneural",
@@ -58,6 +65,80 @@ class VoiceAgent:
                     print("💡 [F5-TTS NOTICE] Running on CPU. For 50x faster zero-shot voice cloning, consider using Google Colab T4 GPU or Edge-TTS.")
 
         print(f"[*] VoiceAgent: Active TTS Engine: {self.engine.upper()} (Voice: {self.voice})")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Clip cache integrity (voice clip cache ကို စာသားနှင့် တိုက်ဆိုင်စစ်ဆေးခြင်း)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _clip_fingerprint(self, item: dict) -> str:
+        """Stable hash of everything that determines how a clip sounds."""
+        raw = "|".join([
+            str(self.engine),
+            str(self.voice),
+            str(item.get("gender", "")).strip().lower(),
+            str(item.get("emotion", "")).strip().lower(),
+            str(item.get("narration", "")).strip(),
+        ])
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _clip_name(idx: int) -> str:
+        return f"scene_{(idx + 1):04d}.mp3"
+
+    @staticmethod
+    def _load_manifest(audio_out_dir: str):
+        """Returns {clip_name: fingerprint}, or None for legacy folders that have no manifest."""
+        path = os.path.join(audio_out_dir, VOICE_MANIFEST_NAME)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            clips = data.get("clips") if isinstance(data, dict) else None
+            return clips if isinstance(clips, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_manifest(self, audio_out_dir: str, script: list) -> None:
+        """Records the fingerprint of every clip that exists on disk (atomic write)."""
+        clips = {}
+        for idx, item in enumerate(script or []):
+            if not isinstance(item, dict) or not str(item.get("narration", "")).strip():
+                continue
+            path = os.path.join(audio_out_dir, self._clip_name(idx))
+            if os.path.exists(path) and os.path.getsize(path) > 1000:
+                clips[self._clip_name(idx)] = self._clip_fingerprint(item)
+        if not clips:
+            return
+        target = os.path.join(audio_out_dir, VOICE_MANIFEST_NAME)
+        tmp = target + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"clips": clips}, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, target)
+        except OSError as e:
+            print(f"[WARN] VoiceAgent: Could not write voice manifest: {e}")
+
+    def _purge_stale_clips(self, audio_out_dir: str, script: list) -> None:
+        """
+        Deletes clips whose recorded fingerprint no longer matches the current script, so the
+        per-clip resume logic re-synthesizes exactly those scenes (and only those).
+        """
+        manifest = self._load_manifest(audio_out_dir)
+        if manifest is None:  # legacy folder: cannot verify, keep previous behaviour
+            return
+        purged = 0
+        for idx, item in enumerate(script or []):
+            if not isinstance(item, dict):
+                continue
+            path = os.path.join(audio_out_dir, self._clip_name(idx))
+            if os.path.exists(path) and manifest.get(self._clip_name(idx)) != self._clip_fingerprint(item):
+                try:
+                    os.remove(path)
+                    purged += 1
+                except OSError as _exc:
+                    log_suppressed("agents.voice_agent._purge_stale_clips", _exc)
+        if purged:
+            print(f"[*] VoiceAgent: {purged} cached clip(s) no longer match the script/voice -> re-synthesizing them.")
 
     def _resolve_voice(self, preferred_voice: str, voice_cfg: dict) -> str:
         """Prefer a configured voice but gracefully fall back to a known-good Edge TTS voice."""
@@ -179,7 +260,6 @@ class VoiceAgent:
         for spkr, candidates in by_speaker.items():
             # Pick candidate closest to 5.0 seconds
             best = min(candidates, key=lambda c: abs(c["dur"] - 5.0))
-            import hashlib
             raw_spkr = str(spkr or "").strip()
             ascii_spkr = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_spkr).strip('_')
             spkr_hash = hashlib.md5(raw_spkr.encode('utf-8', errors='replace')).hexdigest()[:8]
@@ -222,10 +302,22 @@ class VoiceAgent:
         else:
             audio_out_dir = os.path.join(self.output_dir, state.project_dir, "voiceover")
         os.makedirs(audio_out_dir, exist_ok=True)
-        # Check if complete voiceover files already exist
-        existing_mp3s = [f for f in os.listdir(audio_out_dir) if f.startswith("scene_") and f.endswith(".mp3") and os.path.getsize(os.path.join(audio_out_dir, f)) > 1000]
-        if state.generated_script and len(existing_mp3s) >= len(state.generated_script):
+
+        # Drop clips that were synthesized from different text / voice, then check completeness.
+        self._purge_stale_clips(audio_out_dir, state.generated_script)
+        needed = [
+            idx for idx, item in enumerate(state.generated_script)
+            if isinstance(item, dict) and str(item.get("narration", "")).strip()
+        ]
+        valid_clips = [
+            idx for idx in needed
+            if os.path.exists(os.path.join(audio_out_dir, self._clip_name(idx)))
+            and os.path.getsize(os.path.join(audio_out_dir, self._clip_name(idx))) > 1000
+        ]
+        existing_mp3s = [self._clip_name(idx) for idx in valid_clips]
+        if needed and len(valid_clips) >= len(needed):
             print(f"[*] VoiceAgent: Reusing {len(existing_mp3s)} cached voiceover clips from {audio_out_dir}...")
+            self._save_manifest(audio_out_dir, state.generated_script)
             return state
 
         # Granular Checkpoint Resume: Clean up only corrupted/empty mp3 clips (<= 1000 bytes).
@@ -236,8 +328,8 @@ class VoiceAgent:
                 try:
                     if os.path.getsize(f_path) <= 1000:
                         os.remove(f_path)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    log_suppressed("agents.voice_agent.generate_voiceover", _exc)
         if existing_mp3s:
             print(f"[*] VoiceAgent: Found {len(existing_mp3s)} valid cached voiceover clips. Granular checkpoint resume active!")
 
@@ -259,9 +351,11 @@ class VoiceAgent:
                 use_f5 = False
 
         if use_f5:
-            return self._generate_f5_voiceover(state, audio_out_dir)
+            result_state = self._generate_f5_voiceover(state, audio_out_dir)
         else:
-            return self._generate_edge_voiceover(state, audio_out_dir)
+            result_state = self._generate_edge_voiceover(state, audio_out_dir)
+        self._save_manifest(audio_out_dir, state.generated_script)
+        return result_state
 
     def _run_async(self, coro):
         """Safely executes an async coroutine, handling nested event loops in Jupyter / FastAPI."""
@@ -309,8 +403,9 @@ class VoiceAgent:
             speaker = item.get("character", "Narrator")
             out_file = os.path.join(audio_out_dir, f"scene_{(idx+1):04d}.mp3")
 
+            # NOTE: start_sec == 0.0 is a valid (first) scene - test for None, not truthiness.
             target_dur = None
-            if item.get("end_sec") and item.get("start_sec"):
+            if item.get("end_sec") is not None and item.get("start_sec") is not None:
                 target_dur = max(0.5, float(item["end_sec"]) - float(item["start_sec"]))
 
             # Granular Checkpoint Resume: Skip synthesis if this scene's mp3 already exists and is non-empty
@@ -322,12 +417,14 @@ class VoiceAgent:
             clean_narration = self._prepare_tts_text(narration)
 
             # Determine reference audio for this speaker
-            ref_audio = char_clips.get(speaker, {}).get("audio_path", default_ref)
-            ref_text = char_clips.get(speaker, {}).get("text", default_ref_text)
+            speaker_key = str(speaker).strip().lower()   # clips are stored under lower-cased names
+            ref_audio = char_clips.get(speaker_key, {}).get("audio_path", default_ref)
+            ref_text = char_clips.get(speaker_key, {}).get("text", default_ref_text)
 
             success = False
             if os.path.exists(ref_audio):
-                print(f"[*] VoiceAgent (F5-TTS): Scene {scene_id} [Speaker: {speaker}] -> target_dur={target_dur:.1f}s...")
+                dur_label = f"{target_dur:.1f}s" if target_dur is not None else "auto"
+                print(f"[*] VoiceAgent (F5-TTS): Scene {scene_id} [Speaker: {speaker}] -> target_dur={dur_label}...")
                 success = self.f5_engine.generate_speech(
                     text=clean_narration,
                     ref_audio_path=ref_audio,
@@ -574,9 +671,14 @@ class VoiceAgent:
         is_burmese = str(self.voice).startswith("my-") or getattr(self, "language", "") == "burmese"
         if is_burmese:
             try:
-                from brain.burmese_utils import replace_numbers_with_burmese, transliterate_english_acronyms
+                from brain.burmese_utils import (
+                    replace_numbers_with_burmese,
+                    transliterate_english_acronyms,
+                    convert_to_tts_phonetic_burmese,
+                )
                 text = replace_numbers_with_burmese(text)
                 text = transliterate_english_acronyms(text)
+                text = convert_to_tts_phonetic_burmese(text)
             except Exception as e:
                 print(f"[WARN] VoiceAgent: Failed to normalize text with burmese_utils: {e}")
 
@@ -592,8 +694,8 @@ class VoiceAgent:
             try:
                 from brain.burmese_utils import transliterate_english_acronyms
                 text = transliterate_english_acronyms(text)
-            except Exception:
-                pass
+            except Exception as _exc:
+                log_suppressed("agents.voice_agent._prepare_tts_text", _exc)
             # Only strip remaining stray single latin characters if Burmese letters exist
             # Avoids leaving awkward blank gaps in sentences
             stripped = re.sub(r'\b[A-Za-z]{1,2}\b', '', text)

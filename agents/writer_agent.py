@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import json
 import math
 import os
@@ -7,6 +8,7 @@ from brain.gemini_client import call_gemini
 from brain.prompts import (
     FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT,
     MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT,
+    AUDIO_DRAMA_BURMESE_RECAP_PROMPT,
     HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT,
     WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT,
 )
@@ -33,6 +35,8 @@ class WriterAgent:
         s = str(style or "").lower().strip()
         if s in ["wuxia", "cultivation", "historical", "costume"]:
             return WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT
+        elif s in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+            return AUDIO_DRAMA_BURMESE_RECAP_PROMPT
         elif s in ["persona", "character", "kinship", "cinematic"]:
             return HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT
         elif s == "recap":
@@ -67,6 +71,41 @@ class WriterAgent:
         models_dict = gemini_cfg.get("models", {})
         model_workhorse = models_dict.get("workhorse", "gemini-3.5-flash-lite")
 
+        merged_segments = self._smooth_transcript(state)
+        if not merged_segments:
+            return state
+
+        raw_segments = self._build_raw_segments(merged_segments, state, movie_path)
+        if not raw_segments:
+            print("[!] WriterAgent: No valid dialogue text found after smoothing.")
+            return state
+
+        total_count = len(raw_segments)
+        if self.max_blocks and self.max_blocks > 0 and total_count > self.max_blocks:
+            raw_segments = raw_segments[:self.max_blocks]
+            total_count = len(raw_segments)
+            print(f"[*] WriterAgent: Limited to MAX_BLOCKS={self.max_blocks} dialogue lines.")
+
+        print(f"[*] WriterAgent: Found {total_count} sentence-level dialogue segments to translate (100% full coverage).")
+
+        all_translated = self._translate_batches(raw_segments, state, movie_path, gemini_key, model_workhorse)
+
+        # 3. Action Narration Bridge: Bridge silent or long action gaps (> 18s)
+        if gemini_key:
+            all_translated = self._bridge_action_narration(all_translated, state, gemini_key, model_workhorse)
+
+        state.generated_script = all_translated
+        print(f"[OK] WriterAgent: 100% Full Movie Dialogue Translation complete! Total {len(all_translated)} dialogue lines dubbed.")
+        return state
+
+    # ─────────────────────────────────────────────────────
+    # Step 1 – clean, de-duplicate and merge Whisper fragments into sentence-level segments
+    # ─────────────────────────────────────────────────────
+    # Minimum spoken duration (seconds) used by the smoothing pass and the TTS budget.
+    MIN_SEGMENT_DUR = 2.2
+
+    def _smooth_transcript(self, state: MovieState) -> list:
+        """Cleans, de-duplicates and merges micro-fragments. Returns [] when nothing usable remains."""
         # 1. Extract, clean, and smooth Whisper dialogue segments
         # Ensures 100% full coverage while eliminating micro-fragments, repetitive stutters, and unnatural breaks
         import re
@@ -128,7 +167,7 @@ class WriterAgent:
 
         if not initial_segments:
             print("[!] WriterAgent: No valid dialogue text found in transcript.")
-            return state
+            return []
 
         # Pass 1: Deduplicate Whisper stuttering tokens (e.g. repeated word fragments)
         deduped = []
@@ -151,7 +190,7 @@ class WriterAgent:
             deduped.append(seg)
 
         # Pass 2: Merge micro-fragments (< 2.2s or < 4 words) into cohesive complete thoughts
-        MIN_DUR = 2.2
+        MIN_DUR = self.MIN_SEGMENT_DUR
         MIN_WORDS = 4
         MAX_GAP = 1.8
 
@@ -189,39 +228,53 @@ class WriterAgent:
             merged_segments.append(curr)
             s_i += 1
 
-        audio_source = getattr(state, "vocals_path", "") or getattr(state, "audio_path", "")
-        if audio_source and not os.path.exists(audio_source):
-            audio_source = ""
+        return merged_segments
+
+    # ─────────────────────────────────────────────────────
+    # Step 2 – attach duration budget + acoustic gender hint to every segment
+    # ─────────────────────────────────────────────────────
+    @staticmethod
+    def _resolve_video_path(state: MovieState, movie_path: str = "") -> str:
+        """Existing video file used for keyframes (empty string when there is none)."""
         vid_path = movie_path or getattr(state, "movie_path", "")
         if vid_path and not os.path.exists(vid_path):
             vid_path = ""
+        return vid_path
 
-        def _extract_keyframe_b64(vpath: str, t_sec: float, max_dim: int = 480):
-            if not vpath or not os.path.exists(vpath):
-                return None
-            try:
-                import cv2
-                import base64
-                cap = cv2.VideoCapture(vpath)
-                if not cap.isOpened():
-                    return None
-                fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_sec * fps))
-                ret, frame = cap.read()
-                cap.release()
-                if not ret or frame is None:
-                    return None
-                h, w = frame.shape[:2]
-                if max(h, w) > max_dim:
-                    scale = max_dim / max(h, w)
-                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
-                if ret:
-                    return base64.b64encode(buffer).decode('utf-8')
-            except Exception:
-                pass
+    @staticmethod
+    def _extract_keyframe_b64(vpath: str, t_sec: float, max_dim: int = 480):
+        """Returns a small base64 JPEG of the frame at `t_sec` (None when unavailable)."""
+        if not vpath or not os.path.exists(vpath):
             return None
+        try:
+            import cv2
+            import base64
+            cap = cv2.VideoCapture(vpath)
+            if not cap.isOpened():
+                return None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_sec * fps))
+            ret, frame = cap.read()
+            cap.release()
+            if not ret or frame is None:
+                return None
+            h, w = frame.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+            if ret:
+                return base64.b64encode(buffer).decode('utf-8')
+        except Exception as _exc:
+            log_suppressed("agents.writer_agent._extract_keyframe_b64", _exc)
+        return None
 
+    def _build_raw_segments(self, merged_segments: list, state: MovieState, movie_path: str = "") -> list:
+        """Builds the id/duration/max_chars/acoustic_gender records sent to the LLM."""
+        MIN_DUR = self.MIN_SEGMENT_DUR
+        audio_source = getattr(state, "vocals_path", "") or getattr(state, "audio_path", "")
+        if audio_source and not os.path.exists(audio_source):
+            audio_source = ""
         raw_segments = []
         for idx, seg in enumerate(merged_segments):
             dur = round(max(MIN_DUR, seg["end_sec"] - seg["start_sec"]), 2)
@@ -246,15 +299,99 @@ class WriterAgent:
 
         if not raw_segments:
             print("[!] WriterAgent: No valid dialogue text found after smoothing.")
-            return state
+            return []
 
+        return raw_segments
+
+    # ─────────────────────────────────────────────────────
+    # Step 3 – batched translation with per-line fallback
+    # ─────────────────────────────────────────────────────
+    def _build_batch_prompt(self, batch: list, state: MovieState) -> tuple:
+        """Returns (system_prompt, user_prompt) for one batch according to the active translation style."""
+        active_style = getattr(state, "translation_style", None) or self.script_engine or "recap"
+        active_style = str(active_style).lower().strip()
+        hint_str = ""
+        custom_hint = getattr(state, "context_hint", None)
+        if custom_hint and str(custom_hint).strip():
+            hint_str = f"USER STORY & CHARACTER GUIDANCE:\n{str(custom_hint).strip()}\n\n"
+
+        if active_style in ["wuxia", "cultivation", "historical", "costume"]:
+            sys_prompt = WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT
+            batch_prompt = (
+                f"Target Language: {self.language.upper()}\n"
+                f"Movie Title: {state.movie_name}\n"
+                f"{hint_str}"
+                f"Translate each dialogue line below with 100% faithful precision into dramatic Wuxia/Cultivation colloquial {self.language.title()}:\n"
+                f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
+                f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
+            )
+        elif active_style in ["persona", "character", "kinship", "cinematic"]:
+            sys_prompt = HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT
+            batch_prompt = (
+                f"Target Language: {self.language.upper()}\n"
+                f"Movie Title: {state.movie_name}\n"
+                f"{hint_str}"
+                f"Translate each dialogue line below with 100% faithful precision into colloquial {self.language.title()} enforcing context-appropriate Male (ကျနော်/ခင်ဗျာ), Female (ကျွန်မ/ရှင်), and Child (သား/သမီး) personas (Strict rule: Never use 'ရှင်/ရှင့်' for parent-to-child or inner thoughts):\n"
+                f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
+                f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
+            )
+        elif active_style in ["drama_novel", "audio_drama", "novel", "short_drama", "chinese_drama"]:
+            sys_prompt = AUDIO_DRAMA_BURMESE_RECAP_PROMPT
+            batch_prompt = (
+                f"Target Language: {self.language.upper()}\n"
+                f"Movie Title: {state.movie_name}\n"
+                f"{hint_str}"
+                f"Transform each dialogue line below into thrilling, addictive Chinese Drama Audio Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်) narration in natural colloquial {self.language.title()}.\n"
+                f"CRITICAL REQUIREMENTS:\n"
+                f"1. THIRD-PERSON DRAMATIC RECOUNTING & TONE TAGS: Describe the characters' vocal tone, emotion, and dramatic actions ('တင်းမာတဲ့ အသံနဲ့ ... လို့ ပြန်ပြောလိုက်တယ်', 'ဒေါသတကြီးနဲ့ ... လို့ အော်ဟစ်လိုက်တဲ့အခါ', 'ဝမ်းနည်းဒေါသထွက်နေတဲ့ အသံနဲ့ ... လို့ တုံ့ပြန်လိုက်တယ်', 'ရှက်ရွံ့စွာနဲ့ ရယ်မောလိုက်ရင်း ... လို့ ပြတ်သားစွာ ပြောချလိုက်ပါတယ်').\n"
+                f"2. NOVEL-STYLE QUOTED DIALOGUE: Blend third-person narration seamlessly with direct dialogue quotes ('...' လို့ ပြန်ပြောလိုက်ပါတယ်, '...' လို့ အော်ဟစ်လိုက်တော့တယ်).\n"
+                f"3. STRICT CHARACTER BUDGET & DURATION MATCH: Each line's `narration` MUST STRICTLY STAY UNDER its given `max_chars` limit (Burmese TTS rate is ~10-11 chars/sec) so audio finishes cleanly within `duration_sec` seconds!\n"
+                f"4. CHINESE DRAMA TROPES & ROLES: Use proper roles ('ဥက္ကဋ္ဌကြီး', 'စီအီးအို', 'သခင်လေး', 'မမလေး', 'အတွင်းရေးမှူး') and transliterate Chinese names phonetically. Never output Chinese Hanzi characters or raw English words.\n"
+                f"5. NATURAL COLLOQUIAL SPOKEN PARTICLES: Use spoken particles ('...လိုက်ပါတယ်', '...ခဲ့တာပေါ့', '...သွားခဲ့ရတယ်', '...ဖြစ်နေတာပါ'). ❌ STRICTLY FORBIDDEN: Formal bookish markers (ပါသည်, သည်, မည်, ၏, ၍, ၌).\n\n"
+                f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
+                f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
+            )
+        elif active_style == "recap":
+            sys_prompt = MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT
+            batch_prompt = (
+                f"Target Language: {self.language.upper()}\n"
+                f"Movie Title: {state.movie_name}\n"
+                f"{hint_str}"
+                f"Write suspenseful, captivating MOVIE RECAP STORYTELLER narration for each scene below in natural colloquial {self.language.title()}.\n"
+                f"CRITICAL RECAP REQUIREMENTS:\n"
+                f"1. TRUE RECAP STORYTELLER STYLE: Speak directly as an engaging Myanmar YouTube movie recap narrator ('ဒီဇာတ်လမ်းမှာတော့...', '...ခဲ့တာပေါ့ဗျာ'). DO NOT do dry literal 1:1 sentence dubbing.\n"
+                f"2. CONVERSATIONAL RECAP ENDINGS: Every line MUST end with natural storytelling particles: '...ခဲ့တာပေါ့ဗျာ', '...နေခဲ့ပါတယ်', '...လိုက်ရတာပါ', '...သွားခဲ့ရတယ်', '...ဖြစ်နေတာပါ', '...ကြတာပေါ့', '...ရတော့တာပါ'. ❌ FORBIDDEN: Blunt chopped endings like '...တယ်', '...တာ', '...ဘူး'.\n"
+                f"3. DYNAMIC NARRATIVE TRANSITIONS: Bridge scenes naturally using recap connectors ('ဇာတ်လမ်းအစမှာတော့...', 'အဲဒီအချိန်မှာပဲ...', 'မထင်မှတ်ထားဘဲ...', 'ဒီလိုနဲ့...', 'ကြည့်လိုက်တဲ့အခါမှာတော့...').\n"
+                f"4. STRICT CHARACTER BUDGET & DURATION MATCH: Each line's `narration` MUST STRICTLY STAY UNDER its given `max_chars` limit (Burmese TTS rate is ~10 chars/sec) so audio finishes cleanly within `duration_sec` seconds! Keep phrasing punchy and exciting.\n"
+                f"5. CLEAN BURMESE TEXT: Transliterate names and English loanwords phonetically. Never output foreign characters.\n\n"
+                f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
+                f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
+            )
+        else:
+            sys_prompt = FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT
+            batch_prompt = (
+                f"Target Language: {self.language.upper()}\n"
+                f"Movie Title: {state.movie_name}\n"
+                f"{hint_str}"
+                f"Translate EVERY SINGLE movie dialogue sentence below into natural colloquial {self.language.title()} for professional dubbing.\n"
+                f"CRITICAL REQUIREMENTS:\n"
+                f"1. STRICT 1:1 TRANSLATION: Translate every single item completely. DO NOT summarize, merge, or drop any sentence.\n"
+                f"2. Translate all character names, places, events, and plot points accurately without leaving anything out.\n"
+                f"3. STRICT CHARACTER BUDGET & DURATION MATCH: Each translation's `narration` MUST STRICTLY STAY UNDER its given `max_chars` limit (Burmese TTS rate is ~11 chars/sec). Keep sentences punchy, concise, and direct so the spoken narration finishes precisely within `duration_sec` seconds! NEVER write long verbose sentences that exceed `max_chars`!\n"
+                f"4. MULTIMODAL SPEAKER DIARIZATION & GENDER ACCURACY: Observe the visual frame context and 'acoustic_gender' hint ('male', 'female', or 'unknown') for each dialogue. Determine the speaker's true 'gender' ('male' or 'female'), 'character' name/role, and 'emotion' ('normal', 'excited', 'angry', 'sad', 'scared', 'intense'). If 'acoustic_gender' is 'female' or the visual frame shows a female speaking, mark gender as 'female'!\n"
+                f"5. NATURAL CINEMATIC FLOW: Avoid repetitive sentence endings (do NOT repeat identical words like 'ပေါ့', 'ပါ', 'တယ်' in consecutive lines). Write natural storytelling movie recap dialogue.\n\n"
+                f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
+                f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
+            )
+
+        return sys_prompt, batch_prompt
+
+    def _translate_batches(self, raw_segments: list, state: MovieState, movie_path: str,
+                           gemini_key, model_workhorse: str) -> list:
+        """Translates every segment (20 per Gemini call); dropped lines get an individual retry."""
         total_count = len(raw_segments)
-        if self.max_blocks and self.max_blocks > 0 and total_count > self.max_blocks:
-            raw_segments = raw_segments[:self.max_blocks]
-            total_count = len(raw_segments)
-            print(f"[*] WriterAgent: Limited to MAX_BLOCKS={self.max_blocks} dialogue lines.")
-
-        print(f"[*] WriterAgent: Found {total_count} sentence-level dialogue segments to translate (100% full coverage).")
+        vid_path = self._resolve_video_path(state, movie_path)
+        _extract_keyframe_b64 = self._extract_keyframe_b64
 
         # 2. Batch dialogue lines (20 per batch) for fast, reliable Gemini translation
         BATCH_SIZE = 20
@@ -276,65 +413,7 @@ class WriterAgent:
                     if b64_frame:
                         batch_images.append(b64_frame)
 
-            active_style = getattr(state, "translation_style", None) or self.script_engine or "recap"
-            active_style = str(active_style).lower().strip()
-            hint_str = ""
-            custom_hint = getattr(state, "context_hint", None)
-            if custom_hint and str(custom_hint).strip():
-                hint_str = f"USER STORY & CHARACTER GUIDANCE:\n{str(custom_hint).strip()}\n\n"
-
-            if active_style in ["wuxia", "cultivation", "historical", "costume"]:
-                sys_prompt = WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT
-                batch_prompt = (
-                    f"Target Language: {self.language.upper()}\n"
-                    f"Movie Title: {state.movie_name}\n"
-                    f"{hint_str}"
-                    f"Translate each dialogue line below with 100% faithful precision into dramatic Wuxia/Cultivation colloquial {self.language.title()}:\n"
-                    f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
-                    f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
-                )
-            elif active_style in ["persona", "character", "kinship", "cinematic"]:
-                sys_prompt = HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT
-                batch_prompt = (
-                    f"Target Language: {self.language.upper()}\n"
-                    f"Movie Title: {state.movie_name}\n"
-                    f"{hint_str}"
-                    f"Translate each dialogue line below with 100% faithful precision into colloquial {self.language.title()} enforcing context-appropriate Male (ကျနော်/ခင်ဗျာ), Female (ကျွန်မ/ရှင်), and Child (သား/သမီး) personas (Strict rule: Never use 'ရှင်/ရှင့်' for parent-to-child or inner thoughts):\n"
-                    f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
-                    f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
-                )
-            elif active_style == "recap":
-                sys_prompt = MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT
-                batch_prompt = (
-                    f"Target Language: {self.language.upper()}\n"
-                    f"Movie Title: {state.movie_name}\n"
-                    f"{hint_str}"
-                    f"Write suspenseful, captivating MOVIE RECAP STORYTELLER narration for each scene below in natural colloquial {self.language.title()}.\n"
-                    f"CRITICAL RECAP REQUIREMENTS:\n"
-                    f"1. TRUE RECAP STORYTELLER STYLE: Speak directly as an engaging Myanmar YouTube movie recap narrator ('ဒီဇာတ်လမ်းမှာတော့...', '...ခဲ့တာပေါ့ဗျာ'). DO NOT do dry literal 1:1 sentence dubbing.\n"
-                    f"2. CONVERSATIONAL RECAP ENDINGS: Every line MUST end with natural storytelling particles: '...ခဲ့တာပေါ့ဗျာ', '...နေခဲ့ပါတယ်', '...လိုက်ရတာပါ', '...သွားခဲ့ရတယ်', '...ဖြစ်နေတာပါ', '...ကြတာပေါ့', '...ရတော့တာပါ'. ❌ FORBIDDEN: Blunt chopped endings like '...တယ်', '...တာ', '...ဘူး'.\n"
-                    f"3. DYNAMIC NARRATIVE TRANSITIONS: Bridge scenes naturally using recap connectors ('ဇာတ်လမ်းအစမှာတော့...', 'အဲဒီအချိန်မှာပဲ...', 'မထင်မှတ်ထားဘဲ...', 'ဒီလိုနဲ့...', 'ကြည့်လိုက်တဲ့အခါမှာတော့...').\n"
-                    f"4. STRICT CHARACTER BUDGET & DURATION MATCH: Each line's `narration` MUST STRICTLY STAY UNDER its given `max_chars` limit (Burmese TTS rate is ~10 chars/sec) so audio finishes cleanly within `duration_sec` seconds! Keep phrasing punchy and exciting.\n"
-                    f"5. CLEAN BURMESE TEXT: Transliterate names and English loanwords phonetically. Never output foreign characters.\n\n"
-                    f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
-                    f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
-                )
-            else:
-                sys_prompt = FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT
-                batch_prompt = (
-                    f"Target Language: {self.language.upper()}\n"
-                    f"Movie Title: {state.movie_name}\n"
-                    f"{hint_str}"
-                    f"Translate EVERY SINGLE movie dialogue sentence below into natural colloquial {self.language.title()} for professional dubbing.\n"
-                    f"CRITICAL REQUIREMENTS:\n"
-                    f"1. STRICT 1:1 TRANSLATION: Translate every single item completely. DO NOT summarize, merge, or drop any sentence.\n"
-                    f"2. Translate all character names, places, events, and plot points accurately without leaving anything out.\n"
-                    f"3. STRICT CHARACTER BUDGET & DURATION MATCH: Each translation's `narration` MUST STRICTLY STAY UNDER its given `max_chars` limit (Burmese TTS rate is ~11 chars/sec). Keep sentences punchy, concise, and direct so the spoken narration finishes precisely within `duration_sec` seconds! NEVER write long verbose sentences that exceed `max_chars`!\n"
-                    f"4. MULTIMODAL SPEAKER DIARIZATION & GENDER ACCURACY: Observe the visual frame context and 'acoustic_gender' hint ('male', 'female', or 'unknown') for each dialogue. Determine the speaker's true 'gender' ('male' or 'female'), 'character' name/role, and 'emotion' ('normal', 'excited', 'angry', 'sad', 'scared', 'intense'). If 'acoustic_gender' is 'female' or the visual frame shows a female speaking, mark gender as 'female'!\n"
-                    f"5. NATURAL CINEMATIC FLOW: Avoid repetitive sentence endings (do NOT repeat identical words like 'ပေါ့', 'ပါ', 'တယ်' in consecutive lines). Write natural storytelling movie recap dialogue.\n\n"
-                    f"{json.dumps(batch, ensure_ascii=False, indent=2)}\n\n"
-                    f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
-                )
+            sys_prompt, batch_prompt = self._build_batch_prompt(batch, state)
 
             batch_translated = None
             if gemini_key:
@@ -362,8 +441,8 @@ class WriterAgent:
                 if isinstance(item, dict) and "id" in item:
                     try:
                         trans_map[int(item["id"])] = item
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as _exc:
+                        log_suppressed("agents.writer_agent._translate_batches", _exc)
 
             # Ensure EVERY item in the batch is preserved with target language translation
             for seg in batch:
@@ -383,8 +462,8 @@ class WriterAgent:
                             narration = replace_numbers_with_burmese(narration)
                             narration = transliterate_english_acronyms(narration)
                             narration = sanitize_burmese_narration(narration)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            log_suppressed("agents.writer_agent._translate_batches", _exc)
                 else:
                     # Individual line fallback if dropped by Gemini
                     narration = seg["text"]
@@ -416,11 +495,11 @@ class WriterAgent:
                                         clean_line = replace_numbers_with_burmese(clean_line)
                                         clean_line = transliterate_english_acronyms(clean_line)
                                         clean_line = sanitize_burmese_narration(clean_line)
-                                    except Exception:
-                                        pass
+                                    except Exception as _exc:
+                                        log_suppressed("agents.writer_agent._translate_batches", _exc)
                                 narration = clean_line
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            log_suppressed("agents.writer_agent._translate_batches", _exc)
 
                 # Record character profile in state for downstream multi-voice & SEO consistency
                 if character and character not in state.speaker_profiles:
@@ -442,13 +521,7 @@ class WriterAgent:
                     "visual_cue": f"Dialogue ({seg['start_sec']}s - {seg['end_sec']}s): {seg['text'][:40]}..."
                 })
 
-        # 3. Action Narration Bridge: Bridge silent or long action gaps (> 18s)
-        if gemini_key:
-            all_translated = self._bridge_action_narration(all_translated, state, gemini_key, model_workhorse)
-
-        state.generated_script = all_translated
-        print(f"[OK] WriterAgent: 100% Full Movie Dialogue Translation complete! Total {len(all_translated)} dialogue lines dubbed.")
-        return state
+        return all_translated
 
     def _bridge_action_narration(self, blocks: list, state: MovieState, gemini_key: str, model: str) -> list:
         """
@@ -536,8 +609,8 @@ class WriterAgent:
                                     break
                         elif isinstance(data, list) and data:
                             txt = str(data[0])
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("agents.writer_agent._bridge_action_narration", _exc)
                 txt = txt.strip().strip('"').strip("'").strip()
                 if txt and len(txt) > 4:
                     if getattr(self, "language", "burmese").lower() in ["burmese", "mm", "myanmar"]:
@@ -545,8 +618,8 @@ class WriterAgent:
                             txt = replace_numbers_with_burmese(txt)
                             txt = transliterate_english_acronyms(txt)
                             txt = sanitize_burmese_narration(txt)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            log_suppressed("agents.writer_agent._bridge_action_narration", _exc)
                     bridge_dur = min(cand["gap_dur"] - 2.0, 5.5)
                     b_start = round(cand["gap_start"], 2)
                     b_end = round(b_start + max(bridge_dur, 3.0), 2)
@@ -580,8 +653,8 @@ class WriterAgent:
         # Strategy 1: Direct parse
         try:
             return self._normalise(json.loads(clean))
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _exc:
+            log_suppressed("agents.writer_agent._parse_script", _exc)
 
         # Strategy 2: Slice from first [ to last ]
         for open_c, close_c in [('[', ']'), ('{', '}')]:
@@ -590,23 +663,23 @@ class WriterAgent:
             if start != -1 and end > start:
                 try:
                     return self._normalise(json.loads(clean[start:end + 1]))
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as _exc:
+                    log_suppressed("agents.writer_agent._parse_script", _exc)
 
         # Strategy 3: Strip trailing extra brackets
         clean_brackets = re.sub(r'\]\s*\]+$', ']', clean)
         try:
             return self._normalise(json.loads(clean_brackets))
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _exc:
+            log_suppressed("agents.writer_agent._parse_script", _exc)
 
         # Strategy 4: Regex full array (greedy match from first [ to last ])
         m = re.search(r'\[.*\]', clean_brackets, re.DOTALL)
         if m:
             try:
                 return self._normalise(json.loads(m.group()))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _exc:
+                log_suppressed("agents.writer_agent._parse_script", _exc)
                 
         # Strategy 5: Stack-based JSON extraction (most robust)
         start_idx = clean.find('[')
@@ -683,10 +756,12 @@ class WriterAgent:
             # Preserve exact timestamps — these drive character lip-sync placement
             if "start_sec" in item:
                 try: block["start_sec"] = float(item["start_sec"])
-                except (ValueError, TypeError): pass
+                except (ValueError, TypeError) as _exc:
+                    log_suppressed("agents.writer_agent._normalise", _exc)
             if "end_sec" in item:
                 try: block["end_sec"] = float(item["end_sec"])
-                except (ValueError, TypeError): pass
+                except (ValueError, TypeError) as _exc:
+                    log_suppressed("agents.writer_agent._normalise", _exc)
             if "character" in item and item["character"]:
                 block["character"] = str(item["character"]).strip()
             if "speaker" in item and item["speaker"]:

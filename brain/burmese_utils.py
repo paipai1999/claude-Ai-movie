@@ -498,5 +498,160 @@ def localize_common_idioms(text: str) -> str:
     return res
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dual-Orthography Pipeline: TTS Phonetics vs Standard Subtitle Orthography
+# (အသံထွက်ဖတ်သံ TTS စနစ် နှင့် စံမီမြန်မာစာလုံးပေါင်း သတ်ပုံအမှန် စာတန်းထိုးစနစ်)
+# ─────────────────────────────────────────────────────────────────────────────
+
+BURMESE_NUMBER_CLASSIFIERS = [
+    'ယောက်', 'ခု', 'ခါ', 'နေ့', 'ချက်', 'ချိန်', 'ခေါက်', 'မိနစ်', 'စက္ကန့်', 'နာရီ',
+    'တွဲ', 'သိုက်', 'ဝိုက်', 'ပိုင်း', 'ဝက်', 'နေရာ', 'ဖက်', 'ခြမ်း', 'ဦး', 'လျှောက်',
+    'စု', 'ပြိုင်နက်', 'ကိုယ်လုံး', 'သက်လုံး', 'ထိုင်တည်း', 'လမ်းလုံး', 'ညလုံး',
+    'ရက်', 'လ', 'နှစ်', 'ကြိမ်', 'သောင်း', 'ဆယ်', 'ရာ', 'ထောင်', 'သိန်း', 'မွှာ',
+    'စုံ', 'စင်း', 'စီး', 'လုံး', 'ပါး', 'တန်', 'ကျပ်', 'ပြား', 'စ', 'စိပ်'
+]
+
+# Regex patterns for weak syllable number prefix 'တ-' <-> 'တစ်-'
+PAT_CLASSIFIER_TO_STANDARD = re.compile(
+    r'(?<![\u1039])တ(?![ေဲာ်ျြွှ\u102B-\u103E])(' + '|'.join(BURMESE_NUMBER_CLASSIFIERS) + r')'
+)
+PAT_CLASSIFIER_TO_PHONETIC = re.compile(
+    r'(?<![\u1039])တစ်(' + '|'.join(BURMESE_NUMBER_CLASSIFIERS) + r')'
+)
+
+# Standard Myanmar Orthography Dictionary (မြန်မာစာလုံးပေါင်း သတ်ပုံကျမ်းနှင့်အညီ)
+BURMESE_STANDARD_ORTHOGRAPHY_MAP = [
+    ('ကျနော်တို့', 'ကျွန်တော်တို့'),
+    ('ကျနော့်', 'ကျွန်တော့်'),
+    ('ကျနော်', 'ကျွန်တော်'),
+    ('ကျမတို့', 'ကျွန်မတို့'),
+    ('ကျနုပ်', 'ကျွန်ုပ်'),
+    ('အံ့သြ', 'အံ့ဩ'),
+    ('အံ့အော', 'အံ့ဩ'),
+    ('သြဇာ', 'ဩဇာ'),
+    ('အောဇာ', 'ဩဇာ'),
+    ('သြကာသ', 'ဩကာသ'),
+    ('အောကာသ', 'ဩကာသ'),
+    ('သြဝါဒ', 'ဩဝါဒ'),
+    ('အောဝါဒ', 'ဩဝါဒ'),
+    ('ဥက္ကဌ', 'ဥက္ကဋ္ဌ'),
+    ('အုတ်ကထ', 'ဥက္ကဋ္ဌ'),
+    ('ယောကျာ်း', 'ယောကျ်ား'),
+    ('ယောင်္ကျား', 'ယောကျ်ား'),
+    ('ယောက်ျား', 'ယောကျ်ား'),
+    ('ဝတ်ထု', 'ဝတ္ထု'),
+    ('သမ်မတ', 'သမ္မတ'),
+    ('မိတ်တာ', 'မေတ္တာ'),
+    ('ဒုတ်ခ', 'ဒုက္ခ'),
+    ('အန်တရာယ်', 'အန္တရာယ်'),
+    ('ပင်ညာ', 'ပညာ'),
+    ('ဝိန်ညာဉ်', 'ဝိညာဉ်'),
+    ('သိတ်ပံ', 'သိပ္ပံ'),
+    ('ဗုတ်ဒ', 'ဗုဒ္ဓ'),
+    ('မင်ဂလာ', 'မင်္ဂလာ'),
+    ('သိတ်စာ', 'သစ္စာ'),
+    ('ကိတ်စ', 'ကိစ္စ'),
+    ('မစ်စတာ', 'မစ္စတာ'),
+    ('အဖွား', 'အဘွား'),
+    ('အဖိုး', 'အဘိုး'),
+    ('ပီးတော့', 'ပြီးတော့'),
+    ('ပီးရင်', 'ပြီးရင်'),
+    ('ပီးပီ', 'ပြီးပြီ'),
+    ('ကောင်းပီ', 'ကောင်းပြီ'),
+]
+
+# Spoken Phonetics Dictionary for Microsoft Edge Neural TTS (my-MM-ThihaNeural / my-MM-NilarNeural)
+BURMESE_TTS_PHONETIC_MAP = [
+    ('ကျွန်တော်တို့', 'ကျနော်တို့'),
+    ('ကျွန်တော့်', 'ကျနော့်'),
+    ('ကျွန်တော်', 'ကျနော်'),
+    ('ကျွန်မတို့', 'ကျမတို့'),
+    ('ကျွန်မ', 'ကျမ'),
+    ('ကျွန်ုပ်', 'ကျနုပ်'),
+    ('ဥက္ကဋ္ဌ', 'အုတ်ကထ'),
+    ('ဥက္ကဌ', 'အုတ်ကထ'),
+    ('ဝတ္ထု', 'ဝတ်ထု'),
+    ('သမ္မတ', 'သမ်မတ'),
+    ('မေတ္တာ', 'မိတ်တာ'),
+    ('ဒုက္ခ', 'ဒုတ်ခ'),
+    ('အန္တရာယ်', 'အန်တရာယ်'),
+    ('ပညာ', 'ပင်ညာ'),
+    ('ဝိညာဉ်', 'ဝိန်ညာဉ်'),
+    ('သိပ္ပံ', 'သိတ်ပံ'),
+    ('ဗုဒ္ဓ', 'ဗုတ်ဒ'),
+    ('မင်္ဂလာ', 'မင်ဂလာ'),
+    ('သစ္စာ', 'သိတ်စာ'),
+    ('ကိစ္စ', 'ကိတ်စ'),
+    ('မစ္စတာ', 'မစ်စတာ'),
+    ('အံ့ဩ', 'အံ့အော'),
+    ('အံ့သြ', 'အံ့အော'),
+    ('ဩဇာ', 'အောဇာ'),
+    ('သြဇာ', 'အောဇာ'),
+    ('ဩကာသ', 'အောကာသ'),
+    ('သြကာသ', 'အောကာသ'),
+    ('ဩဝါဒ', 'အောဝါဒ'),
+    ('သြဝါဒ', 'အောဝါဒ'),
+    ('ယောကျ်ား', 'ယောက်ျား'),
+    ('ယောကျာ်း', 'ယောက်ျား'),
+    ('ယောင်္ကျား', 'ယောက်ျား'),
+    ('ပြီးတော့', 'ပီးတော့'),
+    ('ပြီးရင်', 'ပီးရင်'),
+    ('ပြီးပြီ', 'ပီးပီ'),
+    ('ကောင်းပြီ', 'ကောင်းပီ'),
+    ('အကယ်၍', 'အကယ်ရွေ့'),
+]
+
+
+def convert_to_tts_phonetic_burmese(text: str) -> str:
+    """
+    Converts written/formal Myanmar text into natural phonetic spoken orthography (အသံထွက်ဖတ်သံ)
+    for Microsoft Edge Neural Voices (my-MM-ThihaNeural, my-MM-NilarNeural) and F5-TTS:
+      1. Pronouns: ကျွန်တော် -> ကျနော်, ကျွန်မ -> ကျမ, etc.
+      2. Connected classifiers: တစ်ယောက် -> တယောက်, တစ်ခု -> တခု, တစ်ခါ -> တခါ, etc.
+      3. Stacked Pali ligatures: ဥက္ကဋ္ဌ -> အုတ်ကထ, ဝတ္ထု -> ဝတ်ထု, သမ္မတ -> သမ်မတ, etc.
+      4. Smooth spoken conjunctions: အကယ်၍ -> အကယ်ရွေ့, ပြီးတော့ -> ပီးတော့.
+    This eliminates robotic halts, glottal stuttering, and unpronounced stacked consonants.
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # 1. Lexical phonetic mappings
+    for formal, spoken in BURMESE_TTS_PHONETIC_MAP:
+        s = s.replace(formal, spoken)
+
+    # 2. Number before classifier: တစ် -> တ
+    s = PAT_CLASSIFIER_TO_PHONETIC.sub(r'တ\1', s)
+
+    return s
+
+
+def normalize_standard_burmese_spelling(text: str) -> str:
+    """
+    Normalizes colloquial spoken forms and phonetic text back into 100% correct
+    standard Myanmar orthography (မြန်မာစာလုံးပေါင်း သတ်ပုံကျမ်းနှင့်အညီ သတ်ပုံအမှန်)
+    for professional movie & drama subtitles (.srt, .ass, hardsub):
+      1. Pronouns: ကျနော် -> ကျွန်တော်, ကျမ -> ကျွန်မ, etc.
+      2. Spoken numbers: တယောက် -> တစ်ယောက်, တခု -> တစ်ခု, တခါ -> တစ်ခါ, etc.
+      3. Standard orthography: အံ့သြ/အံ့အော -> အံ့ဩ, ဥက္ကဌ/အုတ်ကထ -> ဥက္ကဋ္ဌ, ယောကျာ်း/ယောက်ျား -> ယောကျ်ား.
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # 1. Lexical and orthographic corrections
+    for colloquial, standard in BURMESE_STANDARD_ORTHOGRAPHY_MAP:
+        s = s.replace(colloquial, standard)
+
+    # 2. Feminine pronoun ကျမ -> ကျွန်မ with context boundary check
+    s = re.sub(r'(^|[\s၊။!?])ကျမ(?=[\s၊။!?]|က|ကို|ရဲ့|တို့|မှာ|လည်း|အတွက်|ဆီ|ဖြင့်|ဖြင့်|[က-အ])', r'\1ကျွန်မ', s)
+
+    # 3. Spoken number before classifier: တ -> တစ်
+    s = PAT_CLASSIFIER_TO_STANDARD.sub(r'တစ်\1', s)
+
+    return s
+
+
+
 
 

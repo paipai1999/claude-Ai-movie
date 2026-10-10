@@ -1,3 +1,4 @@
+from brain.diagnostics import log_suppressed
 import os
 import re
 import shutil
@@ -121,8 +122,8 @@ class ThumbnailAgent:
                 if start != -1 and end > start:
                     try:
                         parsed = json.loads(clean_json[start:end+1])
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        log_suppressed("agents.thumbnail_agent.extract_base_frame", _exc)
             if not isinstance(parsed, dict):
                 parsed = {}
             
