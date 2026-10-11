@@ -1434,44 +1434,33 @@ class HardsubEngine:
 
 
 def main():
+    from core.cli import HARDSUB, add_option_arguments, resolve_args
+
     parser = argparse.ArgumentParser(description="Original Audio & Burmese Hardsub Studio Engine")
     parser.add_argument("input", help="Video path or YouTube URL")
-    parser.add_argument("--format", choices=["16:9", "9:16", "both"], default="both")
-    parser.add_argument("--res", choices=["1080p", "720p"], default="1080p")
-    parser.add_argument("--style", choices=["box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box"], default="box_black")
-    parser.add_argument("--blur", choices=["auto", "yes", "no"], default="auto")
-    parser.add_argument("--blur-height", type=float, default=None, help="Custom blur height ratio (e.g. 0.18, 0.25)")
-    parser.add_argument("--mirror", action="store_true", help="Mirror video horizontally")
-    parser.add_argument("--audio-anti-copyright", "--audio-shield", dest="audio_anti_copyright", action="store_true", help="Perturb audio tempo slightly (atempo=1.008) to evade Content ID audio fingerprinting")
-    parser.add_argument("--color-grading", dest="color_grading", action="store_true", default=True, help="Enable anti-copyright color grading EQ")
-    parser.add_argument("--no-color-grading", dest="color_grading", action="store_false", help="Disable anti-copyright color grading")
-    parser.add_argument("--name", dest="name", default=None, help="Custom project output folder name")
-    parser.add_argument("--lang", "--source-lang", dest="lang", default="auto", help="Source audio language")
-    parser.add_argument("--translation-style", choices=["persona", "dialogue", "recap", "wuxia", "cinematic"], default="persona", help="Dialogue translation style (persona, dialogue, recap, wuxia, cinematic)")
-    parser.add_argument("--force-whisper", action="store_true", default=False, help="Force Whisper speech-to-text even if YouTube subs exist")
     parser.add_argument("--cookies", default=None, help="Path to cookies.txt file for YouTube download")
-    parser.add_argument("--render-video", dest="render_video", action="store_true", default=True, help="Render hardsub video deliverables")
-    parser.add_argument("--no-render", dest="render_video", action="store_false", help="Skip video rendering")
-    parser.add_argument("--hint", "--context-hint", dest="context_hint", default=None, help="Custom story, character, or genre guidance for translation (e.g. 'မင်းသားနာမည် ကျန်းဖန်၊ သိုင်းကား')")
+    # Every studio option (flags, aliases, choices, defaults) comes from core/options.py.
+    add_option_arguments(parser, HARDSUB)
     args = parser.parse_args()
+    v = resolve_args(HARDSUB, args)
 
     engine = HardsubEngine(cookies_path=args.cookies)
     result = engine.run(
         input_source=args.input,
-        project_name=args.name,
-        video_format=args.format,
-        resolution=args.res,
-        subtitle_style=args.style,
-        blur_mode=args.blur,
-        blur_height=args.blur_height,
-        mirror=args.mirror,
-        color_grading=args.color_grading,
-        audio_anti_copyright=args.audio_anti_copyright,
-        source_language=args.lang,
-        translation_style=args.translation_style,
-        force_whisper=args.force_whisper,
-        render_video=args.render_video,
-        context_hint=args.context_hint,
+        project_name=v["project_name"],
+        video_format=v["video_format"],
+        resolution=v["resolution"],
+        subtitle_style=v["subtitle_style"],
+        blur_mode=v["blur_mode"],
+        blur_height=v["blur_height"],
+        mirror=v["mirror"],
+        color_grading=v["color_grading"],
+        audio_anti_copyright=v["audio_anti_copyright"],
+        source_language=v["source_language"],
+        translation_style=v["translation_style"],
+        force_whisper=v["force_whisper"],
+        render_video=v["render_video"],
+        context_hint=v["context_hint"],
     )
     if isinstance(result, dict) and result.get("status") == "failed":
         sys.exit(1)

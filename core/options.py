@@ -79,7 +79,7 @@ def _o(name, type_, default=None, step=STEP_AUDIO, engines=_PIPELINES, **kw) -> 
     return Option(name=name, type=type_, default=default, step=step, engines=frozenset(engines), **kw)
 
 
-TRANSLATION_STYLES = ("persona", "dialogue", "recap", "wuxia", "cinematic")
+TRANSLATION_STYLES = ("recap", "drama_novel", "audio_drama", "dialogue", "persona", "wuxia", "cinematic")
 SUBTITLE_STYLES = ("box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box")
 
 OPTIONS: Tuple[Option, ...] = (
@@ -98,24 +98,26 @@ OPTIONS: Tuple[Option, ...] = (
     # 2 ─ Language & translation
     _o("source_language", str, "auto", STEP_LANGUAGE,
        help="Spoken language of the source (auto = detect)."),
-    _o("language", str, "burmese", STEP_LANGUAGE, {RECAP}, choices=("burmese", "english"),
+    _o("language", str, "burmese", STEP_LANGUAGE, {RECAP},
+       choices=("burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha"),
        help="Target language."),
     _o("translation_style", str, None, STEP_LANGUAGE, choices=TRANSLATION_STYLES,
        engine_defaults={RECAP: "recap", SUBTITLE: "dialogue", HARDSUB: "persona"},
        help="Voice of the translation."),
-    _o("script_engine", str, "recap", STEP_LANGUAGE, {RECAP},
-       help="Script generation mode."),
+    _o("script_engine", str, "recap", STEP_LANGUAGE, {RECAP}, choices=("recap", "translate"),
+       help="Script generation mode: recap storyteller or 1:1 translation."),
     _o("context_hint", str, None, STEP_LANGUAGE,
        help="Story / character / genre guidance for the translator."),
 
     # 3 ─ Output & style
     _o("video_format", str, "both", STEP_OUTPUT, choices=("16:9", "9:16", "both"),
+       engine_defaults={SUBTITLE: "16:9"},
        help="Landscape, vertical Reels, or both."),
     _o("reels_enabled", bool, True, STEP_OUTPUT, {RECAP}, keep_none=True,
        help="Legacy toggle: also export 9:16 when video_format is not set."),
     _o("subtitle_style", str, "box_black", STEP_OUTPUT, choices=SUBTITLE_STYLES,
        help="Subtitle look."),
-    _o("subtitle_mode", str, "burn", STEP_OUTPUT, {RECAP},
+    _o("subtitle_mode", str, "burn", STEP_OUTPUT, {RECAP}, choices=("burn", "none", "auto"),
        help="How subtitles are delivered."),
     _o("render_video", bool, True, STEP_OUTPUT,
        engine_defaults={RECAP: True, SUBTITLE: False, HARDSUB: True},
@@ -144,12 +146,14 @@ OPTIONS: Tuple[Option, ...] = (
     _o("audio_anti_copyright", bool, False, STEP_PROTECTION, help="Audio tempo shield."),
 
     # 5 ─ Audio & pipeline
-    _o("tts_engine", str, None, STEP_AUDIO, {RECAP}, help="Text-to-speech engine."),
+    _o("tts_engine", str, None, STEP_AUDIO, {RECAP}, choices=("edge_tts", "f5_tts"),
+       help="Text-to-speech engine."),
     _o("tts_voice", str, None, STEP_AUDIO, {RECAP}, help="Narrator voice."),
-    _o("audio_mode", str, None, STEP_AUDIO, choices=("ai_voiceover", "original"),
+    _o("audio_mode", str, None, STEP_AUDIO, choices=("ai_voiceover", "original", "none"),
        engine_defaults={RECAP: "ai_voiceover", SUBTITLE: "original", HARDSUB: "original"},
        help="AI voice-over or the original audio."),
-    _o("sfx_mode", str, "original_sfx", STEP_AUDIO, help="Sound-effect handling."),
+    _o("sfx_mode", str, "original_sfx", STEP_AUDIO, choices=("original_sfx", "bgm", "both", "none"),
+       help="Background sound-effect handling."),
     _o("sfx_volume", float, 0.15, STEP_AUDIO, help="Sound-effect volume."),
     _o("skip_demucs", bool, False, STEP_AUDIO, {RECAP}, help="Skip vocal separation."),
     _o("detect_scenes", bool, False, STEP_AUDIO, {RECAP}, help="Scene-cut detection."),
@@ -238,8 +242,10 @@ def resolve(engine: Optional[str], values: Mapping[str, Any]) -> Dict[str, Any]:
         else:
             out[opt.name] = raw
 
-    # Legacy rule: when no format was chosen it follows the old reels toggle.
-    if _is_unset(values.get("video_format"), BY_NAME["video_format"]):
+    # Legacy rule: when no format was chosen it follows the old reels toggle, unless the engine
+    # has a format of its own (the subtitle engine defaults to a single 16:9 render).
+    vf = BY_NAME["video_format"]
+    if _is_unset(values.get("video_format"), vf) and engine not in vf.engine_defaults:
         out["video_format"] = "both" if out.get("reels_enabled") else "16:9"
     return out
 

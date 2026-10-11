@@ -21,6 +21,25 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.4.0-dev] — Shared option model (Phase 2 of 4: command line)
+
+### 🧱 Architecture
+- **`core/cli.py` generates the studio flags** for `main.py`, `hardsub_engine.py` and `subtitle_engine.py` from `core/options.py`. One canonical spelling per option, identical in every program; each program keeps the spellings it always had as aliases (258 command lines replayed against the previous parsers; the two engine scripts are byte-identical, `main.py` differs only where listed below).
+- **Untyped flags are `None`** and resolved in one place per engine (`core.options.resolve`), replacing the scattered `args.x or "..."` fallbacks. For `main.py --engine-mode recap` the options `config.json` owns (subtitle style, format, watermark, ...) still stay `None`.
+- `main.py` 731 → 462 lines; the three hand-written kwargs builders became one key list each.
+- New: `--name`, `--force-whisper`, `--color-grading` / `--no-color-grading`, `--watermark`, `--watermark-opacity`, `--tts-voice`, `--tts-engine`, `--no-render-video` are available in every program that can use them.
+
+### 🐞 Behaviour changes in `main.py` (each was already the documented/intended behaviour)
+- `--engine-mode hardsub|subtitle` no longer inherits `--audio-mode ai_voiceover` from the recap default; both use `original`.
+- `--engine-mode subtitle` renders no video unless `--render-video` is given (like `subtitle_engine.py`); it used to render by default.
+- `--subtitle` now forces `--blur-mode yes` when no `--blur-mode` was typed, as its help text says (the old parser default made it a no-op).
+- `--detect-scenes --skip-scenes` together: the last one typed wins (previously detect always won).
+
+### 🧪 Tests
+- `tests/test_cli_options.py`: every legacy flag still parses, conflicting spellings keep their per-program meaning, per-engine defaults, config-owned recap options, engine kwargs accepted by the engines. 268 tests (was 237).
+
+---
+
 ## [2.3.2] — Render & Subtitle Timing Fixes (found in first real end-to-end run)
 
 ### 🐞 Fixes

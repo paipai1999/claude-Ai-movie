@@ -7,6 +7,8 @@ from agents.master import MasterAgent
 from agents.downloader_agent import DownloaderAgent
 from brain.planner import BatchProcessor
 from brain import config as cfg
+from core.cli import MAIN, add_option_arguments, resolve_args
+from core.options import normalize_engine
 
 # Force UTF-8 output on Windows to prevent emoji/Unicode encode errors
 if sys.platform == "win32":
@@ -122,314 +124,47 @@ def check_dependencies():
     print(f"[*] FFmpeg ready -> {ffmpeg}")
 
 def build_parser() -> argparse.ArgumentParser:
-    """Defines every command-line option of the studio (Engine 1 / 2 / 3, batch, download, cleanup)."""
+    """
+    Command line of the studio (Engine 1 / 2 / 3, batch, download, cleanup).
+
+    The studio options (language, style, format, blur ...) are generated from ``core.options`` via
+    ``core.cli`` so they are identical in every program; only run-mode switches live here.
+    """
     parser = argparse.ArgumentParser(
         description="Movie Recap AI — Free Local Pipeline",
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    parser.add_argument(
-        "input_source",
-        nargs="?",
-        default=None,
-        help="Path to video file or URL to download"
-    )
-    parser.add_argument(
-        "-i", "--input",
-        dest="input_flag",
-        default=None,
-        help="Path to video file or URL to download"
-    )
-    parser.add_argument(
-        "-b", "--batch",
-        action="store_true",
-        help="Process all videos in movies/ folder sequentially"
-    )
-    parser.add_argument(
-        "-u", "--urls",
-        nargs="+",
-        default=None,
-        help="List of URLs to download and process in batch"
-    )
-    parser.add_argument(
-        "-l", "--lang",
-        dest="language",
-        choices=["burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha"],
-        default=None,
-        help="Language for recap script and voiceover (default: burmese or config setting)"
-    )
-    parser.add_argument(
-        "--blocks",
-        type=int,
-        default=None,
-        help="Maximum number of narrative blocks (override config)"
-    )
-    parser.add_argument(
-        "--subtitle",
-        action="store_true",
-        help="Enable subtitle blur pass in the final recap video"
-    )
+    # ── What to run ─────────────────────────────────────────────────────────
+    parser.add_argument("input_source", nargs="?", default=None,
+                        help="Path to video file or URL to download")
+    parser.add_argument("-i", "--input", dest="input_flag", default=None,
+                        help="Path to video file or URL to download")
+    parser.add_argument("-b", "--batch", action="store_true",
+                        help="Process all videos in movies/ folder sequentially")
+    parser.add_argument("-u", "--urls", nargs="+", default=None,
+                        help="List of URLs to download and process in batch")
+    parser.add_argument("--download", "--download-video", dest="download_url", default=None,
+                        help="Download video from YouTube or supported URL into movies/ directory and exit")
+    parser.add_argument("--download-urls", nargs="+", dest="download_urls", default=None,
+                        help="Download multiple video URLs into movies/ directory and exit")
+    parser.add_argument("--clean", action="store_true",
+                        help="Interactive cleanup menu to delete old source videos or generated outputs")
 
-    parser.add_argument(
-        "-v", "--voice",
-        dest="tts_voice",
-        default=None,
-        help="TTS Voice: 'my-MM-NilarNeural' (Burmese Female), 'my-MM-ThihaNeural' (Burmese Male), 'nilar', 'thiha', etc."
-    )
-    parser.add_argument(
-        "-e", "--engine",
-        dest="engine",
-        choices=["edge_tts", "f5_tts"],
-        default=None,
-        help="TTS Voiceover Engine: 'edge_tts' (free cloud) or 'f5_tts' (zero-shot cloning)"
-    )
-    parser.add_argument(
-        "--engine-mode",
-        dest="engine_mode",
-        choices=["recap", "subtitle", "hardsub"],
-        default="recap",
-        help="Pipeline Engine: 'recap' (Movie Recap Video Studio), 'subtitle' (Subtitle Generator), or 'hardsub' (Original Audio & Burmese Hardsub Studio)"
-    )
-    parser.add_argument(
-        "--no-voice",
-        action="store_true",
-        help="Skip Text-to-Speech voice generation step"
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Re-process movies even if output already exists (ignore skip_completed)"
-    )
-    parser.add_argument(
-        "--skip-demucs", "--no-demucs",
-        action="store_true",
-        help="Skip Demucs vocal separation (dramatically speeds up audio pipeline on CPU)"
-    )
-    parser.add_argument(
-        "--detect-scenes",
-        action="store_true",
-        help="Enable PySceneDetect frame analysis (default: skipped for fast 1:1 dialogue dubbing)"
-    )
-    parser.add_argument(
-        "--skip-scenes",
-        action="store_true",
-        help="Explicitly bypass PySceneDetect frame analysis"
-    )
-    parser.add_argument(
-        "--thumb-title",
-        dest="thumb_title",
-        default=None,
-        help="Custom Myanmar Title to burn on the Thumbnail ('none' for clean image, leave empty for auto AI title)"
-    )
-    parser.add_argument(
-        "--no-thumb-title",
-        dest="no_thumb_title",
-        action="store_true",
-        default=False,
-        help="Disable burning title text onto thumbnail (export clean base thumbnail image)"
-    )
-    parser.add_argument(
-        "--watermark-text",
-        dest="watermark_text",
-        default=None,
-        help="Custom watermark text to overlay on the video (default: Pai Ai Movie Studio)"
-    )
-    parser.add_argument(
-        "--no-watermark",
-        dest="no_watermark",
-        action="store_true",
-        help="Disable watermark overlay in the video"
-    )
-    parser.add_argument(
-        "--format", "--aspect-ratio", "--video-size",
-        dest="video_format",
-        choices=["16:9", "9:16", "both"],
-        default=None,
-        help="Video output aspect ratio / format: '16:9' (YouTube landscape), '9:16' (Vertical Reels), or 'both' (Export both)"
-    )
-    parser.add_argument(
-        "--reels",
-        action="store_true",
-        default=False,
-        help="Force export of 9:16 Facebook Reels / TikTok Canvas video"
-    )
-    parser.add_argument(
-        "--no-reels",
-        action="store_true",
-        help="Disable export of 9:16 Facebook Reels video"
-    )
-    parser.add_argument(
-        "--sub-mode", "--subtitle-mode",
-        dest="sub_mode",
-        choices=["burn", "none", "auto"],
-        default="burn",
-        help="Subtitle mode: 'burn' (burn hardsub on video) or 'none' (voiceover only + separate SRT)"
-    )
-    parser.add_argument(
-        "--sub-style", "--subtitle-style", "--preset",
-        dest="subtitle_style",
-        choices=["box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box"],
-        default=None,
-        help="Subtitle style preset: 'box_black' (Cinema Box), 'yellow_pop' (TikTok Yellow), 'white_stroke' (Classic White), 'cyan_cyber' (Cyber Cyan), 'crimson_box' (Thriller Red Box)"
-    )
-    parser.add_argument(
-        "--res", "--resolution",
-        dest="resolution",
-        choices=["1080p", "720p"],
-        default="1080p",
-        help="Video resolution preset: '1080p' (Full HD) or '720p' (Fast render HD)"
-    )
-    parser.add_argument(
-        "--thumbnail-intro",
-        action="store_true",
-        default=None,
-        help="Include 3-second thumbnail intro at the start of recap video"
-    )
-    parser.add_argument(
-        "--no-thumbnail-intro",
-        action="store_true",
-        default=None,
-        help="Disable 3-second thumbnail intro at start of video"
-    )
-    parser.add_argument(
-        "--trim-end",
-        type=float,
-        default=None,
-        help="Manual seconds to trim from the end of the video to discard original outro"
-    )
-    parser.add_argument(
-        "--no-smart-trim",
-        action="store_true",
-        default=False,
-        help="Disable automatic smart outro trimming at the end of video"
-    )
-    parser.add_argument(
-        "--outro-card",
-        action="store_true",
-        default=None,
-        help="Append 3-second 'Pai AI Movie Studio' branded Outro Card at video end"
-    )
-    parser.add_argument(
-        "--no-outro-card",
-        action="store_true",
-        default=None,
-        help="Disable 3-second outro card"
-    )
-    parser.add_argument(
-        "--source-lang", "--source-language",
-        dest="source_lang",
-        choices=["auto", "zh", "en", "th", "ko", "ja"],
-        default="auto",
-        help="Source movie audio language for Whisper STT (default: auto, or 'zh', 'en', 'th', 'ko', 'ja')"
-    )
-    parser.add_argument(
-        "--mode", "--script-engine",
-        dest="script_engine",
-        choices=["recap", "translate"],
-        default="recap",
-        help="Narration Script Engine: 'recap' (True Myanmar Movie Recap Storyteller) or 'translate' (1:1 Spoken Dialogue Dubbing)"
-    )
-    parser.add_argument(
-        "--translation-style", "--style",
-        dest="translation_style",
-        choices=["recap", "drama_novel", "audio_drama", "dialogue", "persona", "wuxia", "cinematic"],
-        default=None,
-        help="Translation Style: 'drama_novel' (Chinese Drama Audio Novel), 'recap' (Movie Recap Storyteller), 'dialogue' (1:1 Natural Spoken Subtitle), 'persona' / 'cinematic' (Cinematic Persona Dubbing), 'wuxia' (Cultivation/Wuxia/Historical)"
-    )
-    parser.add_argument(
-        "--context-hint", "--hint",
-        dest="context_hint",
-        default=None,
-        help="Custom story, character names, or genre guidance for translation (e.g. 'မင်းသားနာမည် ကျန်းဖန်၊ သိုင်းကား')"
-    )
-    parser.add_argument(
-        "--audio-mode",
-        dest="audio_mode",
-        choices=["ai_voiceover", "original", "none"],
-        default="ai_voiceover",
-        help="Audio mode: 'ai_voiceover' (TTS narration), 'original' (100%% original movie audio), 'none' (Mute original audio)"
-    )
-    parser.add_argument(
-        "--sfx-mode",
-        dest="sfx_mode",
-        choices=["original_sfx", "bgm", "both", "none"],
-        default="original_sfx",
-        help="Background SFX audio: 'original_sfx' (Demucs foley), 'bgm' (Cinematic music), 'both' (Demucs + BGM mix), 'none' (Clean voiceover)"
-    )
-    parser.add_argument(
-        "--sfx-volume",
-        dest="sfx_volume",
-        type=float,
-        default=0.15,
-        help="Background audio / SFX volume intensity (default: 0.15)"
-    )
-    parser.add_argument(
-        "--blur-mode",
-        dest="blur_mode",
-        choices=["auto", "yes", "no"],
-        default="auto",
-        help="Vision AI Subtitle Blur: 'auto' (detect via Vision AI), 'yes' (force blur), 'no' (off)"
-    )
-    parser.add_argument(
-        "--blur-height",
-        dest="blur_height",
-        type=float,
-        default=None,
-        help="Custom height percentage (0.05-0.35) for subtitle blur region"
-    )
-    parser.add_argument(
-        "--mirror",
-        dest="mirror",
-        action="store_true",
-        default=False,
-        help="Mirror video horizontally for anti-copyright shield"
-    )
-    parser.add_argument(
-        "--audio-anti-copyright",
-        dest="audio_anti_copyright",
-        action="store_true",
-        default=False,
-        help="Apply audio tempo shield (atempo=1.008) against Content ID matching"
-    )
-    parser.add_argument(
-        "--no-render", "--subtitles-only",
-        dest="no_render",
-        action="store_true",
-        default=False,
-        help="Skip heavy video rendering and export subtitles and audio deliverables only"
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        default=True,
-        help="Resume pipeline execution from the last completed phase checkpoint (default: True)"
-    )
-    parser.add_argument(
-        "--fresh", "--force-restart",
-        dest="fresh",
-        action="store_true",
-        default=False,
-        help="Ignore existing checkpoints and restart the pipeline from Phase 1"
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Interactive cleanup menu to delete old source videos or generated outputs"
-    )
-    parser.add_argument(
-        "--download", "--download-video",
-        dest="download_url",
-        default=None,
-        help="Download video from YouTube or supported URL into movies/ directory and exit"
-    )
-    parser.add_argument(
-        "--download-urls",
-        nargs="+",
-        dest="download_urls",
-        default=None,
-        help="Download multiple video URLs into movies/ directory and exit"
-    )
+    # ── Run switches that are not studio options ────────────────────────────
+    parser.add_argument("--blocks", type=int, default=None,
+                        help="Maximum number of narrative blocks (override config)")
+    parser.add_argument("--subtitle", action="store_true",
+                        help="Enable subtitle blur pass in the final recap video")
+    parser.add_argument("--no-voice", action="store_true",
+                        help="Skip Text-to-Speech voice generation step")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-process movies even if output already exists (ignore skip_completed)")
+    parser.add_argument("--no-thumb-title", dest="no_thumb_title", action="store_true", default=False,
+                        help="Disable burning title text onto thumbnail (export clean base thumbnail image)")
 
+    # ── Studio options (single definition: core/options.py) ─────────────────
+    add_option_arguments(parser, MAIN)
     return parser
 
 
@@ -438,11 +173,12 @@ def build_parser() -> argparse.ArgumentParser:
 # ─────────────────────────────────────────────────────────────────────────────
 def handle_download_mode(args) -> bool:
     """Dedicated download-only modes (--download / --download-urls). Returns True when handled."""
+    resolution = args.resolution or "1080p"
     if args.download_url:
         print(f"\n[DOWNLOADER] Dedicated video download requested for: {args.download_url}")
         try:
             downloader = DownloaderAgent(output_dir="movies")
-            downloaded = downloader.download_video(args.download_url, resolution=args.resolution or "1080p")
+            downloaded = downloader.download_video(args.download_url, resolution=resolution)
             print(f"\n🎉 [OK] Video downloaded successfully: {downloaded}\n")
         except Exception as e:
             print(f"\n❌ [ERROR] Video download failed: {e}\n")
@@ -456,7 +192,7 @@ def handle_download_mode(args) -> bool:
         for idx, url in enumerate(args.download_urls, 1):
             print(f"\n[{idx}/{len(args.download_urls)}] Downloading: {url}")
             try:
-                downloaded = downloader.download_video(url, resolution=args.resolution or "1080p")
+                downloaded = downloader.download_video(url, resolution=resolution)
                 print(f"  -> Saved: {downloaded}")
                 success_count += 1
             except Exception as e:
@@ -469,10 +205,10 @@ def handle_download_mode(args) -> bool:
 def apply_environment_flags(args) -> str:
     """Exports flags that the pipeline agents read from the environment. Returns the chosen video format."""
     chosen_format = args.video_format
-    if args.no_reels:
+    if args.reels_enabled is False:
         chosen_format = "16:9"
         os.environ["DISABLE_REELS"] = "true"
-    elif args.reels:
+    elif args.reels_enabled is True:
         if not chosen_format:
             chosen_format = "both"
         os.environ["ENABLE_REELS"] = "true"
@@ -489,9 +225,9 @@ def apply_environment_flags(args) -> str:
     if args.skip_demucs:
         os.environ["SKIP_DEMUCS"] = "true"
 
-    if args.detect_scenes:
+    if args.detect_scenes is True:
         os.environ["SKIP_SCENES"] = "0"
-    elif args.skip_scenes:
+    elif args.detect_scenes is False:
         os.environ["SKIP_SCENES"] = "1"
     return chosen_format
 
@@ -520,96 +256,91 @@ def resolve_language_and_voice(args):
 
 
 def resolve_run_options(args) -> SimpleNamespace:
-    """All derived values shared by the single-video and batch flows."""
+    """
+    Every value the three engines need, resolved ONCE for the engine selected with --engine-mode
+    (defaults come from ``core.options``; recap options owned by config.json stay ``None``).
+    """
+    engine = normalize_engine(args.engine_mode)
     chosen_format = apply_environment_flags(args)
     clean_lang, chosen_voice = resolve_language_and_voice(args)
+    values = resolve_args(MAIN, args, engine)
+
+    # --reels / --no-reels / --format decide the format before the engine default does.
+    if chosen_format:
+        values["video_format"] = chosen_format
+    # --subtitle means "there are burnt-in subtitles to remove" unless --blur-mode was typed.
+    if args.blur_mode is None and args.subtitle:
+        values["blur_mode"] = "yes"
+    if args.subtitle:
+        values["subtitle_mode"] = "burn"
+
     return SimpleNamespace(
-        chosen_format=chosen_format,
+        engine=engine,
+        values=values,
+        chosen_format=values["video_format"],
         clean_lang=clean_lang,
         chosen_voice=chosen_voice,
-        watermark_enabled=False if args.no_watermark else None,
-        thumb_intro=True if args.thumbnail_intro else (False if args.no_thumbnail_intro else None),
-        outro_card=True if args.outro_card else (False if args.no_outro_card else None),
-        should_resume=not args.fresh,
-        detect_scenes=True if args.detect_scenes else (False if args.skip_scenes else None),
-        thumb_title=("none" if getattr(args, "no_thumb_title", False) else args.thumb_title),
-        sub_mode="burn" if args.subtitle else (args.sub_mode or "burn"),
-        blur_opt=args.blur_mode if args.blur_mode else ("yes" if args.subtitle else "auto"),
+        thumb_title="none" if getattr(args, "no_thumb_title", False) else values["custom_thumb_title"],
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Keyword-argument builders (Engine တစ်ခုချင်းစီ၏ parameter များ)
 # ─────────────────────────────────────────────────────────────────────────────
+_HARDSUB_KEYS = (
+    "project_name", "source_language", "force_whisper", "video_format", "resolution",
+    "subtitle_style", "blur_mode", "mirror", "color_grading", "blur_height",
+    "audio_anti_copyright", "translation_style", "audio_mode", "sfx_mode", "sfx_volume",
+    "render_video", "context_hint",
+)
+_SUBTITLE_KEYS = (
+    "project_name", "source_language", "force_whisper", "translation_style", "audio_mode",
+    "sfx_mode", "sfx_volume", "render_video", "video_format", "resolution", "subtitle_style",
+    "blur_mode", "mirror", "color_grading", "blur_height", "audio_anti_copyright", "context_hint",
+)
+
+
 def hardsub_run_kwargs(args, opts) -> dict:
     """Engine 3 (Hardsub Studio) `run()` options – identical for single and batch mode."""
-    return dict(
-        video_format=opts.chosen_format or "both",
-        resolution=args.resolution or "1080p",
-        subtitle_style=args.subtitle_style or "box_black",
-        blur_mode=opts.blur_opt,
-        blur_height=args.blur_height,
-        mirror=args.mirror,
-        audio_anti_copyright=args.audio_anti_copyright,
-        source_language=args.source_lang or "auto",
-        translation_style=args.translation_style or "persona",
-        audio_mode=args.audio_mode or "original",
-        sfx_mode=args.sfx_mode or "original_sfx",
-        sfx_volume=args.sfx_volume,
-        render_video=not args.no_render,
-        context_hint=args.context_hint,
-    )
+    return {k: opts.values[k] for k in _HARDSUB_KEYS}
 
 
 def subtitle_run_kwargs(args, opts) -> dict:
     """Engine 2 (Subtitle Studio) `run()` options – identical for single and batch mode."""
-    return dict(
-        source_language=args.source_lang or "auto",
-        translation_style=args.translation_style or "dialogue",
-        audio_mode=args.audio_mode or "original",
-        sfx_mode=args.sfx_mode or "original_sfx",
-        sfx_volume=args.sfx_volume,
-        render_video=not args.no_render,
-        video_format=opts.chosen_format or "16:9",
-        resolution=args.resolution or "1080p",
-        subtitle_style=args.subtitle_style or "box_black",
-        blur_mode=args.blur_mode or "auto",
-        mirror=args.mirror,
-        blur_height=args.blur_height,
-        audio_anti_copyright=args.audio_anti_copyright,
-        context_hint=args.context_hint,
-    )
+    return {k: opts.values[k] for k in _SUBTITLE_KEYS}
 
 
 def recap_common_kwargs(args, opts) -> dict:
     """Engine 1 (Recap Studio) options shared by MasterAgent and BatchProcessor."""
+    v = opts.values
     return dict(
         language=opts.clean_lang,
-        subtitle_mode=opts.sub_mode,
-        subtitle_style=args.subtitle_style,
-        resolution=args.resolution,
-        tts_engine=args.engine,
+        subtitle_mode=v["subtitle_mode"],
+        subtitle_style=v["subtitle_style"],
+        resolution=v["resolution"],
+        tts_engine=v["tts_engine"],
         tts_voice=opts.chosen_voice,
         custom_thumb_title=opts.thumb_title,
-        watermark_enabled=opts.watermark_enabled,
-        watermark_text=args.watermark_text,
+        watermark_enabled=v["watermark_enabled"],
+        watermark_text=v["watermark_text"],
+        watermark_opacity=v["watermark_opacity"],
         video_format=opts.chosen_format,
-        thumbnail_intro=opts.thumb_intro,
-        source_language=args.source_lang,
-        script_engine=args.script_engine,
-        resume=opts.should_resume,
-        skip_demucs=args.skip_demucs,
-        detect_scenes=opts.detect_scenes,
-        translation_style=args.translation_style,
-        audio_mode=args.audio_mode,
-        sfx_mode=args.sfx_mode,
-        sfx_volume=args.sfx_volume,
-        blur_mode=args.blur_mode,
-        blur_height=args.blur_height,
-        mirror=args.mirror,
-        audio_anti_copyright=args.audio_anti_copyright,
-        render_video=not args.no_render,
-        context_hint=args.context_hint,
+        thumbnail_intro=v["thumbnail_intro"],
+        source_language=v["source_language"],
+        script_engine=v["script_engine"],
+        resume=v["resume"],
+        skip_demucs=v["skip_demucs"],
+        detect_scenes=v["detect_scenes"],
+        translation_style=v["translation_style"],
+        audio_mode=v["audio_mode"],
+        sfx_mode=v["sfx_mode"],
+        sfx_volume=v["sfx_volume"],
+        blur_mode=v["blur_mode"],
+        blur_height=v["blur_height"],
+        mirror=v["mirror"],
+        audio_anti_copyright=v["audio_anti_copyright"],
+        render_video=v["render_video"],
+        context_hint=v["context_hint"],
     )
 
 
@@ -643,11 +374,11 @@ def run_single(args, opts, src: str) -> None:
             print("[TIP] If this is a URL, make sure it starts with http:// or https://")
             sys.exit(1)
 
-    if args.engine_mode == "hardsub":
+    if opts.engine == "hardsub":
         from hardsub_engine import HardsubEngine
         HardsubEngine().run(input_source=movie_path, **hardsub_run_kwargs(args, opts))
         return
-    if args.engine_mode == "subtitle":
+    if opts.engine == "subtitle":
         from subtitle_engine import SubtitleEngine
         SubtitleEngine().run(input_source=movie_path, **subtitle_run_kwargs(args, opts))
         return
@@ -655,9 +386,9 @@ def run_single(args, opts, src: str) -> None:
     try:
         master = MasterAgent(
             movie_path,
-            trim_end=args.trim_end,
-            no_smart_trim=args.no_smart_trim,
-            outro_card=opts.outro_card,
+            trim_end=opts.values["trim_end"],
+            no_smart_trim=opts.values["no_smart_trim"],
+            outro_card=opts.values["outro_card"],
             **recap_common_kwargs(args, opts),
         )
         master.run_pipeline()
@@ -674,8 +405,8 @@ def run_batch(args, opts) -> None:
     movies_dir = conf.get("batch", {}).get("movies_folder", "movies")
     skip = conf.get("batch", {}).get("skip_completed", True) and not args.force
 
-    if args.engine_mode in ("hardsub", "subtitle"):
-        if args.engine_mode == "hardsub":
+    if opts.engine in ("hardsub", "subtitle"):
+        if opts.engine == "hardsub":
             from hardsub_engine import HardsubEngine
             engine, label, run_kwargs = HardsubEngine(), "HARDSUB", hardsub_run_kwargs(args, opts)
         else:

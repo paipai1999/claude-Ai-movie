@@ -1218,35 +1218,27 @@ class SubtitleEngine:
 
 
 def main():
+    from core.cli import SUBTITLE, add_option_arguments, resolve_args
+
     parser = argparse.ArgumentParser(description="YouTube Video to Burmese Subtitle & Transcript Generation Engine")
     parser.add_argument("pos_input", nargs="?", default=None, help=argparse.SUPPRESS)
     parser.add_argument("-i", "--input", default=None, help="YouTube URL or local video file path")
     parser.add_argument("-o", "--output-dir", default="outputs", help="Output base directory (default: outputs/)")
-    parser.add_argument("-n", "--name", default=None, help="Custom project name for the output folder")
-    parser.add_argument("--source-lang", default="auto", help="Source video spoken language (default: auto)")
-    parser.add_argument("--force-whisper", action="store_true", help="Force Whisper speech-to-text even if YouTube subs exist")
     parser.add_argument("--cookies", default=None, help="Path to cookies.txt file for YouTube download")
-    parser.add_argument("--translation-style", choices=["dialogue", "persona", "recap", "wuxia", "cinematic"], default="dialogue", help="Translation style (dialogue, persona, recap, wuxia, cinematic)")
-    parser.add_argument("--format", "--aspect-ratio", choices=["16:9", "9:16", "both"], default="16:9", help="Aspect ratio for optional video render")
-    parser.add_argument("--res", choices=["1080p", "720p"], default="1080p", help="Resolution for optional video render")
-    parser.add_argument("--style", choices=["box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box"], default="box_black", help="Subtitle style preset")
-    parser.add_argument("--render-video", dest="render_video", action="store_true", default=False, help="Render hardsub preview video")
-    parser.add_argument("--no-render", dest="render_video", action="store_false", help="Skip rendering video")
-    parser.add_argument("--blur", dest="blur_flag", action="store_true", default=None, help="Enable Vision AI subtitle blur removal and render video")
+    parser.add_argument("--blur", dest="blur_flag", action="store_true", default=None,
+                        help="Enable Vision AI subtitle blur removal and render video")
     parser.add_argument("--no-blur", dest="blur_flag", action="store_false", help="Disable subtitle blur")
-    parser.add_argument("--blur-mode", choices=["auto", "yes", "no"], default="auto", help="Subtitle blur mode")
-    parser.add_argument("--blur-height", type=float, default=None, help="Subtitle blur height")
-    parser.add_argument("--mirror", action="store_true", default=False, help="Mirror video horizontally")
-    parser.add_argument("--audio-anti-copyright", "--audio-shield", dest="audio_anti_copyright", action="store_true", default=False, help="Audio tempo shield")
-    parser.add_argument("--hint", "--context-hint", dest="context_hint", default=None, help="Custom story, character, or genre guidance for translation (e.g. 'မင်းသားနာမည် ကျန်းဖန်၊ သိုင်းကား')")
+    # Every studio option (flags, aliases, choices, defaults) comes from core/options.py.
+    add_option_arguments(parser, SUBTITLE)
 
     args = parser.parse_args()
     input_source = args.input or args.pos_input
     if not input_source:
         parser.error("the following arguments are required: -i/--input or input positional")
 
-    render_video = args.render_video
-    blur_mode = args.blur_mode
+    v = resolve_args(SUBTITLE, args)
+    render_video = v["render_video"]
+    blur_mode = v["blur_mode"]
     if args.blur_flag is True:
         render_video = True
         blur_mode = "auto" if blur_mode == "no" else blur_mode
@@ -1257,19 +1249,20 @@ def main():
     try:
         engine.run(
             input_source=input_source,
-            project_name=args.name,
-            source_language=args.source_lang,
-            force_whisper=args.force_whisper,
-            translation_style=args.translation_style,
+            project_name=v["project_name"],
+            source_language=v["source_language"],
+            force_whisper=v["force_whisper"],
+            translation_style=v["translation_style"],
             render_video=render_video,
-            video_format=args.format,
-            resolution=args.res,
-            subtitle_style=args.style,
+            video_format=v["video_format"],
+            resolution=v["resolution"],
+            subtitle_style=v["subtitle_style"],
             blur_mode=blur_mode,
-            mirror=args.mirror,
-            blur_height=args.blur_height,
-            audio_anti_copyright=args.audio_anti_copyright,
-            context_hint=args.context_hint,
+            mirror=v["mirror"],
+            color_grading=v["color_grading"],
+            blur_height=v["blur_height"],
+            audio_anti_copyright=v["audio_anti_copyright"],
+            context_hint=v["context_hint"],
         )
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {e}")

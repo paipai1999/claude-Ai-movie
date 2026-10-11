@@ -355,6 +355,26 @@ python hardsub_engine.py "https://youtu.be/..." --name "Marvel_Hardsub" --source
 
 ---
 
+#### 🧭 One set of options for all three programs
+
+`main.py`, `hardsub_engine.py` and `subtitle_engine.py` generate their options from the same definition
+([`core/options.py`](core/options.py) → [`core/cli.py`](core/cli.py)). The canonical spellings below work
+identically everywhere; every older spelling keeps working. Anything you do not type gets the default of the
+engine that runs (e.g. `--translation-style` is `persona` for hardsub, `dialogue` for subtitle, `recap` for recap).
+
+| Step | Canonical flags |
+| :--- | :--- |
+| 1 Source | `--engine-mode` (main only), `--name`, `--force-whisper`, `--res` |
+| 2 Language | `--source-lang`, `--lang` (main: target), `--translation-style`, `--context-hint` |
+| 3 Output | `--format`, `--subtitle-style`, `--render-video` / `--no-render`, `--thumb-title`, `--watermark-text` |
+| 4 Protection | `--blur-mode`, `--blur-height`, `--mirror`, `--color-grading` / `--no-color-grading`, `--audio-shield` |
+| 5 Audio | `--audio-mode`, `--sfx-mode`, `--sfx-volume`, `--tts-voice`, `--skip-demucs` |
+
+`python hardsub_engine.py --help` (or `main.py --help`) lists exactly what that program accepts, with defaults.
+The same model is served to the dashboard at `GET /api/options`.
+
+---
+
 ## 🧪 Testing & Quality Assurance
 
 Run the automated test suite to verify system integrity:

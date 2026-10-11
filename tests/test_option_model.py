@@ -57,6 +57,9 @@ def legacy_single_args(d, job_id="J"):
     subtitle_style = d["subtitle_style"] or "box_black"
     resolution = d["resolution"] or "1080p"
     video_format = d["video_format"] or ("both" if d["reels_enabled"] else "16:9")
+    if d["engine_mode"] == "subtitle" and not d["video_format"]:
+        # Phase 2: the subtitle engine's own default (matches subtitle_worker's signature / CLI).
+        video_format = "16:9"
 
     if d["engine_mode"] == "hardsub":
         return "hardsub_worker", (
@@ -111,6 +114,8 @@ def legacy_batch_args(d, inputs, job_id="J"):
     language = d["language"] or "burmese"
     video_format = d["video_format"] or ("both" if d["reels_enabled"] else "16:9")
     engine = d["engine_mode"] or "recap"
+    if engine == "subtitle" and not d["video_format"]:
+        video_format = "16:9"
     ts_default = {"hardsub": "persona", "subtitle": "dialogue"}.get(engine, "recap")
     am_default = {"hardsub": "original", "subtitle": "original"}.get(engine, "ai_voiceover")
     return (
@@ -234,7 +239,7 @@ class TestApiContract(unittest.TestCase):
     def test_unchanged_defaults_for_non_engine_specific_options(self):
         req = StartRequest(input="a")
         for name, value in LEGACY_DEFAULTS.items():
-            if name in ("translation_style", "audio_mode", "render_video"):
+            if name in ("translation_style", "audio_mode", "render_video", "video_format"):
                 continue  # engine-specific, see TestEngineDefaults
             self.assertEqual(getattr(req, name), value, name)
 
