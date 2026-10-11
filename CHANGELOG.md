@@ -21,6 +21,29 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.4.0-dev] — Shared engine base (Phase 3 of 4: engines)
+
+### 🧱 Architecture
+- **`core/engine_base.py` — `StudioEngineBase`** holds what Engines 2 and 3 used to copy: construction, cancellation, API-key discovery, URL detection, media probing and the **QA audit-and-repair pass**, written once as a skeleton. What genuinely differs per engine (the repair prompt, how the model's answer is read, how a repaired line is cleaned) is five small `_repair_*` hooks.
+- **`core/transcribe.py`** (`transcribe_media`) and **`core/subtitle_parse.py`** (`parse_subtitle_cues`) replace two copies each of the Whisper and SRT/VTT code.
+- `hardsub_engine.py` 1470 → 1262 lines, `subtitle_engine.py` 1276 → 1071; ~575 duplicated lines removed, ~370 shared lines added.
+- Engines keep their own `call_gemini` binding (`_call_llm`), so monkeypatching an engine module keeps working.
+
+### 🔍 Verified against the previous code
+- 186 checks replayed old vs new (repair prompts and every model-call argument, 7 parser fixtures x 2 engines, probing, API keys, URL detection, cancellation, transcription): 183 identical.
+- Real run of both engines on the test clip: same segment count (15), same longest segment (5.0 s), no warnings.
+
+### 🐞 Three deliberate differences (one rule now applies to both engines)
+- Hardsub keeps no `{n8}`-style tags in imported caption text (they used to reach the translator; the subtitle engine already stripped them).
+- Hardsub treats a scheme-less `youtu.be/...` as a URL (as the subtitle engine did).
+- The subtitle engine drops zero-length Whisper segments (hardsub already did); they rendered as 0.3 s ghost subtitles.
+- `_get_api_keys` never mutates the loaded config (the subtitle engine used to append environment keys into the config list).
+
+### 🧪 Tests
+- `tests/test_engine_base.py` (24): shared base, engine-specific prompts/answer parsing preserved, parser fixtures, transcription behaviour. 292 tests (was 268).
+
+---
+
 ## [2.4.0-dev] — Shared option model (Phase 2 of 4: command line)
 
 ### 🧱 Architecture

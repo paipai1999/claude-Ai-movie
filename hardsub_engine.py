@@ -31,7 +31,6 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import brain.config as cfg
 from brain.gemini_client import call_gemini
 from brain.prompts import (
     HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT,
@@ -45,7 +44,6 @@ from brain.burmese_utils import (
     transliterate_english_acronyms,
     sanitize_burmese_narration,
     extract_clean_burmese_text,
-    has_untranslated_foreign_script,
     sanitize_dialogue_persona_particles,
     strip_trailing_subtitle_punctuation,
     format_dual_speaker_subtitles,
@@ -59,8 +57,9 @@ from agents.video_merger_agent import (
     _get_safe_ascii_id,
 )
 from core.paths import sanitize_project_name, resolve_inside
-from core.whisper_settings import load_faster_whisper, resolve_beam_size
-from core.segment_timing import tighten_end
+from core.engine_base import StudioEngineBase
+from core.subtitle_parse import read_subtitle_cues
+from core.transcribe import transcribe_media
 from core.letterbox import plan_canvas_mode
 from core.subtitle_builder import (
     format_srt_timestamp,
@@ -74,31 +73,81 @@ _parse_srt_timestamp = parse_srt_timestamp
 _format_ass_timestamp = format_ass_timestamp
 
 
-class HardsubEngine:
+class HardsubEngine(StudioEngineBase):
     """Original Audio & Burmese Hardsub Studio Engine."""
 
-    def __init__(
-        self,
-        output_base_dir: str = "outputs",
-        cookies_path: Optional[str] = None,
-        cancel_event=None,
-    ):
-        self.output_base_dir = os.path.abspath(output_base_dir)
-        # Explicit --cookies wins; otherwise reuse the cookie file uploaded through the dashboard.
-        self.cookies_path = cookies_path or DownloaderAgent.find_cookies_file()
-        self.cancel_event = cancel_event
-        self.config_data = cfg.load_config()
-        self.ffmpeg_bin = _get_ffmpeg_bin()
-        os.makedirs(self.output_base_dir, exist_ok=True)
+    # Shared plumbing (init, cancellation, API keys, probing, QA repair skeleton) lives in
+    # core/engine_base.py; only what is specific to this engine is defined below.
+    line_label = "dialogue"
+    segment_id_key = "id"
+    default_translation_style = "persona"
+    cancel_message = "HardsubEngine execution cancelled by user."
+    announce_cancel = True
 
-    @staticmethod
-    def is_url(path_or_url: str) -> bool:
-        return DownloaderAgent.is_url(str(path_or_url))
+    def _resolve_ffmpeg_bin(self) -> str:
+        return _get_ffmpeg_bin()
 
-    def _check_cancellation(self):
-        if (self.cancel_event and getattr(self.cancel_event, "is_set", lambda: False)()) or os.environ.get("CURRENT_JOB_CANCELLED") == "1":
-            print("\n[STOP] HardsubEngine was force-stopped by user.")
-            raise InterruptedError("HardsubEngine execution cancelled by user.")
+    def _call_llm(self, **kwargs):
+        return call_gemini(**kwargs)
+
+    def _repair_system_prompt(self, style: str, item_count: int) -> str:
+        if style in ("wuxia", "cultivation", "historical", "costume"):
+            return WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT
+        return HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT
+
+    def _repair_user_prompt(self, hint_block: str, items: List[Dict]) -> str:
+        return (
+            f"{hint_block}"
+            f"REPAIR TASK: Translate these {len(items)} dialogue items into natural cinematic colloquial Myanmar (Burmese).\n"
+            f"CRITICAL REQUIREMENTS:\n"
+            f"1. NEVER output Chinese (Hanzi), Japanese, Korean, or foreign script in 'burmese' field.\n"
+            f"2. All character names and titles must be translated or phonetically transliterated into Myanmar script.\n"
+            f"3. NEVER end subtitle lines with trailing punctuation (❌ no trailing '၊', ',', or '။').\n"
+            f"4. Return ONLY a valid JSON array of objects where each object has: id, burmese, speaker_gender.\n\n"
+            f"{json.dumps(items, ensure_ascii=False)}"
+        )
+
+    def _repair_texts(self, segments: List[Dict], batch_idxs: List[int], parsed: List) -> List[Optional[str]]:
+        """Answers are objects keyed by segment id; fall back to the item at the same position."""
+        by_id = {}
+        for item in parsed:
+            if isinstance(item, dict):
+                text = item.get("burmese") or item.get("translation") or item.get("myanmar", "")
+                if text:
+                    by_id[str(item.get("id", ""))] = str(text).strip()
+        texts: List[Optional[str]] = []
+        for pos, seg_idx in enumerate(batch_idxs):
+            text = by_id.get(str(segments[seg_idx].get("id", seg_idx + 1)))
+            if not text and pos < len(parsed):
+                item = parsed[pos]
+                if isinstance(item, dict):
+                    text = item.get("burmese") or item.get("translation", "")
+                elif isinstance(item, str):
+                    text = item
+            texts.append(text)
+        return texts
+
+    def _clean_repaired_text(self, text: str) -> str:
+        text = replace_numbers_with_burmese(text)
+        text = transliterate_english_acronyms(text)
+        text = sanitize_burmese_narration(text)
+        text = sanitize_dialogue_persona_particles(text)
+        return strip_trailing_subtitle_punctuation(text)
+
+    def _parse_subtitle_file(self, sub_path: str) -> List[Dict]:
+        try:
+            cues = read_subtitle_cues(sub_path)
+        except Exception as e:
+            print(f"[WARN] Failed parsing subtitle file: {e}")
+            return []
+        return [{"start": start, "end": end, "text": text} for start, end, text in cues if end > start]
+
+    def _transcribe_with_whisper(self, video_path: str, source_language: str = "auto") -> List[Dict]:
+        self._check_cancellation()
+        return transcribe_media(
+            self.ffmpeg_bin, video_path, source_language, self.config_data.get("pipeline", {}),
+            temp_prefix="hardsub_stt", use_media_when_extraction_fails=True,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 1: Video Ingestion & Download
@@ -180,41 +229,6 @@ class HardsubEngine:
         print(f"[OK] Ingestion ready: '{title}' ({dur_val:.1f}s, {video_meta.get('width', 1920)}x{video_meta.get('height', 1080)})")
         return video_file, sub_file, title, video_meta
 
-    def _probe_video_metadata(self, video_path: str) -> dict:
-        dur, fps, w, h = 0.0, 30.0, 1920, 1080
-        has_audio = True
-        try:
-            cmd = [self.ffmpeg_bin, "-i", video_path, "-hide_banner"]
-            res = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True, errors="replace")
-            err = res.stderr
-            dur_match = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err)
-            if dur_match:
-                h_val, m_val, s_val = dur_match.groups()
-                dur = float(h_val) * 3600.0 + float(m_val) * 60.0 + float(s_val)
-            wh_match = re.search(r",\s*(\d{2,5})x(\d{2,5})", err)
-            if wh_match:
-                w = int(wh_match.group(1))
-                h = int(wh_match.group(2))
-            has_video_stream = bool(re.search(r"Stream #\d+:\d+.*Video:", err))
-            has_audio_stream = bool(re.search(r"Stream #\d+:\d+.*Audio:", err))
-            if has_video_stream and not has_audio_stream:
-                has_audio = False
-            elif has_audio_stream:
-                has_audio = True
-            else:
-                has_audio = True
-        except Exception:
-            has_audio = True
-
-        return {
-            "title": os.path.splitext(os.path.basename(video_path))[0],
-            "duration": dur,
-            "fps": fps,
-            "width": w,
-            "height": h,
-            "has_audio": has_audio,
-        }
-
     def _try_extract_youtube_subs(self, url: str, temp_dir: str) -> Optional[str]:
         try:
             import yt_dlp
@@ -292,92 +306,6 @@ class HardsubEngine:
         cleaned = merge_short_gap_segments(cleaned, max_gap=0.25, max_combined_dur=5.0)
         print(f"[OK] Extracted & consolidated {len(cleaned)} dialogue segments via {extractor_type}.")
         return cleaned, extractor_type
-
-    def _parse_subtitle_file(self, sub_path: str) -> List[Dict]:
-        segments = []
-        try:
-            with open(sub_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-
-            blocks = re.split(r"\n\s*\n", content.strip())
-            for block in blocks:
-                lines = [l.strip() for l in block.splitlines() if l.strip()]
-                ts_line_idx = -1
-                for i, l in enumerate(lines):
-                    if "-->" in l:
-                        ts_line_idx = i
-                        break
-                if ts_line_idx == -1:
-                    continue
-
-                ts_match = re.search(r"([\d:,.]+)\s*-->\s*([\d:,.]+)", lines[ts_line_idx])
-                if not ts_match:
-                    continue
-                start_sec = _parse_srt_timestamp(ts_match.group(1))
-                end_sec = _parse_srt_timestamp(ts_match.group(2))
-                text_lines = lines[ts_line_idx + 1 :]
-                text = " ".join(text_lines).strip()
-                text = re.sub(r"<[^>]+>", "", text).strip()
-                if text and end_sec > start_sec:
-                    segments.append({"start": start_sec, "end": end_sec, "text": text})
-        except Exception as e:
-            print(f"[WARN] Failed parsing subtitle file: {e}")
-        return segments
-
-    def _transcribe_with_whisper(self, video_path: str, source_language: str = "auto") -> List[Dict]:
-        self._check_cancellation()
-        # Extract audio to temp 16kHz mono WAV for Whisper with process-safe unique name
-        temp_audio = os.path.abspath(os.path.join("temp", f"hardsub_stt_{os.getpid()}_{int(time.time() * 1000)}.wav"))
-        os.makedirs(os.path.dirname(temp_audio), exist_ok=True)
-        extracted = False
-        try:
-            cmd = [
-                self.ffmpeg_bin, "-y", "-i", video_path,
-                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-                temp_audio
-            ]
-            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if res.returncode == 0 and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 100:
-                extracted = True
-                audio_target = temp_audio
-            else:
-                print("[WARN] Audio extraction produced empty file or failed. Attempting direct file inspection...")
-                audio_target = video_path
-
-            pipeline_cfg = self.config_data.get("pipeline", {})
-            model, model_size, device = load_faster_whisper(pipeline_cfg.get("whisper_model", "auto"))
-            print(f"[*] Faster-Whisper ready: model={model_size}, device={device}")
-
-            lang = None if source_language in ["auto", "", None] else source_language
-            whisper_segs, _ = model.transcribe(
-                audio_target, language=lang, beam_size=resolve_beam_size(pipeline_cfg), vad_filter=True,
-                word_timestamps=True,
-            )
-
-            results = []
-            for s in whisper_segs:
-                txt = s.text.strip()
-                if txt and s.end > s.start:
-                    # Whisper segments run on through silence/music; never outlive the speech.
-                    end = tighten_end(s.start, s.end, txt, getattr(s, "words", None))
-                    results.append({"start": s.start, "end": end, "text": txt})
-            return results
-        finally:
-            if extracted and os.path.exists(temp_audio):
-                try:
-                    os.remove(temp_audio)
-                except Exception:
-                    pass
-
-    def _get_api_keys(self) -> List[str]:
-        api_keys = list(self.config_data.get("gemini", {}).get("api_keys", []))
-        env_keys = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY")
-        if env_keys:
-            parsed = [k.strip() for k in env_keys.replace("\r\n", ",").replace("\n", ",").replace(";", ",").split(",") if k.strip()]
-            for k in parsed:
-                if k not in api_keys:
-                    api_keys.append(k)
-        return api_keys
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 3: Gender/Age-Aware & Faithful 1:1 Burmese Translation (Gemini)
@@ -584,142 +512,6 @@ class HardsubEngine:
             context_hint=context_hint,
             source_lang=source_language,
         )
-        return segments
-
-    def _audit_and_repair_untranslated(
-        self,
-        segments: List[Dict],
-        translation_style: str = "persona",
-        context_hint: Optional[str] = None,
-        source_lang: str = "auto",
-    ) -> List[Dict]:
-        """
-        Automated QA Audit & Self-Healing Auto-Repair Pass:
-        1. Detects any segments with untranslated Chinese/foreign ideographs, empty translations, or original text leakage.
-        2. Automatically re-prompts Gemini in targeted micro-batches with strict foreign-script prohibition.
-        3. Sanitizes colloquial persona particles (removes robotic polite particles before/after exclamation marks).
-        4. Guarantees 0% raw foreign characters leaked onto the burned hardsub deliverables.
-        """
-        api_keys = self._get_api_keys()
-        damaged_indices = []
-        for idx, s in enumerate(segments):
-            b_text = str(s.get("burmese", "")).strip()
-            if not b_text or has_untranslated_foreign_script(b_text):
-                damaged_indices.append(idx)
-
-        self.last_damaged_count = len(damaged_indices)
-        self.last_repaired_count = 0
-
-        if not damaged_indices:
-            print("[OK] QA Audit: 100% of dialogue lines verified in pure Myanmar Unicode. Zero foreign script residue.")
-            for s in segments:
-                if s.get("burmese"):
-                    s["burmese"] = sanitize_dialogue_persona_particles(s["burmese"])
-                    s["burmese"] = strip_trailing_subtitle_punctuation(s["burmese"])
-            return segments
-
-        print(f"\n[*] QA Auto-Repair: Detected {len(damaged_indices)} untranslated or damaged dialogue lines. Launching focused Gemini repair pass...")
-
-        if not api_keys:
-            print("[WARN] No Gemini API keys available for repair. Applying phonetic fallback cleansing.")
-            for idx in damaged_indices:
-                s = segments[idx]
-                s["burmese"] = strip_trailing_subtitle_punctuation(sanitize_burmese_narration(s.get("burmese") or s.get("original", ""))) or "[စကားသံ]"
-            return segments
-
-        cfg_data = cfg.load_config()
-        gemini_model = cfg_data.get("gemini", {}).get("models", {}).get("workhorse", "gemini-3.5-flash-lite")
-        style = str(translation_style or "persona").lower().strip()
-        chosen_sys = WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT if style in ["wuxia", "cultivation", "historical", "costume"] else HARDSUB_BURMESE_TRANSLATION_SYSTEM_PROMPT
-
-        repair_batch_size = 15
-        repaired_count = 0
-
-        for r_start in range(0, len(damaged_indices), repair_batch_size):
-            self._check_cancellation()
-            batch_idxs = damaged_indices[r_start : r_start + repair_batch_size]
-            prompt_items = [
-                {"id": segments[i].get("id", i + 1), "original": segments[i].get("original", "")}
-                for i in batch_idxs
-            ]
-
-            hint_str = ""
-            if context_hint and str(context_hint).strip():
-                hint_str = f"USER STORY & CHARACTER GUIDANCE:\n{str(context_hint).strip()}\n\n"
-
-            repair_user_prompt = (
-                f"{hint_str}"
-                f"REPAIR TASK: Translate these {len(prompt_items)} dialogue items into natural cinematic colloquial Myanmar (Burmese).\n"
-                f"CRITICAL REQUIREMENTS:\n"
-                f"1. NEVER output Chinese (Hanzi), Japanese, Korean, or foreign script in 'burmese' field.\n"
-                f"2. All character names and titles must be translated or phonetically transliterated into Myanmar script.\n"
-                f"3. NEVER end subtitle lines with trailing punctuation (❌ no trailing '၊', ',', or '။').\n"
-                f"4. Return ONLY a valid JSON array of objects where each object has: id, burmese, speaker_gender.\n\n"
-                f"{json.dumps(prompt_items, ensure_ascii=False)}"
-            )
-
-            parsed_repair = None
-            for r_attempt in range(3):
-                try:
-                    raw_res, _ = call_gemini(
-                        system_prompt=chosen_sys,
-                        user_prompt=repair_user_prompt,
-                        api_key=api_keys,
-                        model=gemini_model,
-                        temperature=0.2,
-                        response_mime_type="application/json",
-                    )
-                    clean_res = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_res.strip(), flags=re.MULTILINE).strip()
-                    parsed_repair = json.loads(clean_res)
-                    if isinstance(parsed_repair, dict) and "translations" in parsed_repair:
-                        parsed_repair = parsed_repair["translations"]
-                    if isinstance(parsed_repair, list) and len(parsed_repair) > 0:
-                        break
-                except Exception:
-                    time.sleep(2)
-
-            if isinstance(parsed_repair, list):
-                id_rep_map = {}
-                for itm in parsed_repair:
-                    if isinstance(itm, dict):
-                        itm_id = str(itm.get("id", ""))
-                        t_bur = itm.get("burmese") or itm.get("translation") or itm.get("myanmar", "")
-                        if t_bur:
-                            id_rep_map[itm_id] = str(t_bur).strip()
-
-                for b_i, seg_idx in enumerate(batch_idxs):
-                    s = segments[seg_idx]
-                    seg_id = str(s.get("id", seg_idx + 1))
-                    repaired_text = id_rep_map.get(seg_id)
-                    if not repaired_text and b_i < len(parsed_repair):
-                        fallback_itm = parsed_repair[b_i]
-                        if isinstance(fallback_itm, dict):
-                            repaired_text = fallback_itm.get("burmese") or fallback_itm.get("translation", "")
-                        elif isinstance(fallback_itm, str):
-                            repaired_text = fallback_itm
-
-                    if repaired_text and not has_untranslated_foreign_script(repaired_text):
-                        repaired_text = replace_numbers_with_burmese(repaired_text)
-                        repaired_text = transliterate_english_acronyms(repaired_text)
-                        repaired_text = sanitize_burmese_narration(repaired_text)
-                        repaired_text = sanitize_dialogue_persona_particles(repaired_text)
-                        repaired_text = strip_trailing_subtitle_punctuation(repaired_text)
-                        s["burmese"] = repaired_text
-                        repaired_count += 1
-                    else:
-                        cleaned_fallback = sanitize_burmese_narration(repaired_text or s.get("burmese", ""))
-                        cleaned_fallback = strip_trailing_subtitle_punctuation(cleaned_fallback)
-                        s["burmese"] = cleaned_fallback if cleaned_fallback.strip() else "[စကားသံ]"
-                        if cleaned_fallback.strip():
-                            repaired_count += 1
-
-        for s in segments:
-            if s.get("burmese"):
-                s["burmese"] = sanitize_dialogue_persona_particles(s["burmese"])
-                s["burmese"] = strip_trailing_subtitle_punctuation(s["burmese"])
-
-        self.last_repaired_count = repaired_count
-        print(f"[OK] QA Auto-Repair: Successfully repaired {repaired_count}/{len(damaged_indices)} dialogue lines.")
         return segments
 
     # ─────────────────────────────────────────────────────────────────────────
