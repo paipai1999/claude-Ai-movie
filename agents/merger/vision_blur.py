@@ -8,6 +8,7 @@ Gemini-Vision detection of burnt-in subtitles and the FFmpeg boxblur pass that h
 
 
 from brain.memory import MovieState
+from core.subtitle_detect import pick_sample_times, decide_subtitle_region
 from agents.merger.encoder import _get_ffmpeg_bin, detect_hardware_encoder
 import os
 
@@ -19,12 +20,13 @@ class SubtitleBlurMixin:
     # SUBTITLE BLUR — Vision AI Auto-Detection + FFmpeg Pass
     # ─────────────────────────────────────────────────────
 
-    def _detect_subtitle_region_with_vision(self, video_path: str, state: MovieState = None):
+    def _detect_subtitle_region_with_vision(self, video_path: str, state: MovieState = None, dialogue_times=None):
         """
         Uses Gemini Vision AI to analyze sample frames from the ORIGINAL SOURCE video
         and detect the EXACT vertical region (start_y_pct, height_pct) where
         hardcoded subtitles appear.
-        Samples frames at Whisper dialogue timestamps to guarantee subtitle visibility.
+        Samples frames at Whisper dialogue timestamps (``dialogue_times`` or ``state.transcript``)
+        to guarantee subtitle visibility, and takes a vote over all analysed frames.
 
         Returns:
             (start_y_pct, height_pct, subtitle_found)
@@ -58,46 +60,38 @@ class SubtitleBlurMixin:
                 '{"has_subtitles": false, "start_y_pct": 0.82, "height_pct": 0.18}'
             )
 
-            def get_sample_frames(pcts, stage_prefix):
+            def get_sample_frames():
+                """Frames at moments where somebody speaks (a subtitle can only be visible then)."""
                 frames = []
                 cap = cv2.VideoCapture(video_path)
                 try:
                     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 300)
-                    
-                    dialogue_times = []
-                    if state and getattr(state, "transcript", None):
-                        for s in state.transcript[:15]:
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                    duration = total_frames / fps if total_frames > 0 else 0.0
+
+                    starts = list(dialogue_times or [])
+                    if not starts and state and getattr(state, "transcript", None):
+                        for s in state.transcript:
                             t_val = getattr(s, "start", None) if hasattr(s, "start") else s.get("start") if isinstance(s, dict) else None
-                            if t_val is not None and float(t_val) > 1.0:
-                                dialogue_times.append(float(t_val) + 0.5)
+                            if t_val is not None:
+                                starts.append(float(t_val))
 
-                    if dialogue_times and stage_prefix == "s1":
-                        step = max(1, len(dialogue_times) // 5)
-                        for idx, sec in enumerate(dialogue_times[::step][:5]):
-                            frame_idx = min(int(sec * fps), total_frames - 1)
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                            ret, frame = cap.read()
-                            if ret and frame is not None:
-                                frame_path = os.path.join(temp_dir, f"frame_dialogue_{idx}_{int(sec)}s.jpg")
-                                cv2.imwrite(frame_path, frame)
-                                frames.append(frame_path)
-
-                    if not frames:
-                        for sample_pct in pcts:
-                            sample_frame_idx = int(total_frames * sample_pct)
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, sample_frame_idx)
-                            ret, frame = cap.read()
-                            if ret and frame is not None:
-                                frame_path = os.path.join(temp_dir, f"frame_{stage_prefix}_{int(sample_pct*100):03d}.jpg")
-                                cv2.imwrite(frame_path, frame)
-                                frames.append(frame_path)
+                    for idx, sec in enumerate(pick_sample_times(starts, duration)):
+                        frame_idx = int(sec * fps)
+                        if total_frames > 0:
+                            frame_idx = min(frame_idx, total_frames - 1)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            frame_path = os.path.join(temp_dir, f"frame_{idx}_{int(sec)}s.jpg")
+                            cv2.imwrite(frame_path, frame)
+                            frames.append(frame_path)
                 finally:
                     cap.release()
                 return frames
 
-            def scan_frames(sample_frames, stage_name):
-                print(f"[*] VisionAI Subtitle Detector ({stage_name}): Analyzing {len(sample_frames)} frames...")
+            def scan_frames(sample_frames):
+                print(f"[*] VisionAI Subtitle Detector: Analyzing {len(sample_frames)} frames...")
                 results = []
                 for i, frame_path in enumerate(sample_frames):
                     try:
@@ -111,7 +105,7 @@ class SubtitleBlurMixin:
                             image_path=frame_path,
                             api_key=api_keys,
                             model=model,
-                            temperature=0.05
+                            temperature=0.0
                         )
                         clean_json = res_text.strip().strip("`").replace("json", "").strip()
                         start_idx = clean_json.find('{')
@@ -123,82 +117,35 @@ class SubtitleBlurMixin:
                             parsed = parsed[0]
                         elif not isinstance(parsed, dict):
                             parsed = {}
-                            
+
                         results.append(parsed)
                         found = parsed.get("has_subtitles", False)
-                        print(f"[*] VisionAI [{stage_name}] Frame {i+1}/{len(sample_frames)}: has_subtitles={found} "
+                        print(f"[*] VisionAI Frame {i+1}/{len(sample_frames)}: has_subtitles={found} "
                               f"y={parsed.get('start_y_pct', '?')} h={parsed.get('height_pct', '?')} (model: {used_model})")
                     except Exception as e:
-                        print(f"[WARN] VisionAI [{stage_name}] Frame {i+1} failed: {e}")
+                        # A failed analysis is "unknown", never "no subtitles": it is not counted.
+                        print(f"[WARN] VisionAI Frame {i+1} failed: {e}")
                         continue
                 return results
 
-            # Stage 1: Scan first 50% of the video (5%, 15%, 25%, 35%, 50%)
-            stage1_frames = get_sample_frames([0.05, 0.15, 0.25, 0.35, 0.50], "s1")
-            if not stage1_frames:
+            frames = get_sample_frames()
+            if not frames:
                 print("[WARN] VisionAI Subtitle Detector: Could not read any frame. Skipping blur.")
                 return default_start_y, default_height, False
 
-            detection_results = scan_frames(stage1_frames, "Stage 1 (0-50%)")
-            frames_with_subs = [r for r in detection_results if r.get("has_subtitles", False)]
+            detection_results = scan_frames(frames)
+            decision = decide_subtitle_region(detection_results, default_start_y, default_height)
 
-            # Stage 2 Fallback: If no subtitles found in first 50%, scan second half (60%, 70%, 80%, 90%)
-            if not frames_with_subs:
-                print("[*] VisionAI Stage 1 (0-50%) found NO subtitles. Triggering Stage 2: Scanning remaining 50-90% of video...")
-                stage2_frames = get_sample_frames([0.60, 0.70, 0.80, 0.90], "s2")
-                if stage2_frames:
-                    stage2_results = scan_frames(stage2_frames, "Stage 2 (50-90%)")
-                    detection_results.extend(stage2_results)
-                    frames_with_subs = [r for r in detection_results if r.get("has_subtitles", False)]
-
-            if not detection_results:
-                print("[WARN] VisionAI: All frame analyses failed. Skipping blur.")
-                return default_start_y, default_height, False
-
-            # Filter out false positives (e.g., watermarks at the top of the screen)
-            # Dialogue subtitles are almost always in the lower half (y >= 0.5)
-            valid_subs = []
-            for r in frames_with_subs:
-                try:
-                    raw_y = r.get("start_y_pct", r.get("y", default_start_y))
-                    raw_h = r.get("height_pct", r.get("h", default_height))
-                    y_val = float(raw_y)
-                    h_val = float(raw_h)
-                    # Normalize if returned as raw pixel value (e.g. 743px for 1080p frame)
-                    if y_val > 1.0:
-                        y_val = y_val / 1080.0
-                    if h_val > 1.0:
-                        h_val = h_val / 1080.0
-                    
-                    y_val = max(0.0, min(0.98, y_val))
-                    h_val = max(0.02, min(0.40, h_val))
-                    if y_val >= 0.5:
-                        valid_subs.append({"start_y_pct": y_val, "height_pct": h_val})
-                except Exception:
-                    continue
-            
-            subtitle_found = len(valid_subs) > 0
-
-            if subtitle_found:
-                import statistics
-                y_values = [float(r["start_y_pct"]) for r in valid_subs]
-                h_values = [float(r["height_pct"]) for r in valid_subs]
-                
-                # Use median to ignore extreme outliers instead of average
-                median_y = statistics.median(y_values)
-                max_h = max(h_values)  # Use max height to ensure we cover 2-line subtitles if detected
-                
-                y_start  = max(0.50, min(0.92, median_y - 0.02))
-                y_height = max(0.05, min(1.0 - y_start, max_h + 0.04))
-
+            if decision["found"]:
+                y_start, y_height = decision["start_y"], decision["height"]
                 print(
-                    f"[OK] VisionAI: Subtitles CONFIRMED ({len(valid_subs)}/{len(detection_results)} frames positive)! "
+                    f"[OK] VisionAI: Subtitles CONFIRMED ({decision['positives']}/{decision['analysed']} frames positive)! "
                     f"Region -> Y: {y_start*100:.1f}%, Height: {y_height*100:.1f}% — Will blur."
                 )
                 return y_start, y_height, True
-            else:
-                print(f"[*] VisionAI: No subtitles detected across ENTIRE video ({len(detection_results)} frames tested). Skipping blur.")
-                return default_start_y, default_height, False
+
+            print(f"[*] VisionAI: Subtitles NOT confirmed ({decision['reason']}). Skipping blur.")
+            return default_start_y, default_height, False
 
         except Exception as e:
             print(f"[WARN] VisionAI Subtitle Detector: Detection failed ({e}). Skipping blur to be safe.")

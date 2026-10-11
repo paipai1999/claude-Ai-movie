@@ -9,8 +9,9 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 ### 🐞 Fixes
 - **Hardsub 16:9 no longer squashes non-16:9 sources.** A vertical (9:16), square or CinemaScope clip rendered with `--format 16:9` is now fitted inside the landscape canvas over a blurred copy of itself (same look as the 9:16 canvas) instead of being scaled to 1280x720, which produced a distorted frame carrying an odd pixel aspect ratio. Output always has `SAR 1:1`. (`core.letterbox.plan_canvas_mode`)
 - **Subtitles no longer stay on screen through silence.** Whisper segments that ran on through silence/music (one subtitle showed for 20 s) are tightened to the last recognised word (`word_timestamps=True`) and capped by how long the text can plausibly take to say. Applies to Engines 2 and 3. (`core.segment_timing.tighten_end`)
+- **Subtitle-blur detection is now a vote, not a coin flip.** The same video was blurred in one run and not in the next because one positive frame out of five decided the result (and zero positives meant no blur). Frames are now sampled where people speak (Whisper timestamps, spread across the whole video), failed analyses count as *unknown* instead of *negative*, and subtitles are only confirmed when enough analysed frames agree (>=2 and >=40%). The region comes from the median of the agreeing frames. The model runs at temperature 0. Three consecutive live runs on the test clip gave identical results (7/7 frames, y=0.66). (`core.subtitle_detect`)
 - Tests no longer depend on a real Gemini key being present in `config.json` (hermetic fixture in `tests/conftest.py`).
-- 199 tests (was 184).
+- 218 tests (was 184).
 
 ---
 

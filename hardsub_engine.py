@@ -729,7 +729,8 @@ class HardsubEngine:
         self,
         video_path: str,
         blur_mode: str = "auto",
-        custom_blur_height: Optional[float] = None
+        custom_blur_height: Optional[float] = None,
+        dialogue_times: Optional[List[float]] = None,
     ) -> Tuple[float, float, bool]:
         self._check_cancellation()
         eff_height = float(custom_blur_height) if custom_blur_height and 0.05 <= custom_blur_height <= 0.40 else 0.18
@@ -751,7 +752,9 @@ class HardsubEngine:
         try:
             from agents.video_merger_agent import VideoMergerAgent
             merger = VideoMergerAgent(output_dir=self.output_base_dir)
-            start_y, height, found = merger._detect_subtitle_region_with_vision(video_path)
+            start_y, height, found = merger._detect_subtitle_region_with_vision(
+                video_path, dialogue_times=dialogue_times
+            )
             if found:
                 actual_h = eff_height if custom_blur_height else height
                 actual_y = max(0.50, 1.0 - actual_h) if custom_blur_height else start_y
@@ -1085,6 +1088,7 @@ class HardsubEngine:
             video_path=video_path,
             blur_mode=blur_mode,
             custom_blur_height=blur_height,
+            dialogue_times=[s.get("start") for s in (segments or []) if isinstance(s, dict)],
         )
 
         temp_dir = os.path.join(self.output_base_dir, "temp")
@@ -1294,7 +1298,10 @@ class HardsubEngine:
 
         # Step 4: Detect blur region
         print("\n--- [Phase 4: Subtitle Blur & ASS Styling] ---", flush=True)
-        blur_info = self._detect_subtitle_blur_region(video_file, blur_mode, custom_blur_height=blur_height)
+        blur_info = self._detect_subtitle_blur_region(
+            video_file, blur_mode, custom_blur_height=blur_height,
+            dialogue_times=[s.get("start") for s in segments],
+        )
 
         # Step 5: Setup ASS subtitles
         temp_dir = os.path.abspath("temp")
