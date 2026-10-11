@@ -8,6 +8,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
     <style>
+        /* Controls whose option the selected engine does not use (see applyEngineRelevance) */
+        .option-na { display: none !important; }
+
         :root {
             --primary: #0f172a;
             --primary-light: #1e293b;
@@ -1403,22 +1406,22 @@
             <div class="stepper-header" role="group" aria-label="Production steps">
                 <button type="button" class="stepper-item active" id="step-nav-1" onclick="goToStep(1)" aria-current="step">
                     <span class="stepper-num">1</span>
-                    <span class="stepper-label" id="step-nav-label-1">Setup & Media</span>
+                    <span class="stepper-label" id="step-nav-label-1">Source & Language</span>
                 </button>
                 <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
                 <button type="button" class="stepper-item" id="step-nav-2" onclick="goToStep(2)">
                     <span class="stepper-num">2</span>
-                    <span class="stepper-label" id="step-nav-label-2">Engine & Protection</span>
+                    <span class="stepper-label" id="step-nav-label-2">Output & Style</span>
                 </button>
                 <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
                 <button type="button" class="stepper-item" id="step-nav-3" onclick="goToStep(3)">
                     <span class="stepper-num">3</span>
-                    <span class="stepper-label" id="step-nav-label-3">Audio & Branding</span>
+                    <span class="stepper-label" id="step-nav-label-3">Protection</span>
                 </button>
                 <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
                 <button type="button" class="stepper-item" id="step-nav-4" onclick="goToStep(4)">
                     <span class="stepper-num">4</span>
-                    <span class="stepper-label" id="step-nav-label-4">Subtitles & Ratio</span>
+                    <span class="stepper-label" id="step-nav-label-4">Audio & Pipeline</span>
                 </button>
                 <div class="stepper-arrow" aria-hidden="true">&rsaquo;</div>
                 <button type="button" class="stepper-item" id="step-nav-5" onclick="goToStep(5)">
@@ -1431,8 +1434,8 @@
             <div id="wizard-step-1" class="wizard-step-card card">
                 <div class="card-header">
                     <div>
-                        <div class="card-title" id="s1-title">Step 1: Setup & Media Input</div>
-                        <div class="card-desc" id="s1-desc">Configure Gemini API key credentials and select source video.</div>
+                        <div class="card-title" id="s1-title">Step 1: Source, Engine & Language</div>
+                        <div class="card-desc" id="s1-desc">Choose the video, the production engine, and how it should be translated.</div>
                     </div>
                     <div style="display:flex; gap:0.5rem; align-items:center;">
                         <button type="button" class="btn-nav" onclick="toggleApiExplainer()" id="btn-api-explainer-toggle">
@@ -1441,6 +1444,30 @@
                         <span class="badge-pill info" id="api-total-badge">Checking API Quota...</span>
                     </div>
                 </div>
+
+                <!-- Engine & translation voice (decides which later options apply) -->
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
+                    <div data-option="engine_mode" class="form-group">
+                        <label class="form-label" id="label-engine-mode">Production Engine Mode:</label>
+                        <select id="select-engine-mode" class="select-control" onchange="handleEngineChange(this.value)">
+                            <option value="recap" selected>Engine 1: Movie Recap Studio (AI Narration)</option>
+                            <option value="subtitle">Engine 2: Pure Subtitle Translation (.srt/.vtt)</option>
+                            <option value="hardsub">Engine 3: Original Audio & Hardsub Studio</option>
+                        </select>
+                    </div>
+                    <div data-option="translation_style" class="form-group">
+                        <label class="form-label" id="label-translation-style">Translation Style:</label>
+                        <select id="select-translation-style" class="select-control">
+                            <option value="recap" selected>Movie Recap Storyteller Style</option>
+                            <option value="drama_novel">Chinese Drama Audio Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်)</option>
+                            <option value="dialogue">1:1 Natural Spoken Dialogue</option>
+                            <option value="persona">Character Persona & Kinship Dubbing</option>
+                            <option value="wuxia">Wuxia / Cultivation (သိုင်းကား / ကျင့်ကြံရေး နန်းတွင်း)</option>
+                            <option value="cinematic">Cinematic Natural Dubbing (ရုပ်ရှင်သဘာဝ စကားပြော)</option>
+                        </select>
+                    </div>
+                </div>
+
 
                 <!-- Collapsible API Key Explainer Card -->
                 <div id="api-explainer-box" style="display:none; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
@@ -1488,14 +1515,14 @@
 
                 <!-- Resolution & Source Language Row -->
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem;">
-                    <div class="form-group">
+                    <div data-option="resolution" class="form-group">
                         <label class="form-label" id="label-resolution">Output Video Resolution:</label>
                         <select id="select-resolution" class="select-control">
                             <option value="1080p" selected>1080p Full HD (Recommended)</option>
                             <option value="720p">720p Standard HD</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div data-option="source_language" class="form-group">
                         <label class="form-label" id="label-source-lang">Source Audio Language:</label>
                         <select id="select-source-lang" class="select-control">
                             <option value="auto" selected>Auto Detect</option>
@@ -1508,11 +1535,17 @@
                     </div>
                 </div>
 
+                <!-- Story & Character Hint (Optional Context) -->
+                <div data-option="context_hint" class="form-group" style="margin-bottom:1.25rem;">
+                    <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span id="label-context-hint">ဇာတ်လမ်း / ဇာတ်ကောင် အညွှန်း (Story & Character Hint):</span>
+                        <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Optional</span>
+                    </label>
+                    <input type="text" id="input-context-hint" class="input-text" placeholder="ဥပမာ - သိုင်းကား၊ မင်းသားနာမည် ကျန်းဖန်၊ မင်းသမီး လျိုရှင်း၊ မာနကြီးသော သခင်လေး..." style="width:100%;">
+                </div>
                 <div class="step-footer">
                     <div></div>
-                    <button type="button" class="btn-primary" onclick="goToStep(2)" id="btn-step1-next">
-                        Next: Engine & Protection >
-                    </button>
+                    <button type="button" class="btn-primary" onclick="goToStep(2)" id="btn-step1-next">Next: Output & Style ></button>
                 </div>
             </div>
 
@@ -1520,166 +1553,58 @@
             <div id="wizard-step-2" class="wizard-step-card card" style="display:none;">
                 <div class="card-header">
                     <div>
-                        <div class="card-title" id="s2-title">Step 2: Engine & Anti-Copyright Protection</div>
-                        <div class="card-desc" id="s2-desc">Select production workflow and platform anti-copyright evasion shields.</div>
+                        <div class="card-title" id="s2-title">Step 2: Output & Style</div>
+                        <div class="card-desc" id="s2-desc">Choose the deliverable, aspect ratio, subtitle look, thumbnail and watermark.</div>
                     </div>
                 </div>
 
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
-                    <div class="form-group">
-                        <label class="form-label" id="label-engine-mode">Production Engine Mode:</label>
-                        <select id="select-engine-mode" class="select-control" onchange="handleEngineChange(this.value)">
-                            <option value="recap" selected>Engine 1: Movie Recap Studio (AI Narration)</option>
-                            <option value="subtitle">Engine 2: Pure Subtitle Translation (.srt/.vtt)</option>
-                            <option value="hardsub">Engine 3: Original Audio & Hardsub Studio</option>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
+                    <div data-option="render_video" class="form-group">
+                        <label class="form-label" id="label-deliverable-mode">Deliverable Output Mode:</label>
+                        <select id="select-render-video" class="select-control">
+                            <option value="true" selected>Render Full MP4 Video</option>
+                            <option value="false">Subtitles & Transcripts Only (.srt / .ass)</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label" id="label-translation-style">Translation Style:</label>
-                        <select id="select-translation-style" class="select-control">
-                            <option value="recap" selected>Movie Recap Storyteller Style</option>
-                            <option value="drama_novel">Chinese Drama Audio Novel (တရုတ်ဒရမ်မာ အသံထွက်ဝတ္ထုဟန်)</option>
-                            <option value="dialogue">1:1 Natural Spoken Dialogue</option>
-                            <option value="persona">Character Persona & Kinship Dubbing</option>
-                            <option value="wuxia">Wuxia / Cultivation (သိုင်းကား / ကျင့်ကြံရေး နန်းတွင်း)</option>
-                            <option value="cinematic">Cinematic Natural Dubbing (ရုပ်ရှင်သဘာဝ စကားပြော)</option>
+                    <div data-option="subtitle_mode" class="form-group">
+                        <label class="form-label" id="label-subtitle-burn-mode">Subtitle Embedding Mode:</label>
+                        <select id="select-hardsub-mode" class="select-control">
+                            <option value="burn" selected>Burn Hardsub into Video</option>
+                            <option value="none">Voiceover Only / No Subtitles</option>
+                        </select>
+                    </div>
+                    <div data-option="video_format" class="form-group">
+                        <label class="form-label" id="label-aspect-ratio">Video Aspect Ratio:</label>
+                        <select id="select-video-format" class="select-control">
+                            <option value="both" selected>Dual Export (16:9 Landscape + 9:16 Vertical Reels)</option>
+                            <option value="16:9">16:9 Landscape Only (YouTube / FB)</option>
+                            <option value="9:16">9:16 Vertical Canvas Only (Reels / TikTok)</option>
                         </select>
                     </div>
                 </div>
 
-                <!-- Story & Character Hint (Optional Context) -->
-                <div class="form-group" style="margin-bottom:1.25rem;">
-                    <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
-                        <span id="label-context-hint">ဇာတ်လမ်း / ဇာတ်ကောင် အညွှန်း (Story & Character Hint):</span>
-                        <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Optional</span>
-                    </label>
-                    <input type="text" id="input-context-hint" class="input-control" placeholder="ဥပမာ - သိုင်းကား၊ မင်းသားနာမည် ကျန်းဖန်၊ မင်းသမီး လျိုရှင်း၊ မာနကြီးသော သခင်လေး..." style="width:100%;">
-                </div>
-
-                <!-- Anti-Copyright Card -->
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
-                    <div style="font-weight:700; font-size:0.85rem; color:var(--primary); margin-bottom:0.6rem;" id="label-anticopyright-card">
-                        Platform Anti-Copyright Protection Shields
-                    </div>
-                    <div class="switch-grid">
-                        <label class="switch-card" id="card-chk-mirror">
-                            <span class="switch-card-text" id="label-shield-mirror">Video Mirror (Horizontal Flip)</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="chk-mirror">
-                                <span class="slider"></span>
-                            </div>
-                        </label>
-                        <label class="switch-card checked" id="card-chk-color">
-                            <span class="switch-card-text" id="label-shield-zoom">1.02x Zoom & Color Grade EQ</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="chk-color-grading" checked>
-                                <span class="slider"></span>
-                            </div>
-                        </label>
-                        <label class="switch-card" id="card-chk-audio-shield">
-                            <span class="switch-card-text" id="label-shield-audio">Audio Tempo Shield (atempo=1.008)</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="chk-audio-anti-copyright">
-                                <span class="slider"></span>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Subtitle Blur Control Card -->
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                <!-- Subtitle Style Presets -->
+                <div data-option="subtitle_style" style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1.25rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-                        <span style="font-weight:700; font-size:0.85rem; color:var(--primary);" id="label-blur-card">Original Subtitle Blur (Vision AI):</span>
-                        <span class="badge-pill success" id="badge-blur-mode" style="font-size:0.7rem;">Vision AI Active</span>
+                        <span style="font-weight:700; font-size:0.85rem; color:var(--primary);" id="label-sub-presets">Subtitle Style Presets:</span>
+                        <button type="button" class="btn-nav" onclick="saveSubStyleDefault()" style="font-size:0.75rem;" id="btn-save-sub-preset">Save Default</button>
                     </div>
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:0.75rem;">
-                        <div class="form-group">
-                            <label class="form-label" style="font-size:0.78rem;" id="label-blur-mode">Blur Detection Mode:</label>
-                            <select id="select-blur-mode" class="select-control" onchange="handleBlurModeChange(this.value)">
-                                <option value="auto" selected>Auto Detect (Vision AI Y-Region)</option>
-                                <option value="yes">Force Subtitle Blur</option>
-                                <option value="no">No Blur (Disabled)</option>
-                            </select>
-                        </div>
-                        <div class="form-group" id="wrap-blur-height" style="display:none;">
-                            <label class="form-label" style="font-size:0.78rem;" id="label-blur-height">Custom Blur Height Ratio:</label>
-                            <select id="select-blur-height" class="select-control">
-                                <option value="0.14">14% (Single Line / Slim)</option>
-                                <option value="0.18" selected>18% (Standard 2-Line Subtitle)</option>
-                                <option value="0.24">24% (Large / 3-Line Subtitle)</option>
-                                <option value="0.30">30% (Wide DramaBox Watermark)</option>
-                            </select>
-                        </div>
+                    <div class="sub-presets-row">
+                        <button type="button" class="sub-preset-pill active" id="btn-sub-box_black" onclick="selectSubPreset('box_black')">Cinema Box (Netflix Style)</button>
+                        <button type="button" class="sub-preset-pill" id="btn-sub-yellow_pop" onclick="selectSubPreset('yellow_pop')">TikTok Yellow</button>
+                        <button type="button" class="sub-preset-pill" id="btn-sub-white_stroke" onclick="selectSubPreset('white_stroke')">Classic White</button>
+                        <button type="button" class="sub-preset-pill" id="btn-sub-cyan_cyber" onclick="selectSubPreset('cyan_cyber')">Cyber Cyan</button>
+                        <button type="button" class="sub-preset-pill" id="btn-sub-crimson_box" onclick="selectSubPreset('crimson_box')">Thriller Red</button>
                     </div>
-                </div>
-
-                <div class="step-footer">
-                    <button type="button" class="btn-secondary" onclick="goToStep(1)" id="btn-step2-back">< Back: Setup & Media</button>
-                    <button type="button" class="btn-primary" onclick="goToStep(3)" id="btn-step2-next">Next: Audio & Branding ></button>
-                </div>
-            </div>
-
-            <!-- ── STEP 3: AUDIO, SFX & BRANDING ── -->
-            <div id="wizard-step-3" class="wizard-step-card card" style="display:none;">
-                <div class="card-header">
-                    <div>
-                        <div class="card-title" id="s3-title">Step 3: Audio, SFX & Branding</div>
-                        <div class="card-desc" id="s3-desc">Configure voiceover narration, sound effects, thumbnail titles, and channel watermark.</div>
-                    </div>
-                </div>
-
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
-                    <div class="form-group">
-                        <label class="form-label" id="label-audio-track">Audio Track Mode:</label>
-                        <select id="select-audio-mode" class="select-control" onchange="toggleAudioModeControls(this.value)">
-                            <option value="ai_voiceover" selected>AI Voiceover Narration</option>
-                            <option value="original">100% Original Audio</option>
-                            <option value="none">Pure Silent / Mute Audio (မူရင်းအသံပိတ်)</option>
-                        </select>
-                    </div>
-                    <div class="form-group" id="wrap-tts-voice">
-                        <label class="form-label" id="label-voice-character">Neural Voice Character:</label>
-                        <select id="select-lang" class="select-control">
-                            <option value="burmese" selected>Burmese - Auto Multi-Voice</option>
-                            <option value="burmese_thiha">Burmese - Thiha (Male)</option>
-                            <option value="burmese_nilar">Burmese - Nilar (Female)</option>
-                            <option value="english">English - Auto Multi-Voice</option>
-                            <option value="english_guy">English - Guy (Male)</option>
-                            <option value="english_jenny">English - Jenny (Female)</option>
-                        </select>
-                    </div>
-                    <div class="form-group" id="wrap-tts-engine">
-                        <label class="form-label" id="label-tts-engine">TTS Voice Engine:</label>
-                        <select id="select-tts-engine" class="select-control">
-                            <option value="edge_tts" selected>Microsoft Edge Neural (Fast, Authentic)</option>
-                            <option value="f5_tts">F5-TTS Voice Cloning (Advanced)</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
-                    <div class="form-group">
-                        <label class="form-label" id="label-sfx-system">SFX System:</label>
-                        <select id="select-sfx-mode" class="select-control">
-                            <option value="original_sfx" selected>Demucs Foley SFX (Original FX)</option>
-                            <option value="bgm">Cinematic BGM (Background Music)</option>
-                            <option value="both">Foley SFX + BGM Mix</option>
-                            <option value="none">Clean Voiceover Only</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" id="label-sfx-vol">SFX Volume Level:</label>
-                        <select id="select-sfx-volume" class="select-control">
-                            <option value="0.10">10% Subtle</option>
-                            <option value="0.15" selected>15% Balanced (Recommended)</option>
-                            <option value="0.25">25% Prominent</option>
-                            <option value="0.40">40% Loud</option>
-                        </select>
+                    <div class="subtitle-preview-box">
+                        <span id="sub-live-preview" style="font-family:'Padauk', 'Pyidaungsu', sans-serif; font-size:1.05rem; font-weight:700; padding:4px 12px; border-radius:4px; background:rgba(0,0,0,0.85); color:#ffffff;">
+                            ဒီဇာတ်ကားကတော့ အကောင်းဆုံး သည်းထိတ်ရင်ဖို ရုပ်ရှင်ဖြစ်ပါတယ် (Sample Subtitle)
+                        </span>
                     </div>
                 </div>
 
                 <!-- Watermark Branding Box -->
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                <div data-option="watermark_enabled" style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
                         <label style="font-weight:700; font-size:0.85rem; color:var(--primary); cursor:pointer; display:flex; align-items:center; gap:0.4rem;">
                             <input type="checkbox" id="chk-watermark" checked onchange="toggleWatermarkControls(this.checked)">
@@ -1700,7 +1625,7 @@
                 </div>
 
                 <!-- Thumbnail Title Control Box -->
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                <div data-option="custom_thumb_title" style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
                         <span style="font-weight:700; font-size:0.85rem; color:var(--primary);" id="label-thumb-title-card">YouTube Thumbnail Title System:</span>
                         <span class="badge-pill info" id="badge-thumb-mode" style="font-size:0.7rem;">Auto AI Title</span>
@@ -1721,9 +1646,91 @@
                     </div>
                 </div>
 
+
+
+
+
+
                 <div class="step-footer">
-                    <button type="button" class="btn-secondary" onclick="goToStep(2)" id="btn-step3-back">< Back: Engine & Protection</button>
-                    <button type="button" class="btn-primary" onclick="goToStep(4)" id="btn-step3-next">Next: Subtitles & Ratio ></button>
+                    <button type="button" class="btn-secondary" onclick="goToStep(1)" id="btn-step2-back">< Back: Source & Language< Back: Setup & Media</button>
+                    <button type="button" class="btn-primary" onclick="goToStep(3)" id="btn-step2-next">Next: Protection ></button>
+                </div>
+            </div>
+
+            <!-- ── STEP 3: AUDIO, SFX & BRANDING ── -->
+            <div id="wizard-step-3" class="wizard-step-card card" style="display:none;">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title" id="s3-title">Step 3: Protection</div>
+                        <div class="card-desc" id="s3-desc">Decide how original subtitles and copyright fingerprints are handled.</div>
+                    </div>
+                </div>
+
+                <!-- Anti-Copyright Card -->
+                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                    <div style="font-weight:700; font-size:0.85rem; color:var(--primary); margin-bottom:0.6rem;" id="label-anticopyright-card">
+                        Platform Anti-Copyright Protection Shields
+                    </div>
+                    <div class="switch-grid">
+                        <label class="switch-card" id="card-chk-mirror" data-option="mirror">
+                            <span class="switch-card-text" id="label-shield-mirror">Video Mirror (Horizontal Flip)</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="chk-mirror">
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                        <label class="switch-card checked" id="card-chk-color" data-option="color_grading">
+                            <span class="switch-card-text" id="label-shield-zoom">1.02x Zoom & Color Grade EQ</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="chk-color-grading" checked>
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                        <label class="switch-card" id="card-chk-audio-shield" data-option="audio_anti_copyright">
+                            <span class="switch-card-text" id="label-shield-audio">Audio Tempo Shield (atempo=1.008)</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="chk-audio-anti-copyright">
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Subtitle Blur Control Card -->
+                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+                        <span style="font-weight:700; font-size:0.85rem; color:var(--primary);" id="label-blur-card">Original Subtitle Blur (Vision AI):</span>
+                        <span class="badge-pill success" id="badge-blur-mode" style="font-size:0.7rem;">Vision AI Active</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:0.75rem;">
+                        <div data-option="blur_mode" class="form-group">
+                            <label class="form-label" style="font-size:0.78rem;" id="label-blur-mode">Blur Detection Mode:</label>
+                            <select id="select-blur-mode" class="select-control" onchange="handleBlurModeChange(this.value)">
+                                <option value="auto" selected>Auto Detect (Vision AI Y-Region)</option>
+                                <option value="yes">Force Subtitle Blur</option>
+                                <option value="no">No Blur (Disabled)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="wrap-blur-height" style="display:none;">
+                            <label class="form-label" style="font-size:0.78rem;" id="label-blur-height">Custom Blur Height Ratio:</label>
+                            <select id="select-blur-height" class="select-control">
+                                <option value="0.14">14% (Single Line / Slim)</option>
+                                <option value="0.18" selected>18% (Standard 2-Line Subtitle)</option>
+                                <option value="0.24">24% (Large / 3-Line Subtitle)</option>
+                                <option value="0.30">30% (Wide DramaBox Watermark)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+
+
+
+
+
+                <div class="step-footer">
+                    <button type="button" class="btn-secondary" onclick="goToStep(2)" id="btn-step3-back">< Back: Output & Style< Back: Engine & Protection</button>
+                    <button type="button" class="btn-primary" onclick="goToStep(4)" id="btn-step3-next">Next: Audio & Pipeline ></button>
                 </div>
             </div>
 
@@ -1731,58 +1738,63 @@
             <div id="wizard-step-4" class="wizard-step-card card" style="display:none;">
                 <div class="card-header">
                     <div>
-                        <div class="card-title" id="s4-title">Step 4: Subtitles, Ratio & Pipeline Stages</div>
-                        <div class="card-desc" id="s4-desc">Select subtitle styling, output aspect ratio, and individual pipeline processing stages.</div>
+                        <div class="card-title" id="s4-title">Step 4: Audio & Pipeline Stages</div>
+                        <div class="card-desc" id="s4-desc">Choose narration or original audio, sound effects, and which stages run.</div>
                     </div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
-                    <div class="form-group">
-                        <label class="form-label" id="label-deliverable-mode">Deliverable Output Mode:</label>
-                        <select id="select-render-video" class="select-control">
-                            <option value="true" selected>Render Full MP4 Video</option>
-                            <option value="false">Subtitles & Transcripts Only (.srt / .ass)</option>
+                    <div data-option="audio_mode" class="form-group">
+                        <label class="form-label" id="label-audio-track">Audio Track Mode:</label>
+                        <select id="select-audio-mode" class="select-control" onchange="toggleAudioModeControls(this.value)">
+                            <option value="ai_voiceover" selected>AI Voiceover Narration</option>
+                            <option value="original">100% Original Audio</option>
+                            <option value="none">Pure Silent / Mute Audio (မူရင်းအသံပိတ်)</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label" id="label-subtitle-burn-mode">Subtitle Embedding Mode:</label>
-                        <select id="select-hardsub-mode" class="select-control">
-                            <option value="burn" selected>Burn Hardsub into Video</option>
-                            <option value="none">Voiceover Only / No Subtitles</option>
+                    <div data-option="language" class="form-group" id="wrap-tts-voice">
+                        <label class="form-label" id="label-voice-character">Neural Voice Character:</label>
+                        <select id="select-lang" class="select-control">
+                            <option value="burmese" selected>Burmese - Auto Multi-Voice</option>
+                            <option value="burmese_thiha">Burmese - Thiha (Male)</option>
+                            <option value="burmese_nilar">Burmese - Nilar (Female)</option>
+                            <option value="english">English - Auto Multi-Voice</option>
+                            <option value="english_guy">English - Guy (Male)</option>
+                            <option value="english_jenny">English - Jenny (Female)</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label" id="label-aspect-ratio">Video Aspect Ratio:</label>
-                        <select id="select-video-format" class="select-control">
-                            <option value="both" selected>Dual Export (16:9 Landscape + 9:16 Vertical Reels)</option>
-                            <option value="16:9">16:9 Landscape Only (YouTube / FB)</option>
-                            <option value="9:16">9:16 Vertical Canvas Only (Reels / TikTok)</option>
+                    <div data-option="tts_engine" class="form-group" id="wrap-tts-engine">
+                        <label class="form-label" id="label-tts-engine">TTS Voice Engine:</label>
+                        <select id="select-tts-engine" class="select-control">
+                            <option value="edge_tts" selected>Microsoft Edge Neural (Fast, Authentic)</option>
+                            <option value="f5_tts">F5-TTS Voice Cloning (Advanced)</option>
                         </select>
                     </div>
                 </div>
 
-                <!-- Subtitle Style Presets -->
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1.25rem;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-                        <span style="font-weight:700; font-size:0.85rem; color:var(--primary);" id="label-sub-presets">Subtitle Style Presets:</span>
-                        <button type="button" class="btn-nav" onclick="saveSubStyleDefault()" style="font-size:0.75rem;" id="btn-save-sub-preset">Save Default</button>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
+                    <div data-option="sfx_mode" class="form-group">
+                        <label class="form-label" id="label-sfx-system">SFX System:</label>
+                        <select id="select-sfx-mode" class="select-control">
+                            <option value="original_sfx" selected>Demucs Foley SFX (Original FX)</option>
+                            <option value="bgm">Cinematic BGM (Background Music)</option>
+                            <option value="both">Foley SFX + BGM Mix</option>
+                            <option value="none">Clean Voiceover Only</option>
+                        </select>
                     </div>
-                    <div class="sub-presets-row">
-                        <button type="button" class="sub-preset-pill active" id="btn-sub-box_black" onclick="selectSubPreset('box_black')">Cinema Box (Netflix Style)</button>
-                        <button type="button" class="sub-preset-pill" id="btn-sub-yellow_pop" onclick="selectSubPreset('yellow_pop')">TikTok Yellow</button>
-                        <button type="button" class="sub-preset-pill" id="btn-sub-white_stroke" onclick="selectSubPreset('white_stroke')">Classic White</button>
-                        <button type="button" class="sub-preset-pill" id="btn-sub-cyan_cyber" onclick="selectSubPreset('cyan_cyber')">Cyber Cyan</button>
-                        <button type="button" class="sub-preset-pill" id="btn-sub-crimson_box" onclick="selectSubPreset('crimson_box')">Thriller Red</button>
-                    </div>
-                    <div class="subtitle-preview-box">
-                        <span id="sub-live-preview" style="font-family:'Padauk', 'Pyidaungsu', sans-serif; font-size:1.05rem; font-weight:700; padding:4px 12px; border-radius:4px; background:rgba(0,0,0,0.85); color:#ffffff;">
-                            ဒီဇာတ်ကားကတော့ အကောင်းဆုံး သည်းထိတ်ရင်ဖို ရုပ်ရှင်ဖြစ်ပါတယ် (Sample Subtitle)
-                        </span>
+                    <div data-option="sfx_volume" class="form-group">
+                        <label class="form-label" id="label-sfx-vol">SFX Volume Level:</label>
+                        <select id="select-sfx-volume" class="select-control">
+                            <option value="0.10">10% Subtle</option>
+                            <option value="0.15" selected>15% Balanced (Recommended)</option>
+                            <option value="0.25">25% Prominent</option>
+                            <option value="0.40">40% Loud</option>
+                        </select>
                     </div>
                 </div>
 
                 <!-- 10 Pipeline Stages Switches -->
-                <div style="background:#fff; border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                <div data-option="stage_toggles" style="background:#fff; border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
                         <div>
                             <span style="font-weight:700; font-size:0.88rem; color:var(--primary);" id="label-pipeline-stages">Pipeline Processing Stages:</span>
@@ -1810,8 +1822,12 @@
                     </div>
                 </div>
 
+
+
+
+
                 <div class="step-footer">
-                    <button type="button" class="btn-secondary" onclick="goToStep(3)" id="btn-step4-back">< Back: Audio & Branding</button>
+                    <button type="button" class="btn-secondary" onclick="goToStep(3)" id="btn-step4-back">< Back: Protection< Back: Audio & Branding</button>
                     <button type="button" class="btn-primary" onclick="goToStep(5)" id="btn-step4-next">Next: Review & Confirm ></button>
                 </div>
             </div>
@@ -1839,7 +1855,7 @@
                     <div class="review-box">
                         <div class="review-box-title">
                             <span id="rev-title-engine">Engine & Style</span>
-                            <button type="button" class="btn-nav" onclick="goToStep(2)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
+                            <button type="button" class="btn-nav" onclick="goToStep(1)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
                         </div>
                         <div class="review-box-content" id="rev-engine">Movie Recap Studio</div>
                         <div class="review-box-sub" id="rev-style">Style: Movie Recap Storyteller</div>
@@ -1849,7 +1865,7 @@
                     <div class="review-box">
                         <div class="review-box-title">
                             <span id="rev-title-audio">Audio & Sound</span>
-                            <button type="button" class="btn-nav" onclick="goToStep(3)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
+                            <button type="button" class="btn-nav" onclick="goToStep(4)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
                         </div>
                         <div class="review-box-content" id="rev-audio">AI Voiceover Narration</div>
                         <div class="review-box-sub" id="rev-sfx">SFX: Demucs Foley (15% Vol)</div>
@@ -1858,7 +1874,7 @@
                     <div class="review-box">
                         <div class="review-box-title">
                             <span id="rev-title-subtitles">Subtitles & Canvas</span>
-                            <button type="button" class="btn-nav" onclick="goToStep(4)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
+                            <button type="button" class="btn-nav" onclick="goToStep(2)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
                         </div>
                         <div class="review-box-content" id="rev-subtitles">Burn Hardsub (Cinema Box)</div>
                         <div class="review-box-sub" id="rev-ratio">Ratio: Dual Export (16:9 + 9:16)</div>
@@ -1867,7 +1883,7 @@
                     <div class="review-box">
                         <div class="review-box-title">
                             <span id="rev-title-shields">Protection Shields</span>
-                            <button type="button" class="btn-nav" onclick="goToStep(2)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
+                            <button type="button" class="btn-nav" onclick="goToStep(3)" style="font-size:0.68rem; padding:0.15rem 0.4rem;">Edit</button>
                         </div>
                         <div class="review-box-content" id="rev-shields">Zoom & Color EQ Active</div>
                         <div class="review-box-sub" id="rev-mirror">Mirror: Off | Audio Shield: Off</div>
@@ -2169,13 +2185,13 @@
                 cardEngine2Desc: "အချိန်ကိုက် တိကျသော အသံဖမ်းယူမှု၊ သဘာဝကျ စကားပြောဟန် မြန်မာပြန်ဆိုမှု နှင့် .srt / .ass ဖိုင်များ သီးသန့် ထုတ်လုပ်ပေးသည်။",
                 cardEngine3Title: "Original Audio Hardsub (မူရင်းအသံ Hardsub)",
                 cardEngine3Desc: "သရုပ်ဆောင်များ၏ မူရင်းအသံ ၁၀၀% ကို မထိခိုက်စေဘဲ မူရင်းစာတန်းကို Vision AI ဖြင့် Blur လုပ်ပြီး မြန်မာ Hardsub ထိုးပေးသည်။",
-                step1Nav: "၁။ အချက်အလက်",
-                step2Nav: "၂။ Engine & Shield",
-                step3Nav: "၃။ အသံ & ရေစာ",
-                step4Nav: "၄။ စာတန်း & Canvas",
+                step1Nav: "၁။ ရင်းမြစ် & ဘာသာစကား",
+                step2Nav: "၂။ ရလဒ် & ပုံစံ",
+                step3Nav: "၃။ မူပိုင်ခွင့် ကာကွယ်ရေး",
+                step4Nav: "၄။ အသံ & အဆင့်များ",
                 step5Nav: "၅။ အတည်ပြုချက်",
-                s1Title: "အဆင့် ၁: စနစ်တည်ဆောက်မှုနှင့် ဗီဒီယိုထည့်သွင်းခြင်း",
-                s1Desc: "Gemini API Key ကို ထည့်သွင်းပြီး ထုတ်လုပ်မည့် ဗီဒီယိုအရင်းအမြစ်ကို ရွေးချယ်ပါ။",
+                s1Title: "အဆင့် ၁: ဗီဒီယို၊ Engine နှင့် ဘာသာပြန်ဆိုမှု",
+                s1Desc: "ဗီဒီယိုအရင်းအမြစ်၊ ထုတ်လုပ်မည့် Engine နှင့် ဘာသာပြန်ပုံစံကို ရွေးချယ်ပါ။",
                 btnApiExplainer: "ဘာကြောင့် API Key လိုအပ်သလဲ?",
                 explainerTitle: "Pai AI Studio တွင် Gemini API Key အဘယ်ကြောင့် လိုအပ်သနည်း?",
                 explainerBody: "၁။ Multimodal Scene Analysis: ဗီဒီယိုအတွင်းရှိ ဇာတ်ကောင်၊ အပြုအမူနှင့် ဇာတ်ကွက်များကို Vision AI ဖြင့် အသေးစိတ် ကြည့်ရှုလေ့လာရန်။<br>၂။ မြန်မာဘာသာပြန်: အင်္ဂလိပ်နှင့် အခြားဘာသာစကားများကို သဘာဝကျကျ မြန်မာစကားပြောအဖြစ် တိကျစွာ ပြန်ဆိုရန်။<br>၃။ ကုန်ကျစရိတ်သက်သာခြင်း: ကွန်ပျူတာတွင် စျေးကြီးသော GPU စက်ပစ္စည်းများ ဝယ်ယူရန်မလိုဘဲ Google AI Studio Free Tier Key ဖြင့် အခမဲ့ သုံးနိုင်ရန်။",
@@ -2185,9 +2201,9 @@
                 btnUploadFile: "ဖိုင်တင်ရန်",
                 labelResolution: "ဗီဒီယို အရည်အသွေး (Resolution):",
                 labelSourceLang: "မူရင်း ဗီဒီယို ဘာသာစကား:",
-                btnStep1Next: "ဆက်သွားမည်: Engine & Shield >",
-                s2Title: "အဆင့် ၂: Engine ရွေးချယ်မှုနှင့် Anti-Copyright စနစ်",
-                s2Desc: "အသုံးပြုလိုသော Engine နှင့် မူပိုင်ခွင့် ကာကွယ်ရေးစနစ်များကို ရွေးချယ်ပါ။",
+                btnStep1Next: "ဆက်သွားမည်: ရလဒ် & ပုံစံ >",
+                s2Title: "အဆင့် ၂: ရလဒ်နှင့် ပုံစံ",
+                s2Desc: "ထုတ်လုပ်မည့် ဖိုင်အမျိုးအစား၊ ဗီဒီယိုအချိုးအစား၊ စာတန်းပုံစံ၊ Thumbnail နှင့် ရေစာကို ရွေးချယ်ပါ။",
                 labelEngineMode: "ထုတ်လုပ်မှု Engine အမျိုးအစား:",
                 labelTranslationStyle: "ဘာသာပြန်ဆိုမှု ပုံစံ (Style):",
                 labelContextHint: "ဇာတ်လမ်း / ဇာတ်ကောင် အညွှန်း (Story & Character Hint):",
@@ -2198,10 +2214,10 @@
                 labelBlurCard: "မူရင်းစာတန်း Blur ပြုလုပ်ခြင်း (Vision AI):",
                 labelBlurMode: "Blur ရှာဖွေမှု ပုံစံ:",
                 labelBlurHeight: "Blur အမြင့် အချိုးအစား:",
-                btnStep2Back: "< နောက်သို့: အချက်အလက်",
-                btnStep2Next: "ဆက်သွားမည်: အသံ & ရေစာ >",
-                s3Title: "အဆင့် ၃: အသံဖမ်းယူမှု၊ SFX နှင့် ရေစာထိုးခြင်း",
-                s3Desc: "AI ဇာတ်ကြောင်းပြောအသံ၊ နောက်ခံအသံ (SFX) နှင့် Channel ရေစာများကို စိတ်ကြိုက် သတ်မှတ်ပါ။",
+                btnStep2Back: "< နောက်သို့: ဗီဒီယို & ဘာသာစကား",
+                btnStep2Next: "ဆက်သွားမည်: မူပိုင်ခွင့် ကာကွယ်ရေး >",
+                s3Title: "အဆင့် ၃: မူပိုင်ခွင့် ကာကွယ်ရေး",
+                s3Desc: "မူရင်းစာတန်းများနှင့် မူပိုင်ခွင့် ခြေရာများကို မည်သို့ ကိုင်တွယ်မည်ကို သတ်မှတ်ပါ။",
                 labelAudioTrack: "အသံလိုင်း အမျိုးအစား:",
                 labelVoiceCharacter: "AI ဇာတ်ကြောင်းပြော အသံကောင်:",
                 labelTtsEngine: "Voice Engine အမျိုးအစား:",
@@ -2211,16 +2227,16 @@
                 labelThumbTitleCard: "YouTube Thumbnail ခေါင်းစဉ် စနစ်:",
                 labelThumbMode: "ခေါင်းစဉ် ရွေးချယ်မှု:",
                 labelCustomThumbInput: "စိတ်ကြိုက် Thumbnail ခေါင်းစဉ် (မြန်မာ / အင်္ဂလိပ်):",
-                btnStep3Back: "< နောက်သို့: Engine & Shield",
-                btnStep3Next: "ဆက်သွားမည်: စာတန်း & Canvas >",
-                s4Title: "အဆင့် ၄: စာတန်းထိုးဒီဇိုင်း၊ Canvas နှင့် Pipeline အဆင့်များ",
-                s4Desc: "စာတန်းထိုး ဒီဇိုင်းပုံစံ၊ ဗီဒီယို အချိုးအစားနှင့် ဖွင့်/ပိတ်လိုသော အဆင့်များကို ရွေးချယ်ပါ။",
+                btnStep3Back: "< နောက်သို့: ရလဒ် & ပုံစံ",
+                btnStep3Next: "ဆက်သွားမည်: အသံ & အဆင့်များ >",
+                s4Title: "အဆင့် ၄: အသံနှင့် Pipeline အဆင့်များ",
+                s4Desc: "ဇာတ်ကြောင်းပြောအသံ သို့မဟုတ် မူရင်းအသံ၊ နောက်ခံအသံ (SFX) နှင့် လုပ်ဆောင်မည့် အဆင့်များကို ရွေးချယ်ပါ။",
                 labelDeliverableMode: "ထုတ်လုပ်မည့် ပုံစံ:",
                 labelSubtitleBurnMode: "စာတန်းထိုး ထည့်သွင်းမှု:",
                 labelAspectRatio: "ဗီဒီယို အရွယ်အစား (Aspect Ratio):",
                 labelSubPresets: "စာတန်းထိုး ဒီဇိုင်းပုံစံများ:",
                 labelPipelineStages: "Pipeline လုပ်ဆောင်ချက် အဆင့်များ:",
-                btnStep4Back: "< နောက်သို့: အသံ & ရေစာ",
+                btnStep4Back: "< နောက်သို့: မူပိုင်ခွင့် ကာကွယ်ရေး",
                 btnStep4Next: "ဆက်သွားမည်: အတည်ပြုချက် >",
                 s5Title: "အဆင့် ၅: ရွေးချယ်မှုများ အတည်ပြုခြင်း (Review)",
                 s5Desc: "ထုတ်လုပ်မှု မစတင်မီ မိမိရွေးချယ်ထားသော အချက်အလက်များကို စစ်ဆေး အတည်ပြုပါ။",
@@ -2251,13 +2267,13 @@
                 cardEngine2Desc: "ถอดเสียงตรงเวลา แปลบทสนทนาภาษาพม่าธรรมชาติ และส่งออกไฟล์ .srt, .ass อย่างรวดเร็ว",
                 cardEngine3Title: "Original Audio Hardsub (ฮาร์ดซับเสียงต้นฉบับ)",
                 cardEngine3Desc: "คงเสียงนักแสดงต้นฉบับ 100% เบลอซับเดิมด้วย Vision AI และฝังซับไตเติลคุณภาพสูง",
-                step1Nav: "1. ตั้งค่าและสื่อ",
-                step2Nav: "2. ระบบและป้องกันลิขสิทธิ์",
-                step3Nav: "3. เสียงและลายน้ำ",
-                step4Nav: "4. ซับไตเติลและสัดส่วน",
+                step1Nav: "1. ต้นฉบับและภาษา",
+                step2Nav: "2. ผลลัพธ์และสไตล์",
+                step3Nav: "3. การป้องกัน",
+                step4Nav: "4. เสียงและขั้นตอน",
                 step5Nav: "5. ยืนยันการผลิต",
-                s1Title: "ขั้นตอนที่ 1: ตั้งค่าและเลือกสื่อ",
-                s1Desc: "กำหนดคีย์ Gemini API และเลือกวิดีโอต้นฉบับ",
+                s1Title: "ขั้นตอนที่ 1: ต้นฉบับ เครื่องยนต์ และภาษา",
+                s1Desc: "เลือกวิดีโอ เครื่องยนต์การผลิต และรูปแบบการแปล",
                 btnApiExplainer: "ทำไมต้องใช้ API Key?",
                 explainerTitle: "ทำไม Pai AI Studio จึงต้องใช้ Gemini API Key?",
                 explainerBody: "1. วิเคราะห์ภาพฉาก: ตรวจสอบตัวละครและการกระทำในวิดีโอด้วย Vision AI<br>2. แปลภาษาพม่า: ให้คำพูดและบทบรรยายเป็นธรรมชาติถูกต้อง<br>3. ประหยัดต้นทุน: ไม่จำเป็นต้องใช้การ์ดจอราคาสูง สามารถใช้ Free Tier Key จาก Google AI Studio ได้ฟรี",
@@ -2267,9 +2283,9 @@
                 btnUploadFile: "อัปโหลด",
                 labelResolution: "ความละเอียดวิดีโอ:",
                 labelSourceLang: "ภาษาต้นทางของวิดีโอ:",
-                btnStep1Next: "ถัดไป: ระบบและป้องกันลิขสิทธิ์ >",
-                s2Title: "ขั้นตอนที่ 2: เลือกเครื่องยนต์และระบบป้องกันลิขสิทธิ์",
-                s2Desc: "เลือกประเภทการผลิตและการป้องกันลิขสิทธิ์แพลตฟอร์ม",
+                btnStep1Next: "ถัดไป: ผลลัพธ์และสไตล์ >",
+                s2Title: "ขั้นตอนที่ 2: ผลลัพธ์และสไตล์",
+                s2Desc: "เลือกไฟล์ที่ต้องการ สัดส่วน รูปแบบซับไตเติล ภาพปก และลายน้ำ",
                 labelEngineMode: "โหมดเครื่องยนต์การผลิต:",
                 labelTranslationStyle: "สไตล์การแปล:",
                 labelContextHint: "คำแนะนำเนื้อเรื่องและตัวละคร (Story & Character Hint):",
@@ -2277,26 +2293,26 @@
                 labelShieldMirror: "กลับด้านวิดีโอซ้ายขวา (Mirror)",
                 labelShieldZoom: "ซูม 1.02x และปรับแต่งสี (Color EQ)",
                 labelShieldAudio: "ป้องกันลิขสิทธิ์เสียง (atempo=1.008)",
-                btnStep2Back: "< ย้อนกลับ: ตั้งค่าและสื่อ",
-                btnStep2Next: "ถัดไป: เสียงและลายน้ำ >",
-                s3Title: "ขั้นตอนที่ 3: เสียง บันทึกเสียง และลายน้ำ",
-                s3Desc: "ตั้งค่าเสียงพากย์ AI เสียงเอฟเฟกต์ และลายน้ำของช่อง",
+                btnStep2Back: "< ย้อนกลับ: ต้นฉบับและภาษา",
+                btnStep2Next: "ถัดไป: การป้องกัน >",
+                s3Title: "ขั้นตอนที่ 3: การป้องกัน",
+                s3Desc: "กำหนดวิธีจัดการซับไตเติลเดิมและลายนิ้วมือลิขสิทธิ์",
                 labelAudioTrack: "โหมดแทร็กเสียง:",
                 labelVoiceCharacter: "ตัวละครเสียงพากย์:",
                 labelTtsEngine: "เครื่องมือสร้างเสียง TTS:",
                 labelSfxSystem: "ระบบเสียงเอฟเฟกต์ (SFX):",
                 labelSfxVol: "ระดับเสียง SFX:",
                 labelWatermarkEnable: "เปิดใช้งานลายน้ำ (Watermark)",
-                btnStep3Back: "< ย้อนกลับ: ระบบและป้องกัน",
-                btnStep3Next: "ถัดไป: ซับไตเติลและสัดส่วน >",
-                s4Title: "ขั้นตอนที่ 4: สไตล์ซับไตเติล สัดส่วน และขั้นตอนการผลิต",
-                s4Desc: "เลือกรูปแบบซับไตเติล สัดส่วนวิดีโอ และเปิดปิดขั้นตอน",
+                btnStep3Back: "< ย้อนกลับ: ผลลัพธ์และสไตล์",
+                btnStep3Next: "ถัดไป: เสียงและขั้นตอน >",
+                s4Title: "ขั้นตอนที่ 4: เสียงและขั้นตอนการผลิต",
+                s4Desc: "เลือกเสียงบรรยายหรือเสียงต้นฉบับ เสียงเอฟเฟกต์ และขั้นตอนที่จะรัน",
                 labelDeliverableMode: "โหมดผลลัพธ์:",
                 labelSubtitleBurnMode: "การฝังซับไตเติล:",
                 labelAspectRatio: "สัดส่วนวิดีโอ (Aspect Ratio):",
                 labelSubPresets: "รูปแบบซับไตเติล:",
                 labelPipelineStages: "ขั้นตอนการทำงาน (Pipeline Stages):",
-                btnStep4Back: "< ย้อนกลับ: เสียงและลายน้ำ",
+                btnStep4Back: "< ย้อนกลับ: การป้องกัน",
                 btnStep4Next: "ถัดไป: ตรวจสอบและยืนยัน >",
                 s5Title: "ขั้นตอนที่ 5: ตรวจสอบและยืนยันการผลิต",
                 s5Desc: "ตรวจสอบการตั้งค่าทั้งหมดก่อนเริ่มดำเนินการ",
@@ -2327,13 +2343,13 @@
                 cardEngine2Desc: "Timestamped speech recognition, natural spoken dialogue translations, and multi-format subtitle exports (.srt, .ass, .txt).",
                 cardEngine3Title: "Original Audio & Hardsub Studio",
                 cardEngine3Desc: "Retains 100% original actor audio, applies Vision AI smart subtitle blurring, and embeds cinema-grade hardsub subtitles.",
-                step1Nav: "1. Setup & Media",
-                step2Nav: "2. Engine & Protection",
-                step3Nav: "3. Audio & Branding",
-                step4Nav: "4. Subtitles & Ratio",
+                step1Nav: "1. Source & Language",
+                step2Nav: "2. Output & Style",
+                step3Nav: "3. Protection",
+                step4Nav: "4. Audio & Pipeline",
                 step5Nav: "5. Review & Launch",
-                s1Title: "Step 1: Setup & Media Input",
-                s1Desc: "Configure Gemini API key credentials and select source video.",
+                s1Title: "Step 1: Source, Engine & Language",
+                s1Desc: "Choose the video, the production engine, and how it should be translated.",
                 btnApiExplainer: "Why is an API Key needed?",
                 explainerTitle: "Why does Pai AI Studio require a Gemini API Key?",
                 explainerBody: "1. Multimodal Vision Scene Analysis: Inspects video frames for characters, emotions, actions, and key plot points.<br>2. Burmese Translation: Produces authentic Burmese dialogue and storytelling scripts.<br>3. Cloud Processing: Eliminates the requirement for costly high-end local GPUs. Free tier keys from Google AI Studio are supported.",
@@ -2343,9 +2359,9 @@
                 btnUploadFile: "Upload File",
                 labelResolution: "Output Video Resolution:",
                 labelSourceLang: "Source Audio Language:",
-                btnStep1Next: "Next: Engine & Protection >",
-                s2Title: "Step 2: Engine & Anti-Copyright Protection",
-                s2Desc: "Select production workflow and platform anti-copyright evasion shields.",
+                btnStep1Next: "Next: Output & Style >",
+                s2Title: "Step 2: Output & Style",
+                s2Desc: "Choose the deliverable, aspect ratio, subtitle look, thumbnail and watermark.",
                 labelEngineMode: "Production Engine Mode:",
                 labelTranslationStyle: "Translation Style:",
                 labelContextHint: "Story & Character Hint (Optional Context):",
@@ -2356,10 +2372,10 @@
                 labelBlurCard: "Original Subtitle Blur (Vision AI):",
                 labelBlurMode: "Blur Detection Mode:",
                 labelBlurHeight: "Custom Blur Height Ratio:",
-                btnStep2Back: "< Back: Setup & Media",
-                btnStep2Next: "Next: Audio & Branding >",
-                s3Title: "Step 3: Audio, SFX & Branding",
-                s3Desc: "Configure voiceover narration, sound effects, thumbnail titles, and channel watermark.",
+                btnStep2Back: "< Back: Source & Language",
+                btnStep2Next: "Next: Protection >",
+                s3Title: "Step 3: Protection",
+                s3Desc: "Decide how original subtitles and copyright fingerprints are handled.",
                 labelAudioTrack: "Audio Track Mode:",
                 labelVoiceCharacter: "Neural Voice Character:",
                 labelTtsEngine: "TTS Voice Engine:",
@@ -2369,16 +2385,16 @@
                 labelThumbTitleCard: "YouTube Thumbnail Title System:",
                 labelThumbMode: "Title Generation Mode:",
                 labelCustomThumbInput: "Custom Thumbnail Title (Burmese / English):",
-                btnStep3Back: "< Back: Engine & Protection",
-                btnStep3Next: "Next: Subtitles & Ratio >",
-                s4Title: "Step 4: Subtitles, Ratio & Pipeline Stages",
-                s4Desc: "Select subtitle styling, output aspect ratio, and individual pipeline processing stages.",
+                btnStep3Back: "< Back: Output & Style",
+                btnStep3Next: "Next: Audio & Pipeline >",
+                s4Title: "Step 4: Audio & Pipeline Stages",
+                s4Desc: "Choose narration or original audio, sound effects, and which stages run.",
                 labelDeliverableMode: "Deliverable Output Mode:",
                 labelSubtitleBurnMode: "Subtitle Embedding Mode:",
                 labelAspectRatio: "Video Aspect Ratio:",
                 labelSubPresets: "Subtitle Style Presets:",
                 labelPipelineStages: "Pipeline Processing Stages:",
-                btnStep4Back: "< Back: Audio & Branding",
+                btnStep4Back: "< Back: Protection",
                 btnStep4Next: "Next: Review & Confirm >",
                 s5Title: "Step 5: Pre-Flight Review & Confirmation",
                 s5Desc: "Verify your selected options before starting automated video production.",
@@ -2600,25 +2616,59 @@
             }
         }
 
-        // ── Step 2: Engine Selection Handling ──
-        function handleEngineChange(engine) {
-            const styleSel = document.getElementById('select-translation-style');
-            const audioSel = document.getElementById('select-audio-mode');
-            const renderSel = document.getElementById('select-render-video');
+        // ── Option model: the single source of truth is GET /api/options (core/options.py) ──
+        // Engine defaults and "which options does this engine use?" are read from it, so the
+        // wizard cannot drift from the API or the command line. The fallback below only keeps the
+        // form usable if the model cannot be fetched.
+        let OPTION_MODEL = null;
+        const FALLBACK_ENGINE_DEFAULTS = {
+            recap:    { translation_style: 'recap',    audio_mode: 'ai_voiceover', render_video: true,  video_format: 'both' },
+            subtitle: { translation_style: 'dialogue', audio_mode: 'original',     render_video: false, video_format: '16:9' },
+            hardsub:  { translation_style: 'persona',  audio_mode: 'original',     render_video: true,  video_format: 'both' }
+        };
 
-            if (engine === 'hardsub') {
-                if (styleSel) styleSel.value = 'persona';
-                if (audioSel) audioSel.value = 'original';
-                if (renderSel) renderSel.value = 'true';
-            } else if (engine === 'subtitle') {
-                if (styleSel) styleSel.value = 'dialogue';
-                if (audioSel) audioSel.value = 'original';
-                if (renderSel) renderSel.value = 'true';
-            } else {
-                if (styleSel) styleSel.value = 'recap';
-                if (audioSel) audioSel.value = 'ai_voiceover';
-                if (renderSel) renderSel.value = 'true';
+        function engineDefault(option, engine) {
+            const spec = OPTION_MODEL && OPTION_MODEL.options[option];
+            if (spec) {
+                const perEngine = spec.engine_defaults || {};
+                return (engine in perEngine) ? perEngine[engine] : spec.default;
             }
+            const fallback = FALLBACK_ENGINE_DEFAULTS[engine] || FALLBACK_ENGINE_DEFAULTS.recap;
+            return fallback[option];
+        }
+
+        // Hides the controls whose option the selected engine does not use (e.g. voice and
+        // watermark for the original-audio hardsub engine), so every step only asks what matters.
+        function applyEngineRelevance(engine) {
+            document.querySelectorAll('[data-option]').forEach(el => {
+                const spec = OPTION_MODEL && OPTION_MODEL.options[el.dataset.option];
+                const applies = !spec || spec.engines.includes(engine);   // unknown option: keep visible
+                el.classList.toggle('option-na', !applies);
+            });
+        }
+
+        async function loadOptionModel() {
+            try {
+                const res = await fetch('/api/options');
+                if (res.ok) OPTION_MODEL = await res.json();
+            } catch (e) { /* offline / older server: the fallback table is used */ }
+            const engineSel = document.getElementById('select-engine-mode');
+            applyEngineRelevance(engineSel ? engineSel.value : 'recap');
+        }
+
+        // ── Step 1: Engine Selection Handling ──
+        function handleEngineChange(engine) {
+            const setSelect = (id, value) => {
+                const el = document.getElementById(id);
+                if (el && value !== undefined && value !== null) el.value = String(value);
+            };
+            setSelect('select-translation-style', engineDefault('translation_style', engine));
+            setSelect('select-audio-mode', engineDefault('audio_mode', engine));
+            setSelect('select-render-video', engineDefault('render_video', engine));
+            setSelect('select-video-format', engineDefault('video_format', engine));
+
+            applyEngineRelevance(engine);
+            const audioSel = document.getElementById('select-audio-mode');
             toggleAudioModeControls(audioSel ? audioSel.value : 'ai_voiceover');
         }
 
@@ -2823,6 +2873,57 @@
             document.getElementById('rev-stages-detail').textContent = `${activeCount} processing stages selected`;
         }
 
+        // ── Job options: ONE reader per option (names are the option model's names) ──
+        const $el = id => document.getElementById(id);
+        const $val = id => $el(id).value;
+        const $chk = id => $el(id).checked;
+
+        function readThumbTitle() {
+            const mode = $el('select-thumb-mode') ? $val('select-thumb-mode') : 'auto';
+            if (mode === 'none') return 'none';
+            if (mode === 'manual') return ($el('input-custom-thumb-title') ? $val('input-custom-thumb-title').trim() : '') || null;
+            return null;
+        }
+
+        const OPTION_READERS = {
+            engine_mode:          () => $val('select-engine-mode'),
+            source_language:      () => $val('select-source-lang'),
+            language:             () => $val('select-lang'),
+            translation_style:    () => $val('select-translation-style'),
+            context_hint:         () => ($el('input-context-hint') ? $val('input-context-hint').trim() : '') || null,
+            resolution:           () => $val('select-resolution'),
+            video_format:         () => $val('select-video-format'),
+            reels_enabled:        () => ['both', '9:16'].includes($val('select-video-format')),
+            subtitle_style:       () => activeSubtitlePreset,
+            subtitle_mode:        () => $val('select-hardsub-mode'),
+            render_video:         () => $val('select-render-video') === 'true',
+            custom_thumb_title:   readThumbTitle,
+            watermark_enabled:    () => $chk('chk-watermark'),
+            watermark_text:       () => $val('input-watermark-text').trim() || 'Pai Ai Movie Studio',
+            watermark_opacity:    () => parseFloat($val('select-watermark-opacity')) || 0.4,
+            blur_mode:            () => $el('select-blur-mode') ? $val('select-blur-mode') : 'auto',
+            blur_height:          () => $el('select-blur-height') ? parseFloat($val('select-blur-height')) : 0.18,
+            mirror:               () => $chk('chk-mirror'),
+            color_grading:        () => $chk('chk-color-grading'),
+            audio_anti_copyright: () => $chk('chk-audio-anti-copyright'),
+            tts_engine:           () => $val('select-tts-engine'),
+            audio_mode:           () => $val('select-audio-mode'),
+            sfx_mode:             () => $val('select-sfx-mode'),
+            sfx_volume:           () => parseFloat($val('select-sfx-volume')) || 0.15,
+            stage_toggles:        () => getStageToggles()
+        };
+
+        function collectJobOptions() {
+            const options = {};
+            for (const [name, read] of Object.entries(OPTION_READERS)) options[name] = read();
+            if (OPTION_MODEL) {   // guard: never send a field the API does not know
+                for (const name of Object.keys(options)) {
+                    if (!(name in OPTION_MODEL.options)) { console.warn('Unknown option, not sent:', name); delete options[name]; }
+                }
+            }
+            return options;
+        }
+
         // ── Launch Confirmed Job (Transits to Step 6) ──
         async function launchConfirmedJob() {
             const isBatch = document.getElementById('tab-input-batch').classList.contains('active');
@@ -2830,49 +2931,21 @@
             btn.disabled = true;
             btn.textContent = 'Launching...';
 
-            const engine = document.getElementById('select-engine-mode').value;
-            const lang = document.getElementById('select-lang').value;
-            const hardsubMode = document.getElementById('select-hardsub-mode').value;
-            const resolution = document.getElementById('select-resolution').value;
-            const ttsEngine = document.getElementById('select-tts-engine').value;
-            const watermarkEnabled = document.getElementById('chk-watermark').checked;
-            const watermarkText = document.getElementById('input-watermark-text').value.trim() || 'Pai Ai Movie Studio';
-            const watermarkOpacity = parseFloat(document.getElementById('select-watermark-opacity').value) || 0.4;
-            const videoFormat = document.getElementById('select-video-format').value;
-            const reelsEnabled = (videoFormat === 'both' || videoFormat === '9:16');
-            const sourceLanguage = document.getElementById('select-source-lang').value;
-            const translationStyle = document.getElementById('select-translation-style').value;
-            const audioMode = document.getElementById('select-audio-mode').value;
-            const sfxMode = document.getElementById('select-sfx-mode').value;
-            const sfxVolume = parseFloat(document.getElementById('select-sfx-volume').value) || 0.15;
-            const renderVideo = (document.getElementById('select-render-video').value === 'true');
-            const mirror = document.getElementById('chk-mirror').checked;
-            const colorGrading = document.getElementById('chk-color-grading').checked;
-            const audioAntiCopyright = document.getElementById('chk-audio-anti-copyright').checked;
-            const stageToggles = getStageToggles();
-            const contextHint = (document.getElementById('input-context-hint') ? document.getElementById('input-context-hint').value.trim() : '') || null;
-
-            // Extract Subtitle Blur Mode and Thumbnail Title Mode
-            const blurMode = (document.getElementById('select-blur-mode') ? document.getElementById('select-blur-mode').value : 'auto');
-            const blurHeight = (document.getElementById('select-blur-height') ? parseFloat(document.getElementById('select-blur-height').value) : 0.18);
-            
-            let customThumbTitle = null;
-            const thumbModeEl = document.getElementById('select-thumb-mode');
-            if (thumbModeEl) {
-                const tm = thumbModeEl.value;
-                if (tm === 'none') {
-                    customThumbTitle = 'none';
-                } else if (tm === 'manual') {
-                    customThumbTitle = (document.getElementById('input-custom-thumb-title') ? document.getElementById('input-custom-thumb-title').value.trim() : '') || null;
-                }
-            }
+            const options = collectJobOptions();
 
             // Set Active Job Configuration box tags
             currentJobConfig = {
-                engine, translationStyle, audioMode, sfxMode, sfxVolume,
-                videoFormat, activeSubtitlePreset, resolution, blurMode,
-                thumbTitle: customThumbTitle === 'none' ? 'No Title' : (customThumbTitle || 'Auto AI'),
-                contextHint: contextHint
+                engine: options.engine_mode,
+                translationStyle: options.translation_style,
+                audioMode: options.audio_mode,
+                sfxMode: options.sfx_mode,
+                sfxVolume: options.sfx_volume,
+                videoFormat: options.video_format,
+                activeSubtitlePreset: options.subtitle_style,
+                resolution: options.resolution,
+                blurMode: options.blur_mode,
+                thumbTitle: options.custom_thumb_title === 'none' ? 'No Title' : (options.custom_thumb_title || 'Auto AI'),
+                contextHint: options.context_hint
             };
             renderActiveJobConfigBox();
 
@@ -2881,58 +2954,28 @@
             setLog('Initializing production pipeline...');
 
             try {
+                let url, body;
                 if (isBatch) {
                     const raw = document.getElementById('batch-inputs').value.trim();
-                    const inputs = raw.split('\n').map(s => s.trim()).filter(Boolean);
+                    const inputs = raw.split('\n').map(line => line.trim()).filter(Boolean);
                     if (!inputs.length) throw new Error('Please enter at least one URL or file path.');
-
-                    const res = await fetch('/api/batch/start', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            inputs, engine_mode: engine, language: lang, subtitle_mode: hardsubMode,
-                            subtitle_style: activeSubtitlePreset, resolution, tts_engine: ttsEngine,
-                            custom_thumb_title: customThumbTitle,
-                            watermark_enabled: watermarkEnabled, watermark_text: watermarkText,
-                            watermark_opacity: watermarkOpacity, reels_enabled: reelsEnabled,
-                            video_format: videoFormat, source_language: sourceLanguage,
-                            translation_style: translationStyle, audio_mode: audioMode,
-                            sfx_mode: sfxMode, sfx_volume: sfxVolume, render_video: renderVideo,
-                            blur_mode: blurMode, blur_height: blurHeight,
-                            mirror, color_grading: colorGrading, audio_anti_copyright: audioAntiCopyright,
-                            stage_toggles: stageToggles,
-                            context_hint: contextHint
-                        })
-                    });
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.detail || data.error);
-                    startStreamingLogs(data.job_id);
+                    url = '/api/batch/start';
+                    body = { inputs, ...options };
                 } else {
                     const input = document.getElementById('input-source').value.trim();
                     if (!input) throw new Error('Please enter a video URL or local file path.');
-
-                    const res = await fetch('/api/start', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            input, engine_mode: engine, language: lang, subtitle_mode: hardsubMode,
-                            subtitle_style: activeSubtitlePreset, resolution, tts_engine: ttsEngine,
-                            custom_thumb_title: customThumbTitle,
-                            watermark_enabled: watermarkEnabled, watermark_text: watermarkText,
-                            watermark_opacity: watermarkOpacity, reels_enabled: reelsEnabled,
-                            video_format: videoFormat, source_language: sourceLanguage,
-                            translation_style: translationStyle, audio_mode: audioMode,
-                            sfx_mode: sfxMode, sfx_volume: sfxVolume, render_video: renderVideo,
-                            blur_mode: blurMode, blur_height: blurHeight,
-                            mirror, color_grading: colorGrading, audio_anti_copyright: audioAntiCopyright,
-                            stage_toggles: stageToggles,
-                            context_hint: contextHint
-                        })
-                    });
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.detail || data.error);
-                    startStreamingLogs(data.job_id);
+                    url = '/api/start';
+                    body = { input, ...options };
                 }
+
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.error);
+                startStreamingLogs(data.job_id);
             } catch (err) {
                 showToast(`Failed to start job: ${err.message}`, 'error');
                 btn.disabled = false;
@@ -3568,15 +3611,12 @@
 
         // ── Init ──
         setLanguage(currentLang);
+        loadOptionModel();
         loadKeyStatus();
         checkCookiesStatus();
         checkQueueStatus();
         updateStageBadge();
         setInterval(checkQueueStatus, 8000);
     </script>
-</body>
-</html>
-
-
 </body>
 </html>

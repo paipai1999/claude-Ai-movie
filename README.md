@@ -365,10 +365,10 @@ engine that runs (e.g. `--translation-style` is `persona` for hardsub, `dialogue
 | Step | Canonical flags |
 | :--- | :--- |
 | 1 Source | `--engine-mode` (main only), `--name`, `--force-whisper`, `--res` |
-| 2 Language | `--source-lang`, `--lang` (main: target), `--translation-style`, `--context-hint` |
+| 2 Language | `--source-lang`, `--translation-style`, `--context-hint` |
 | 3 Output | `--format`, `--subtitle-style`, `--render-video` / `--no-render`, `--thumb-title`, `--watermark-text` |
 | 4 Protection | `--blur-mode`, `--blur-height`, `--mirror`, `--color-grading` / `--no-color-grading`, `--audio-shield` |
-| 5 Audio | `--audio-mode`, `--sfx-mode`, `--sfx-volume`, `--tts-voice`, `--skip-demucs` |
+| 5 Audio | `--audio-mode`, `--lang` (main: target language / voice shortcut), `--tts-voice`, `--sfx-mode`, `--sfx-volume`, `--skip-demucs` |
 
 `python hardsub_engine.py --help` (or `main.py --help`) lists exactly what that program accepts, with defaults.
 The same model is served to the dashboard at `GET /api/options`.

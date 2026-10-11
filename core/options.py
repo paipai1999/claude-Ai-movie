@@ -98,9 +98,11 @@ OPTIONS: Tuple[Option, ...] = (
     # 2 ─ Language & translation
     _o("source_language", str, "auto", STEP_LANGUAGE,
        help="Spoken language of the source (auto = detect)."),
-    _o("language", str, "burmese", STEP_LANGUAGE, {RECAP},
+    # Target language *and* narrator-voice shortcut (burmese_thiha, nilar ...): the dashboard shows
+    # it as the voice picker, so it is asked together with the audio options.
+    _o("language", str, "burmese", STEP_AUDIO, {RECAP},
        choices=("burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha"),
-       help="Target language."),
+       help="Target language / narrator voice shortcut."),
     _o("translation_style", str, None, STEP_LANGUAGE, choices=TRANSLATION_STYLES,
        engine_defaults={RECAP: "recap", SUBTITLE: "dialogue", HARDSUB: "persona"},
        help="Voice of the translation."),

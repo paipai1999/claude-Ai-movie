@@ -21,6 +21,28 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.4.0-dev] — Dashboard wizard follows the option model (Phase 4 of 4: UI)
+
+### 🧱 Architecture
+- **The wizard steps follow `core/options.py`** (`GET /api/options`): 1 Source & Language -> 2 Output & Style -> 3 Protection -> 4 Audio & Pipeline -> 5 Review. The engine is now chosen first, in step 1, because it decides which later options apply. Controls moved between cards only; element ids, handlers and all three translations are unchanged (the step titles, descriptions and Next/Back captions were rewritten in Burmese, Thai and English).
+- **Engine defaults come from the model.** `handleEngineChange` no longer hard-codes style / audio / render per engine; it reads `engine_defaults` from `/api/options` (with a small fallback table that a test keeps equal to the model).
+- **Only relevant options are shown.** Each control carries `data-option`; options the selected engine does not use are hidden (e.g. voice, watermark, thumbnail for hardsub; the colour-grade switch for recap).
+- **One payload builder.** The two 15-line request bodies (single and batch) became one table of readers (`OPTION_READERS`) plus `collectJobOptions()`; a guard never sends a field the API does not know.
+- Model change: `language` (target language / narrator-voice shortcut) is asked in the Audio step, matching the dashboard's voice picker.
+
+### 🐞 Fixes found while verifying in a real browser
+- The hint field used a CSS class that does not exist (rendered as an unstyled box).
+- Removed a duplicated `</body></html>` at the end of the template.
+
+### 🔍 Verified against the previous dashboard
+- Real Chrome, 7 scenarios x every control: 179 request fields identical to the pre-refactor UI; the only 3 differences are the subtitle engine's model defaults (`render_video` false, `video_format` 16:9, so `reels_enabled` false).
+- `tests/ui/dashboard_smoke.js` (Node + Chrome, self-checking) walks the steps with real clicks, checks Edit buttons, per-engine visibility and request defaults.
+
+### 🧪 Tests
+- `tests/test_dashboard_template.py` (12, no browser): every `data-option` is a model option and sits in the step the model assigns, the engine is chosen before the options it changes, every field the page sends is accepted by both endpoints, one payload builder, JS fallback equals the model, step strings exist in all languages. 304 tests (was 292).
+
+---
+
 ## [2.4.0-dev] — Shared engine base (Phase 3 of 4: engines)
 
 ### 🧱 Architecture
