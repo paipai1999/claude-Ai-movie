@@ -4,6 +4,23 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.4.0-dev] — Shared option model (Phase 1 of 4: model + API)
+
+### 🧱 Architecture
+- **`core/options.py` — every option is defined once** (name, type, default, allowed values, step, engines). Five steps are asked in a fixed order: Source → Language & translation → Output & style → Protection → Audio & pipeline. `GET /api/options` exposes the model, and only the options an engine actually uses are asked for it (the downloader asks 4 things, not 37).
+- **API schemas are generated** from the model (`StartRequest`, `BatchStartRequest`), so they can no longer drift from the CLI/UI. The field sets are byte-for-byte what they were.
+- **One place for "the user did not choose":** `core.options.resolve(engine, values)` replaces ~60 hand-written `req.x or "..."` fallbacks in the two start handlers (`web_ui.py` -120 lines).
+- **Worker arguments are built from each worker's own signature** (`services/job_args.py`) instead of three hand-ordered 20-35 item tuples. Queued jobs are persisted positionally, so a signature change can no longer silently shift arguments.
+
+### 🐞 Fixes (behaviour that was already *intended* in the worker code)
+- A client that omitted `translation_style` / `audio_mode` / `render_video` always got the **recap** values, whatever the engine (the API default was truthy, so the engine-specific fallback `or "persona"` never ran). Hardsub now defaults to `persona` + original audio, Subtitle to `dialogue` + original audio + no video render. Explicit choices (and everything the dashboard sends) are unchanged.
+- Batch: `render_video=null` no longer forces a video render for the subtitle engine.
+
+### 🧪 Tests
+- `tests/test_option_model.py`: replays the **previous handler logic** against the new path over 7 engine modes x ~60 request variants (860 sub-tests) and requires identical worker arguments; plus API-contract, per-engine default and model-integrity tests. 237 tests (was 218).
+
+---
+
 ## [2.3.2] — Render & Subtitle Timing Fixes (found in first real end-to-end run)
 
 ### 🐞 Fixes

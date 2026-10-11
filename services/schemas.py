@@ -8,91 +8,46 @@ Dashboard API သို့ ပေးပို့သော JSON data အားလ
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
+
+from core.options import OPTIONS
 
 
-class StartRequest(BaseModel):
+def _build_request_model(name: str, doc: str, *, batch: bool):
     """
-    Schema for initiating a single video production pipeline job.
-    ဗီဒီယို တစ်ခုချင်းစီ ထုတ်လုပ်ရန် API သို့ ပေးပို့ရမည့် အချက်အလက်များ ပုံစံခွက်။
+    Generates the start-request schema from ``core.options`` so the API, CLI and wizard can never
+    drift apart. Options that have per-engine defaults are ``None`` here and resolved per engine by
+    ``core.options.resolve`` (so "not chosen" is distinguishable from "chose recap").
     """
-    input: str
-    engine_mode: Optional[str] = "recap"
-    project_name: Optional[str] = None
-    force_whisper: Optional[bool] = False
-    language: Optional[str] = "burmese"
-    subtitle_mode: Optional[str] = "burn"
-    resolution: Optional[str] = "1080p"
-    tts_engine: Optional[str] = None
-    tts_voice: Optional[str] = None
-    custom_thumb_title: Optional[str] = None
-    watermark_enabled: Optional[bool] = True
-    watermark_text: Optional[str] = None
-    watermark_opacity: Optional[float] = None
-    reels_enabled: Optional[bool] = True
-    video_format: Optional[str] = "both"
-    subtitle_style: Optional[str] = "box_black"
-    thumbnail_intro: Optional[bool] = False
-    source_language: Optional[str] = "auto"
-    skip_demucs: Optional[bool] = False
-    detect_scenes: Optional[bool] = False
-    script_engine: Optional[str] = "recap"
-    resume: Optional[bool] = True
-    trim_end: Optional[float] = None
-    no_smart_trim: Optional[bool] = False
-    outro_card: Optional[bool] = False
-    blur_mode: Optional[str] = "auto"
-    blur_height: Optional[float] = None
-    mirror: Optional[bool] = False
-    color_grading: Optional[bool] = True
-    audio_anti_copyright: Optional[bool] = False
-    translation_style: Optional[str] = "recap"
-    audio_mode: Optional[str] = "ai_voiceover"
-    sfx_mode: Optional[str] = "original_sfx"
-    sfx_volume: Optional[float] = 0.15
-    render_video: Optional[bool] = True
-    stage_toggles: Optional[Dict[str, bool]] = None
-    context_hint: Optional[str] = None
+    fields = {}
+    if batch:
+        fields["inputs"] = (List[str], ...)
+    for opt in OPTIONS:
+        if batch and not opt.batch:
+            continue
+        if opt.required:
+            if not batch:
+                fields[opt.name] = (str, ...)
+            continue
+        annotation = Dict[str, bool] if opt.type is dict else opt.type
+        default = None if opt.engine_defaults else opt.default
+        fields[opt.name] = (Optional[annotation], default)
+    return create_model(name, __doc__=doc, __module__=__name__, **fields)
 
 
-class BatchStartRequest(BaseModel):
-    """
-    Schema for initiating multi-video batch execution.
-    ဗီဒီယို အများအပြားကို အလိုအလျောက် ဆက်တိုက် ထုတ်လုပ်ရန် ပေးပို့ရမည့် ပုံစံခွက်။
-    """
-    inputs: List[str]
-    engine_mode: Optional[str] = "recap"
-    force_whisper: Optional[bool] = False
-    language: Optional[str] = "burmese"
-    subtitle_mode: Optional[str] = "burn"
-    resolution: Optional[str] = "1080p"
-    tts_engine: Optional[str] = None
-    tts_voice: Optional[str] = None
-    custom_thumb_title: Optional[str] = None
-    watermark_enabled: Optional[bool] = True
-    watermark_text: Optional[str] = None
-    watermark_opacity: Optional[float] = None
-    reels_enabled: Optional[bool] = True
-    video_format: Optional[str] = "both"
-    subtitle_style: Optional[str] = "box_black"
-    thumbnail_intro: Optional[bool] = False
-    source_language: Optional[str] = "auto"
-    skip_demucs: Optional[bool] = False
-    detect_scenes: Optional[bool] = False
-    script_engine: Optional[str] = "recap"
-    resume: Optional[bool] = True
-    blur_mode: Optional[str] = "auto"
-    blur_height: Optional[float] = None
-    mirror: Optional[bool] = False
-    color_grading: Optional[bool] = True
-    audio_anti_copyright: Optional[bool] = False
-    translation_style: Optional[str] = "recap"
-    audio_mode: Optional[str] = "ai_voiceover"
-    sfx_mode: Optional[str] = "original_sfx"
-    sfx_volume: Optional[float] = 0.15
-    render_video: Optional[bool] = True
-    stage_toggles: Optional[Dict[str, bool]] = None
-    context_hint: Optional[str] = None
+StartRequest = _build_request_model(
+    "StartRequest",
+    "Schema for initiating a single video production job (generated from core.options).\n"
+    "ဗီဒီယို တစ်ခုချင်းစီ ထုတ်လုပ်ရန် API သို့ ပေးပို့ရမည့် အချက်အလက်များ ပုံစံခွက်။",
+    batch=False,
+)
+
+BatchStartRequest = _build_request_model(
+    "BatchStartRequest",
+    "Schema for initiating multi-video batch execution (generated from core.options).\n"
+    "ဗီဒီယို အများအပြားကို အလိုအလျောက် ဆက်တိုက် ထုတ်လုပ်ရန် ပေးပို့ရမည့် ပုံစံခွက်။",
+    batch=True,
+)
 
 
 class SubtitleConfigRequest(BaseModel):

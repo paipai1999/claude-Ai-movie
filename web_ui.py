@@ -517,6 +517,13 @@ __all__ = [
     "_is_job_cancelled", "_set_job_state", "_project_dir_from_result", "_resolve_input_source",
 ]
 
+from core.options import (  # noqa: E402
+    DOWNLOAD, HARDSUB, SUBTITLE,
+    describe as describe_options,
+    normalize_engine,
+    resolve as resolve_options,
+)
+from services.job_args import build_worker_args  # noqa: E402
 from services.schemas import (  # noqa: E402
     StartRequest,
     BatchStartRequest,
@@ -1033,25 +1040,36 @@ async def download_video_endpoint(req: DownloadVideoRequest):
         err_msg = str(e)
         raise HTTPException(status_code=500, detail=err_msg)
 
+def _worker_for_engine(engine: str):
+    """The background worker that executes a given studio engine."""
+    return {
+        HARDSUB: hardsub_worker,
+        SUBTITLE: subtitle_worker,
+        DOWNLOAD: downloader_worker,
+    }.get(engine, pipeline_worker)
+
+
+@app.get("/api/options")
+def get_option_model():
+    """
+    The step-by-step option model (steps, options, defaults per engine). The dashboard wizard,
+    the API schemas and the CLI are all generated from this one definition.
+    """
+    return describe_options()
+
+
 @app.post("/api/start")
 async def start_pipeline(req: StartRequest):
     input_source = req.input
-    language = req.language or 'burmese'
-    subtitle_mode = req.subtitle_mode or 'burn'
-    subtitle_style = req.subtitle_style or 'box_black'
-    resolution = req.resolution or '1080p'
-    tts_engine = req.tts_engine
-    custom_thumb_title = req.custom_thumb_title
-    watermark_enabled = req.watermark_enabled
-    watermark_text = req.watermark_text
-    watermark_opacity = req.watermark_opacity
-    
-    # Resolve video_format (supports backwards-compatible reels_enabled toggle)
-    video_format = req.video_format or ("both" if req.reels_enabled else "16:9")
-
     if not input_source:
         raise HTTPException(status_code=400, detail="No input provided")
-    
+
+    # Every default is applied in ONE place (core.options.resolve) for the chosen engine.
+    engine = normalize_engine(req.engine_mode)
+    opts = resolve_options(engine, req.model_dump())
+    language = opts["language"]
+    tts_engine = opts["tts_engine"]
+
     _cleanup_old_jobs()
     with jobs_lock:
         job_id = str(uuid.uuid4())
@@ -1074,133 +1092,36 @@ async def start_pipeline(req: StartRequest):
             log_suppressed("web_ui.start_pipeline", _exc)
 
     try:
-        if req.engine_mode == "hardsub":
-            job_entry = {
-                "job_id": job_id,
-                "target": hardsub_worker,
-                "args": (
-                    job_id,
-                    input_source,
-                    req.project_name,
-                    req.source_language or "auto",
-                    req.force_whisper or False,
-                    video_format,
-                    resolution,
-                    subtitle_style,
-                    req.blur_mode or "auto",
-                    req.mirror or False,
-                    req.color_grading if req.color_grading is not None else True,
-                    req.blur_height,
-                    req.audio_anti_copyright or False,
-                    req.translation_style or "persona",
-                    req.audio_mode or "original",
-                    req.sfx_mode or "original_sfx",
-                    req.sfx_volume if req.sfx_volume is not None else 0.15,
-                    req.render_video if req.render_video is not None else True,
-                    req.stage_toggles,
-                    req.context_hint,
-                ),
-                "name": str(req.project_name or input_source),
+        worker = _worker_for_engine(engine)
+        # Argument order comes from the worker's own signature (queued jobs are stored positionally).
+        job_entry = {
+            "job_id": job_id,
+            "target": worker,
+            "args": build_worker_args(worker, job_id, opts),
+            "created_at": time.time(),
+        }
+        if engine in (HARDSUB, SUBTITLE):
+            job_entry.update({
+                "name": str(opts["project_name"] or input_source),
                 "source": str(input_source),
-                "language": str(req.source_language or "auto"),
-                "engine_mode": "hardsub",
-                "created_at": time.time()
-            }
-        elif req.engine_mode == "subtitle":
-            job_entry = {
-                "job_id": job_id,
-                "target": subtitle_worker,
-                "args": (
-                    job_id,
-                    input_source,
-                    req.project_name,
-                    req.source_language or "auto",
-                    req.force_whisper or False,
-                    req.translation_style or "dialogue",
-                    req.audio_mode or "original",
-                    req.sfx_mode or "original_sfx",
-                    req.sfx_volume if req.sfx_volume is not None else 0.15,
-                    req.render_video if req.render_video is not None else False,
-                    video_format,
-                    resolution,
-                    subtitle_style,
-                    req.blur_mode or "auto",
-                    req.mirror or False,
-                    req.color_grading if req.color_grading is not None else True,
-                    req.blur_height,
-                    req.audio_anti_copyright or False,
-                    req.stage_toggles,
-                    req.context_hint,
-                ),
-                "name": str(req.project_name or input_source),
-                "source": str(input_source),
-                "language": str(req.source_language or "auto"),
-                "engine_mode": "subtitle",
-                "created_at": time.time()
-            }
-        elif req.engine_mode == "download":
-            job_entry = {
-                "job_id": job_id,
-                "target": downloader_worker,
-                "args": (
-                    job_id,
-                    input_source,
-                    resolution or "1080p",
-                    req.project_name,
-                ),
-                "name": f"Download: {str(req.project_name or input_source)}",
+                "language": str(opts["source_language"]),
+                "engine_mode": engine,
+            })
+        elif engine == DOWNLOAD:
+            job_entry.update({
+                "name": f"Download: {str(opts['project_name'] or input_source)}",
                 "source": str(input_source),
                 "language": "N/A",
                 "tts_engine": "N/A",
-                "engine_mode": "download",
-                "created_at": time.time()
-            }
+                "engine_mode": DOWNLOAD,
+            })
         else:
-            job_entry = {
-                "job_id": job_id,
-                "target": pipeline_worker,
-                "args": (
-                    job_id,
-                    input_source,
-                    language,
-                    subtitle_mode,
-                    resolution,
-                    tts_engine,
-                    custom_thumb_title,
-                    watermark_enabled,
-                    watermark_text,
-                    watermark_opacity,
-                    req.reels_enabled,
-                    video_format,
-                    subtitle_style,
-                    req.thumbnail_intro,
-                    req.source_language or "auto",
-                    req.skip_demucs or False,
-                    req.detect_scenes or False,
-                    req.resume if req.resume is not None else True,
-                    req.tts_voice,
-                    req.script_engine or "recap",
-                    req.trim_end,
-                    req.no_smart_trim or False,
-                    req.outro_card or False,
-                    req.translation_style or "recap",
-                    req.audio_mode or "ai_voiceover",
-                    req.sfx_mode or "original_sfx",
-                    req.sfx_volume if req.sfx_volume is not None else 0.15,
-                    req.blur_mode or "auto",
-                    req.blur_height,
-                    req.mirror or False,
-                    req.audio_anti_copyright or False,
-                    req.render_video if req.render_video is not None else True,
-                    req.stage_toggles,
-                    req.context_hint,
-                ),
+            job_entry.update({
                 "name": str(input_source),
                 "source": str(input_source),
                 "language": str(language),
                 "tts_engine": str(tts_engine or "edge_tts"),
-                "created_at": time.time()
-            }
+            })
 
         with queue_lock:
             if not is_running:
@@ -1226,20 +1147,14 @@ async def start_pipeline(req: StartRequest):
 @app.post("/api/batch/start")
 async def start_batch_pipeline(req: BatchStartRequest):
     inputs = req.inputs
-    language = req.language or 'burmese'
-    subtitle_mode = req.subtitle_mode or 'burn'
-    subtitle_style = req.subtitle_style or 'box_black'
-    resolution = req.resolution or '1080p'
-    tts_engine = req.tts_engine
-    custom_thumb_title = req.custom_thumb_title
-    watermark_enabled = req.watermark_enabled
-    watermark_text = req.watermark_text
-    watermark_opacity = req.watermark_opacity
-    video_format = req.video_format or ("both" if req.reels_enabled else "16:9")
-
     if not inputs or not all(isinstance(item, str) and item.strip() for item in inputs):
         raise HTTPException(status_code=400, detail="No inputs provided for batch mode")
-        
+
+    engine = normalize_engine(req.engine_mode)
+    opts = resolve_options(engine, req.model_dump())
+    language = opts["language"]
+    tts_engine = opts["tts_engine"]
+
     _cleanup_old_jobs()
     with jobs_lock:
         job_id = str(uuid.uuid4())
@@ -1265,43 +1180,8 @@ async def start_batch_pipeline(req: BatchStartRequest):
         job_entry = {
             "job_id": job_id,
             "target": batch_worker,
-            "args": (
-                job_id,
-                inputs,
-                language,
-                subtitle_mode,
-                resolution,
-                tts_engine,
-                custom_thumb_title,
-                watermark_enabled,
-                watermark_text,
-                watermark_opacity,
-                req.reels_enabled,
-                video_format,
-                subtitle_style,
-                req.thumbnail_intro,
-                req.source_language or "auto",
-                req.skip_demucs or False,
-                req.detect_scenes or False,
-                req.resume if req.resume is not None else True,
-                req.tts_voice,
-                req.script_engine or "recap",
-                req.engine_mode or "recap",
-                req.blur_mode or "auto",
-                req.blur_height,
-                req.mirror or False,
-                req.color_grading if req.color_grading is not None else True,
-                req.audio_anti_copyright or False,
-                req.force_whisper or False,
-                req.translation_style,
-                req.audio_mode,
-                req.sfx_mode or "original_sfx",
-                req.sfx_volume if req.sfx_volume is not None else 0.15,
-                req.render_video if req.render_video is not None else True,
-                req.stage_toggles,
-                req.context_hint,
-            ),
-            "name": f"Batch [{req.engine_mode.upper() if req.engine_mode else 'RECAP'}] ({len(inputs)} items)",
+            "args": build_worker_args(batch_worker, job_id, opts, inputs=inputs),
+            "name": f"Batch [{str(opts['engine_mode']).upper()}] ({len(inputs)} items)",
             "source": f"Batch ({len(inputs)} items)",
             "language": str(language),
             "tts_engine": str(tts_engine or "edge_tts"),
