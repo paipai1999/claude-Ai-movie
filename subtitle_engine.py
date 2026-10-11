@@ -51,6 +51,7 @@ from brain.prompts import (
 from agents.downloader_agent import DownloaderAgent
 from core.paths import sanitize_project_name, resolve_inside
 from core.whisper_settings import load_faster_whisper, resolve_beam_size
+from core.segment_timing import tighten_end
 from core.subtitle_builder import (
     format_srt_timestamp,
     parse_srt_timestamp,
@@ -521,19 +522,22 @@ class SubtitleEngine:
                 language=whisper_lang,
                 beam_size=resolve_beam_size(pipeline_cfg),
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=400)
+                vad_parameters=dict(min_silence_duration_ms=400),
+                word_timestamps=True,
             )
             idx = 1
             for s in seg_gen:
                 txt = s.text.strip()
                 if not txt:
                     continue
+                # Whisper segments run on through silence/music; never outlive the speech.
+                end_s = tighten_end(s.start, s.end, txt, getattr(s, "words", None))
                 results.append({
                     "no": idx,
                     "start_s": round(s.start, 3),
-                    "end_s": round(s.end, 3),
+                    "end_s": end_s,
                     "start": _format_srt_timestamp(s.start),
-                    "end": _format_srt_timestamp(s.end),
+                    "end": _format_srt_timestamp(end_s),
                     "original": txt,
                     "english": "",
                     "burmese": "",

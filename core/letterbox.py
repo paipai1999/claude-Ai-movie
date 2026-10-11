@@ -14,6 +14,25 @@ import subprocess
 from typing import Optional, Dict
 
 
+def plan_canvas_mode(src_w: int, src_h: int, out_w: int, out_h: int, tolerance: float = 0.02) -> str:
+    """
+    Decides how a source frame is placed on the output canvas.
+
+    Returns "direct" when the source already has the output aspect ratio (a plain scale is
+    lossless in shape), otherwise "fit": the frame is scaled to fit *inside* the canvas, with a
+    blurred copy of itself behind it. A plain scale of e.g. a 9:16 clip into 16:9 would squash it.
+    Unknown source dimensions fall back to "direct" (the previous behaviour).
+    """
+    try:
+        src_w, src_h, out_w, out_h = int(src_w), int(src_h), int(out_w), int(out_h)
+    except (TypeError, ValueError):
+        return "direct"
+    if src_w <= 0 or src_h <= 0 or out_w <= 0 or out_h <= 0:
+        return "direct"
+    ratio = (src_w / src_h) / (out_w / out_h)
+    return "direct" if abs(ratio - 1.0) <= tolerance else "fit"
+
+
 def detect_letterbox_crop(
     video_path: str,
     ffmpeg_bin: str = "ffmpeg",

@@ -60,6 +60,8 @@ from agents.video_merger_agent import (
 )
 from core.paths import sanitize_project_name, resolve_inside
 from core.whisper_settings import load_faster_whisper, resolve_beam_size
+from core.segment_timing import tighten_end
+from core.letterbox import plan_canvas_mode
 from core.subtitle_builder import (
     format_srt_timestamp,
     parse_srt_timestamp,
@@ -348,14 +350,17 @@ class HardsubEngine:
 
             lang = None if source_language in ["auto", "", None] else source_language
             whisper_segs, _ = model.transcribe(
-                audio_target, language=lang, beam_size=resolve_beam_size(pipeline_cfg), vad_filter=True
+                audio_target, language=lang, beam_size=resolve_beam_size(pipeline_cfg), vad_filter=True,
+                word_timestamps=True,
             )
 
             results = []
             for s in whisper_segs:
                 txt = s.text.strip()
                 if txt and s.end > s.start:
-                    results.append({"start": s.start, "end": s.end, "text": txt})
+                    # Whisper segments run on through silence/music; never outlive the speech.
+                    end = tighten_end(s.start, s.end, txt, getattr(s, "words", None))
+                    results.append({"start": s.start, "end": end, "text": txt})
             return results
         finally:
             if extracted and os.path.exists(temp_audio):
@@ -902,8 +907,27 @@ class HardsubEngine:
 
         base_chain = ",".join(v_filters) if v_filters else "null"
 
-        if aspect_ratio == "16:9":
-            # 16:9 Landscape Compositing
+        meta = {}
+        dur_sec = 0.0
+        has_audio = True
+        try:
+            meta = self._probe_video_metadata(video_path)
+            dur_sec = float(meta.get("duration") or 0.0)
+            has_audio = bool(meta.get("has_audio", True))
+        except Exception as _exc:
+            log_suppressed("hardsub_engine._render_hardsub_video", _exc)
+
+        # A source that is not already 16:9 (e.g. a vertical clip) must not be squashed into the
+        # landscape canvas: it is fitted inside it over a blurred copy of itself instead.
+        use_direct_scale = aspect_ratio == "16:9" and plan_canvas_mode(
+            meta.get("width"), meta.get("height"), out_w, out_h
+        ) == "direct"
+        if aspect_ratio == "16:9" and not use_direct_scale:
+            print(f"[*] HardsubEngine (16:9): source is {meta.get('width')}x{meta.get('height')} - "
+                  f"fitting inside the landscape canvas with a blurred background (no stretching).")
+
+        if use_direct_scale:
+            # 16:9 Landscape Compositing (source already has the target aspect ratio)
             if do_blur:
                 r = 18
                 filter_complex = (
@@ -911,12 +935,12 @@ class HardsubEngine:
                     f"[sub]crop=iw:'trunc(ih*{height_pct:.3f}/2)*2':0:'trunc(ih*{start_y:.3f}/2)*2',"
                     f"boxblur=luma_radius={r}:luma_power=2:chroma_radius={max(1,r//2)}:chroma_power=2[blurred];"
                     f"[orig][blurred]overlay=0:'trunc(H*{start_y:.3f}/2)*2'[canvas];"
-                    f"[canvas]scale={out_w}:{out_h},{ass_filter_str}[vout]"
+                    f"[canvas]scale={out_w}:{out_h},setsar=1,{ass_filter_str}[vout]"
                 )
             else:
-                filter_complex = f"[0:v]{base_chain},scale={out_w}:{out_h},{ass_filter_str}[vout]"
+                filter_complex = f"[0:v]{base_chain},scale={out_w}:{out_h},setsar=1,{ass_filter_str}[vout]"
         else:
-            # 9:16 Vertical Reels with blurred background canvas
+            # Blurred-background canvas (9:16 Reels, or any source that is not 16:9 for 16:9 output)
             if do_blur:
                 r = 18
                 blur_sub_filter = (
@@ -936,20 +960,11 @@ class HardsubEngine:
                 f"[bg_src]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,"
                 f"crop={bg_w}:{bg_h},boxblur=12:3,"
                 f"scale={out_w}:{out_h}[bg];"
-                f"[fg_src]scale={out_w}:-2:force_original_aspect_ratio=decrease[fg];"
+                f"[fg_src]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2[combined];"
-                f"[combined]{ass_filter_str}[vout]"
+                f"[combined]setsar=1,{ass_filter_str}[vout]"
             )
 
-        meta = {}
-        dur_sec = 0.0
-        has_audio = True
-        try:
-            meta = self._probe_video_metadata(video_path)
-            dur_sec = float(meta.get("duration") or 0.0)
-            has_audio = bool(meta.get("has_audio", True))
-        except Exception as _exc:
-            log_suppressed("hardsub_engine._render_hardsub_video", _exc)
         render_timeout = max(3600, int((dur_sec or 1800.0) * 4.0))
 
         audio_map = "0:a?"
