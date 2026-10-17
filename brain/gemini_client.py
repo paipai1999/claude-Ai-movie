@@ -63,8 +63,20 @@ _FALLBACK_MODELS = [
 _RPM_WAIT_SEC = 65
 
 
-def _extract_text_from_gemini_response(res_data: dict) -> str:
-    """Safely extracts text from Gemini REST response, handling multi-part, thoughts, and finishReason."""
+class TruncatedResponseError(Exception):
+    """Gemini stopped at maxOutputTokens, so a JSON payload is cut off mid-array.
+
+    Retrying the same prompt on another key or model hits the same budget, so callers
+    should shrink the request (e.g. split the batch) instead.
+    """
+
+
+def _extract_text_from_gemini_response(res_data: dict, expect_json: bool = False) -> str:
+    """Safely extracts text from Gemini REST response, handling multi-part, thoughts, and finishReason.
+
+    With expect_json=True a MAX_TOKENS finish raises TruncatedResponseError instead of
+    returning half a JSON document.
+    """
     candidates = res_data.get("candidates", [])
     if not candidates:
         prompt_feedback = res_data.get("promptFeedback", {})
@@ -96,7 +108,14 @@ def _extract_text_from_gemini_response(res_data: dict) -> str:
 
     if not final_text:
         finish_reason = cand.get("finishReason", "EMPTY_RESPONSE")
+        if expect_json and finish_reason == "MAX_TOKENS":
+            raise TruncatedResponseError("Gemini hit maxOutputTokens before writing any text (finishReason=MAX_TOKENS)")
         raise Exception(f"Gemini returned empty text response (finishReason={finish_reason})")
+
+    if expect_json and cand.get("finishReason") == "MAX_TOKENS":
+        raise TruncatedResponseError(
+            f"Gemini output was cut off at maxOutputTokens ({len(final_text)} chars received)"
+        )
 
     return final_text
 
@@ -196,8 +215,13 @@ def call_gemini(
                     with urllib.request.urlopen(req, timeout=api_timeout) as response:
                         res_data = json.loads(response.read().decode("utf-8"))
                         _record_api_usage(key, m, "success")
-                        text = _extract_text_from_gemini_response(res_data)
+                        text = _extract_text_from_gemini_response(
+                            res_data, expect_json=response_mime_type == "application/json"
+                        )
                         return text, m
+
+                except TruncatedResponseError:
+                    raise   # same budget on every key/model; the caller must shrink the request
 
                 except urllib.error.HTTPError as e:
                     last_err = e

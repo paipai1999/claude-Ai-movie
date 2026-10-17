@@ -92,6 +92,8 @@ class MovieState(BaseModel):
     errors: List[str] = Field(default_factory=list)
     completed_phases: List[str] = Field(default_factory=list)  # Tracks successfully completed pipeline phase IDs
     phase_checkpoints: Dict[str, Any] = Field(default_factory=dict)  # Metadata & artifact paths per completed phase
+    name_glossary: Dict[str, str] = Field(default_factory=dict)  # Source name -> target spelling, kept consistent across translation batches
+    untranslated_lines: List[Dict[str, Any]] = Field(default_factory=list)  # Lines left silent because no translation came back
     speaker_profiles: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Multimodal speaker diarization profile
 
     def mark_phase_completed(self, phase_name: str, details: Dict[str, Any] = None):

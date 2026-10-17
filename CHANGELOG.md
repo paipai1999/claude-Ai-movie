@@ -4,6 +4,20 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.4.0-dev] — Engine 3 translation accuracy
+
+### 🐞 Fixes
+- **Source-language text is never voiced as Burmese.** When Gemini dropped a line and the single-line retry also failed, the original Chinese/English text was sent to the Burmese TTS. The line is now left silent, marked `untranslated`, and listed in `state.untranslated_lines` with a warning naming the timestamps.
+- **Truncated batch replies are split, not discarded.** A JSON reply cut off at `maxOutputTokens` (common with thinking models) now raises `TruncatedResponseError` instead of being retried on every key/model; the writer splits the batch in half and retries. The batch budget was raised from 4096 to 8192 tokens.
+
+### ✨ Consistency
+- **Names keep one spelling across batches.** The writer keeps a glossary (seeded from `Name -> မြန်မာအမည်` lines in the context hint, then from the `names` map Gemini returns per line; first spelling wins) and the last four translated lines, and passes both into every batch and single-line retry. The final glossary is saved as `state.name_glossary`.
+
+### 🧪 Tests
+- `tests/test_translation_accuracy.py` (10 tests). 314 tests (was 304).
+
+---
+
 ## [2.4.0-dev] — Shared option model (Phase 1 of 4: model + API)
 
 ### 🧱 Architecture
