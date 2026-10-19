@@ -4,6 +4,45 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 
 ---
 
+## [2.5.0-dev] — Studio upgrade: translation quality, Script Editor, Brand Kit, new design system
+
+### 🐞 Fixes
+- **Burmese text in the outro card and the watermark was mis-shaped** (vowel sign ေ drawn after its consonant, ူ detached): Pillow's default layout engine cannot shape Myanmar and the stock Windows wheel has no libraqm. `core/text_render.py` renders through FFmpeg's `drawtext` (HarfBuzz, already shipped for the subtitles), falling back to Pillow. No new dependency. The outro card layout now flows from the real text heights.
+- **Translated lines could be silently lost.** A fixed `max_tokens=4096` cut 20-line Burmese answers off mid-array, the parser needed a closing `]`, and every dropped line then fell back to its *source-language* text. Tokens now scale with the batch, a cut-off answer keeps every complete item, and lost lines are re-asked.
+- **English left in "Burmese" subtitles (Engines 2/3):** the repair pass only looked for CJK/kana/hangul, so a failed batch (which copies the source in) was never repaired. It now also catches untranslated, copied, English-leaking and chatter lines (`core.translation_quality.find_damaged_lines`).
+- **Comparison helpers deleted Myanmar vowel signs** (`\W` does not match combining marks); `core/text_compare.py` keeps letters, marks and digits.
+- Without a Gemini key, Engine 1 used to "succeed" with a film narrated in the wrong language; it now fails early with the fix.
+- The dashboard's nav icons disappeared after a language change; log colours, spinner and the active-config tags had no CSS at all.
+
+### ✨ Translation quality
+- **Story memory** (`agents/story_memory.py`): one extra call builds a compact bible (characters + gender + fixed Burmese spelling, places, terms, relationships, tone) that every batch carries; cached on the state. Engines 2/3 use it too.
+- **Translation flow** (`agents/translation_flow.py`): each batch sees the last 3 translated and next 3 source lines; answers are validated (`core/translation_quality.py`) and only the bad lines are re-asked with specific corrections; an unusable answer splits the batch; a stubborn line is translated alone; whatever still fails keeps its source and is flagged `needs_review` with the reasons. Blocked/cut-off answers (`GeminiContentError`) are told apart from outages; three failed calls in a row stop the phase instead of caching a half-translated script.
+- **Whisper repetition guard** (`core/transcript_quality.py`): loops ("Thank you" x 60) and credit artefacts are dropped before any API spend; `condition_on_previous_text=False` and `hallucination_silence_threshold` prevent most of them.
+- **Gemini retry policy:** 5 rounds with 15/30/60/120 s back-off on 503, rate-limit waits unchanged, a daily quota or a dead connection fails fast.
+- **Edge TTS lead/tail silence is trimmed** (`core/audio_trim.py`, `voice.trim_silence`) so the tempo fit measures speech only and lines start on time.
+
+### ✨ Studio
+- **Script Editor:** fix a narration line (or its voice gender), save, re-render: edits are written to `state.json` + `checkpoint.json`, the voice/merge/QA phases are un-completed and only the changed clips are re-synthesized (per-clip fingerprints). `final_recap_script.txt` is rewritten. The settings a project was started with are saved (`job_options.json`) so "re-render" cannot change the script options and discard the edits.
+- **Quality report** per project (`quality_report.json`): lines to review, too-long lines, clips that overflow their slot, warnings, a 0-100 score and a verdict.
+- **Projects / job history / storage meter**, and **Brand Kit** (channel profiles in `profiles.json`, validated against the option model; per-video options can never be saved).
+- **Test Gemini keys before saving them:** a *Test keys* button next to *Save Keys* calls `POST /api/keys/check`, which pings each pasted key (or the stored key a masked line names) and returns only masked results; nothing is saved or logged. Key-line parsing is shared with `/api/keys/save` (`services/key_store.py`).
+- **Older faster-whisper installs keep working:** options the installed version does not know (e.g. `hallucination_silence_threshold`) are dropped with a hint instead of failing the whole transcription (`requirements.txt` only asks for `>=1.0.0`).
+- **Colab:** Brand Kit profiles are stored on Google Drive next to `config.json` (when `/content/drive/MyDrive/MovieRecapOutputs` exists), so a runtime reset keeps them.
+- Overnight **batch** projects remember their settings too (`BatchProcessor(on_project=...)`), so re-render works for them as well.
+- **Pronunciation dictionary** (`core/pronunciation.py`, Brand Kit view): one `written => spoken` pair per line. The voice reads the *spoken* form while subtitles and the script keep the written one. Longest match wins, Latin words only match whole words, and changing an entry re-voices exactly the lines it touches (the per-clip fingerprint changes only for those). Stored in `dictionary.json` (git-ignored; on Google Drive in Colab).
+- **Story bible viewer + rename** (Script Editor): the characters / places / terms the translator used are shown as chips, and a find-and-replace (match case, whole word, live preview with a count) renames a character across every line and the bible in one step. The edited bible is reused by the re-render, so the new spelling is not translated back.
+- **New recap options** (CLI, API, wizard): `story_length` (`standard` / `compact` / `detailed` / `scene`), `narrative_tone` (`natural` / `brisk` / `calm` / `dramatic`) and `tts_rate` (-50..100 %). The defaults add nothing to the prompt or the resume signatures, so existing projects resume exactly as before; changing one of them makes only the affected phase run again.
+- **CapCut-ready package** (`services/capcut_export.py`): `capcut_package.zip` with `narration.mp3` (the whole voice-over as ONE track, every line already at its time, built with the merger's own layout), `subtitles.srt` saved as UTF-8 *with BOM* (CapCut garbles Burmese without it), `subtitles.ass` when the render made one, `script.txt` and a bilingual import guide. Refused with a clear message while the voice-over is out of date (e.g. after a Script Editor edit that was not re-rendered).
+- API: `GET /api/projects`, `GET|PUT /api/projects/{name}/script`, `POST /api/projects/{name}/script/replace`, `GET /api/projects/{name}/quality`, `POST /api/projects/{name}/rerender`, `POST|GET /api/projects/{name}/capcut`, `GET|PUT /api/dictionary`, `GET /api/jobs/history`, `GET /api/storage`, `GET|POST|PUT|DELETE /api/profiles`.
+
+### 🎨 Dashboard
+- New design system in `static/css/studio.css` (the inline stylesheet is gone): light and dark themes (saved choice, else the OS), gold accent, Burmese-friendly typography, responsive down to phone width. New views and their logic live in `static/js/studio.js` (Burmese, English and Thai labels).
+
+### 🧪 Tests
+- 594 tests (was 292): pronunciation, find-and-replace, story options, CapCut package (real FFmpeg: track timing, BOM, not-ready/missing audio, HTTP download), text rendering, transcript/translation validators, translation flow with scripted fakes (outage, blocked content, 300-line fault injection), writer integration, Gemini retry policy, audio trim (real FFmpeg), project/profile services, studio HTTP API with the security middleware, frontend consistency (translation keys, element ids, CSS classes), and a browser smoke test for the new views.
+
+---
+
 ## [2.4.0-dev] — Shared option model (Phase 1 of 4: model + API)
 
 ### 🧱 Architecture

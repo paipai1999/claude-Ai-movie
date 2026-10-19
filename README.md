@@ -189,6 +189,14 @@ pai-ai-movie-studio/
 │   ├── subtitle_builder.py    ← ASS & SRT generators, style presets (single source: brain.config)
 │   ├── paths.py               ← Project-name sanitising & "stay inside this folder" path helpers
 │   ├── whisper_settings.py    ← One Whisper model / device / beam policy for all three engines
+│   ├── transcribe.py          ← Shared Faster-Whisper transcription (Engines 2 & 3)
+│   ├── transcript_quality.py  ← Drops Whisper repetition loops / credit artefacts before any API spend
+│   ├── translation_quality.py ← Offline validators: untranslated, English leaks, copies, duplicates, over-long
+│   ├── text_compare.py        ← Script-safe normalisation (keeps Myanmar vowel signs) + trigram similarity
+│   ├── text_render.py         ← Myanmar-safe text rendering via FFmpeg/HarfBuzz (outro card, watermark)
+│   ├── audio_trim.py          ← Trims Edge TTS lead-in / tail silence
+│   ├── pronunciation.py       ← Pronunciation dictionary: the voice reads the spoken form, subtitles keep the written one
+│   ├── user_files.py          ← Where per-user settings live (next to config.json, or on Drive in Colab)
 │   └── video_blur.py          ← Vision AI bounding box calculation & FFmpeg boxblur filters
 │
 ├── services/                  ← Web UI runtime (no FastAPI code inside)
@@ -197,6 +205,10 @@ pai-ai-movie-studio/
 │   ├── job_runtime.py         ← stdout capture, single job lifecycle helper, the 5 pipeline workers
 │   ├── process_registry.py    ← Which ffmpeg / demucs processes belong to which job (job-scoped Stop)
 │   ├── schemas.py             ← Pydantic request models
+│   ├── projects.py            ← Script Editor (edit + un-complete render phases), quality report, saved job options
+│   ├── profiles.py            ← Brand Kit: channel profiles validated against the option model
+│   ├── capcut_export.py       ← capcut_package.zip: one narration track + BOM SRT + import guide
+│   ├── studio_api.py          ← Projects / script / quality / profiles / history / storage endpoints
 │   └── security.py            ← Auth, same-origin, DNS-rebinding and bind-address policy
 │
 ├── agents/                    ← Specialized Agentic Pipeline Modules
@@ -204,7 +216,9 @@ pai-ai-movie-studio/
 │   ├── downloader_agent.py    ← Multi-platform downloader + shared cookie discovery
 │   ├── video_agent.py         ← Video metadata: FPS, duration, resolution (OpenCV & FFprobe)
 │   ├── audio_agent.py         ← Audio extract + Faster-Whisper STT + Demucs separation
-│   ├── writer_agent.py        ← Dialogue translation: smoothing → keyframes → batch prompts → fallback
+│   ├── writer_agent.py        ← Dialogue translation: smoothing → story memory → flow → script blocks
+│   ├── story_memory.py        ← One-call "translation bible": characters, genders, spellings, terms (+ parser for the viewer)
+│   ├── translation_flow.py    ← Context windows, validated retries, batch split, per-line fallback, outage stop
 │   ├── seo_agent.py           ← Viral Title, Description, Tags, and Hashtags generator
 │   ├── voice_agent.py         ← Multi-Voice TTS, time-stretch, per-clip content manifest
 │   ├── video_merger_agent.py  ← Final-render facade (VideoMergerAgent = mixins from agents/merger/)
@@ -224,9 +238,12 @@ pai-ai-movie-studio/
 │   └── burmese_utils.py       ← Burmese syllable regex, number-to-words, acronym transliteration
 │
 ├── templates/
-│   └── index.html             ← Modern Glassmorphic Web UI with Theater Cinema Player
+│   └── index.html             ← Dashboard markup + wizard logic (theater cinema player included)
+├── static/
+│   ├── css/studio.css         ← Design system: light / dark themes, gold accent, responsive
+│   └── js/studio.js           ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
 │
-├── tests/                     ← 184 unit / regression tests (pytest)
+├── tests/                     ← 594 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -309,6 +326,15 @@ Open your browser at: `http://localhost:5000`
 * **Live SSE Streaming Logs & Stopwatch:** Watch real-time terminal output and progress timers.
 * **Theater Cinema View:** Click `🎬 Cinema` on any generated card to preview in full screen.
 * **System Health Check:** Click the diagnostics icon to test FFmpeg encoders, active Gemini keys, Edge-TTS, and disk space.
+* **Projects & quality score:** every finished job gets a 0-100 score; lines the translator could not fix are flagged for review.
+* **Script Editor:** open a recap project, fix a line (or its voice gender) and press *Save & re-render* — only the changed lines are re-voiced and the video is re-rendered. Projects started before this feature need to be run once more (with *Resume* on) so their settings are saved.
+* **Brand Kit:** save the wizard's voice / subtitle / watermark / protection settings as a channel profile and apply it to any new production in one click (`profiles.json`, git-ignored).
+* **Pronunciation dictionary (Brand Kit):** one `written => spoken` pair per line (`dictionary.json`, git-ignored). The voice says the spoken form; subtitles keep the written one, and only the lines an entry touches are re-voiced.
+* **Story bible & rename (Script Editor):** see the characters / places / terms the translator used, and rename a character across the whole script with a live preview before applying.
+* **Story length, tone and speaking speed:** pick how long the recap is (`compact` … `scene by scene`), its tone (`brisk`, `calm`, `dramatic`) and the voice speed (-50…+100 %) in the wizard, or with `--story-length`, `--narrative-tone`, `--tts-rate` on the CLI.
+* **CapCut package:** the *CapCut* button on a finished recap project downloads `capcut_package.zip` (one narration track, Burmese-safe SRT, guide) so the final edit can continue in CapCut.
+* **Test your Gemini keys** before saving them (*Test keys*): each key is checked and only masked results are shown.
+* **Light / dark theme** (press `T`), with Burmese, English and Thai labels.
 
 ---
 
@@ -327,6 +353,9 @@ python main.py --batch --format both
 
 # 4. Skip Demucs vocal separation on CPU for ultra-fast processing
 python main.py "movies/sample.mp4" --skip-demucs
+
+# 5. A shorter, faster-paced recap with a slightly quicker voice
+python main.py "movies/sample.mp4" --story-length compact --narrative-tone brisk --tts-rate 10
 ```
 
 #### 📝 Engine 2: YouTube Subtitle & Transcript Studio (`subtitle_engine.py`)
