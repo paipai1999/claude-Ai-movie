@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 import brain.config as cfg
 from agents.downloader_agent import DownloaderAgent
+from agents.story_memory import build_story_context
 from brain.burmese_utils import (
     has_untranslated_foreign_script,
     sanitize_burmese_narration,
@@ -29,6 +30,7 @@ from brain.burmese_utils import (
     strip_trailing_subtitle_punctuation,
 )
 from brain.diagnostics import log_suppressed
+from core.translation_quality import find_damaged_lines
 
 _WUXIA_STYLES = ("wuxia", "cultivation", "historical", "costume")
 _REPAIR_BATCH_SIZE = 15
@@ -132,7 +134,32 @@ class StudioEngineBase:
             "has_audio": has_audio,
         }
 
+    # ── story memory ────────────────────────────────────────────────────────
+    def _story_block(self, texts: List[str], context_hint: Optional[str] = None, movie_name: str = "") -> str:
+        """
+        The "story bible" prompt block (characters + genders + spellings, places, terms) for these source
+        lines, or "" for short clips / no key / any failure. Costs one extra model call per film.
+        """
+        api_keys = self._get_api_keys()
+        if not api_keys:
+            return ""
+        model = self.config_data.get("gemini", {}).get("models", {}).get("workhorse", "gemini-3.5-flash-lite")
+
+        def call(system_prompt, user_prompt, api_key, model_name, **kwargs):
+            return self._call_llm(system_prompt=system_prompt, user_prompt=user_prompt, api_key=api_key, model=model_name, **kwargs)
+
+        block = build_story_context(
+            texts, target_language="burmese", movie_name=movie_name, api_key=api_keys,
+            model=model, call=call, hint=context_hint or "",
+        )
+        return block + "\n\n" if block else ""
+
     # ── QA: audit + self-healing repair (skeleton) ──────────────────────────
+    @staticmethod
+    def _find_damaged(segments: List[Dict]) -> List[int]:
+        """Indices of lines that need a repair call (see ``core.translation_quality.find_damaged_lines``)."""
+        return find_damaged_lines(segments)
+
     def _audit_and_repair_untranslated(
         self,
         segments: List[Dict],
@@ -149,10 +176,7 @@ class StudioEngineBase:
         """
         label = self.line_label
         api_keys = self._get_api_keys()
-        damaged = [
-            idx for idx, seg in enumerate(segments)
-            if not str(seg.get("burmese", "")).strip() or has_untranslated_foreign_script(str(seg.get("burmese", "")).strip())
-        ]
+        damaged = self._find_damaged(segments)
         self.last_damaged_count = len(damaged)
         self.last_repaired_count = 0
 

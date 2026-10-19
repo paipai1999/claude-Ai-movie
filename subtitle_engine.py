@@ -624,6 +624,9 @@ class SubtitleEngine(StudioEngineBase):
         total_batches = (len(segments) + batch_size - 1) // batch_size
         recent_context: List[str] = []
 
+        # One extra call up front: characters/genders/places with fixed Burmese spellings for every batch.
+        story_block = self._story_block([s.get("original", "") or s.get("english", "") for s in segments], context_hint)
+
         # Dynamic Entity & Character Name Glossary (maintained across batches)
         dynamic_glossary: Dict[str, str] = {}
         if context_hint and str(context_hint).strip():
@@ -741,6 +744,7 @@ class SubtitleEngine(StudioEngineBase):
                 glossary_str = "ESTABLISHED CHARACTER & ENTITY GLOSSARY (Strictly adhere for 100% naming consistency across the movie):\n" + "\n".join(items) + "\n\n"
 
             user_prompt = (
+                f"{story_block}"
                 f"{context_str}"
                 f"{glossary_str}"
                 f"{hint_str}"

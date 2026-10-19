@@ -351,6 +351,9 @@ class HardsubEngine(StudioEngineBase):
         models_dict = self.config_data.get("gemini", {}).get("models", {})
         gemini_model = models_dict.get("workhorse", "gemini-3.5-flash-lite")
 
+        # One extra call up front: characters/genders/places with fixed Burmese spellings for every batch.
+        story_block = self._story_block([s.get("original", "") for s in segments], context_hint)
+
         # Dynamic Entity & Character Name Glossary (maintained across batches for 100% naming consistency)
         dynamic_glossary: Dict[str, str] = {}
         if context_hint and str(context_hint).strip():
@@ -393,6 +396,7 @@ class HardsubEngine(StudioEngineBase):
 
             user_prompt = (
                 f"Source Language: {source_language}\n"
+                f"{story_block}"
                 f"{prev_context_str}"
                 f"{glossary_str}"
                 f"{hint_str}"

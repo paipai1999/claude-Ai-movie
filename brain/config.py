@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
         "tts_voice": "my-MM-ThihaNeural",     # Active default voice
         "tts_rate_mm": "+18%",
         "tts_rate_en": "+15%",
+        "trim_silence": True,                 # cut Edge TTS lead-in/tail silence so lines start on time
         "f5_tts": {
             "model_type": "F5-TTS",           # "F5-TTS" | "E2-TTS"
             "auto_character_cloning": True,   # Auto-extract reference audio slices for characters from Demucs vocals

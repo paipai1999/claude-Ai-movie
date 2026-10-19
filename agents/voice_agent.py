@@ -8,6 +8,8 @@ import asyncio
 import subprocess
 from brain.memory import MovieState
 from agents.f5_tts_engine import F5TTSEngine
+from core.audio_trim import trim_silence
+from core.pronunciation import Pronouncer, load_entries
 
 _CACHED_AVAILABLE_VOICES = None
 
@@ -27,7 +29,8 @@ _KNOWN_EDGE_VOICES = {
 }
 
 class VoiceAgent:
-    def __init__(self, voice: str = None, output_dir: str = "outputs", engine: str = None, tts_engine: str = None):
+    def __init__(self, voice: str = None, output_dir: str = "outputs", engine: str = None, tts_engine: str = None,
+                 rate: int = None):
         """
         VoiceAgent supports:
           1. Microsoft Edge TTS (100% free cloud TTS - Thiha / Nilar / Guy)
@@ -42,7 +45,11 @@ class VoiceAgent:
         self.voice = self._resolve_voice(voice, voice_cfg)
         self.rate_mm = os.getenv("EDGE_TTS_RATE_MM") or voice_cfg.get("tts_rate_mm", "+8%")
         self.rate_en = os.getenv("EDGE_TTS_RATE_EN") or voice_cfg.get("tts_rate_en", "+15%")
+        if rate is not None:                       # the job's own speed choice beats config.json / the environment
+            self.rate_mm = self.rate_en = f"{max(-50, min(100, int(rate))):+d}%"
         self.output_dir = output_dir
+        self.trim_tts_silence = bool(voice_cfg.get("trim_silence", True))   # cut Edge TTS lead-in/tail padding
+        self.pronouncer = Pronouncer(load_entries())                         # user's pronunciation dictionary
 
         self.f5_cfg = voice_cfg.get("f5_tts", {})
         self.f5_engine = None
@@ -71,13 +78,20 @@ class VoiceAgent:
     # ─────────────────────────────────────────────────────────────────────────
     def _clip_fingerprint(self, item: dict) -> str:
         """Stable hash of everything that determines how a clip sounds."""
-        raw = "|".join([
+        narration = str(item.get("narration", "")).strip()
+        parts = [
             str(self.engine),
             str(self.voice),
             str(item.get("gender", "")).strip().lower(),
             str(item.get("emotion", "")).strip().lower(),
-            str(item.get("narration", "")).strip(),
-        ])
+            narration,
+        ]
+        # Only a line the dictionary actually changes gets a different fingerprint: editing the dictionary
+        # re-voices exactly those lines, and users without a dictionary keep their existing clip cache.
+        spoken = self._apply_pronunciation(narration)
+        if spoken != narration:
+            parts.append("pron:" + spoken)
+        raw = "|".join(parts)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
@@ -536,6 +550,18 @@ class VoiceAgent:
         print(f"[OK] VoiceAgent: Generated/reused {len(audio_files)} audio segments in -> {audio_out_dir}")
         return state
 
+    @staticmethod
+    def _ffmpeg_exe() -> str:
+        """The ffmpeg to use: one on PATH / IMAGEIO_FFMPEG_EXE, else the imageio-ffmpeg build, else plain "ffmpeg"."""
+        found = shutil.which("ffmpeg") or os.environ.get("IMAGEIO_FFMPEG_EXE")
+        if found and os.path.exists(found):
+            return found
+        try:
+            from imageio_ffmpeg import get_ffmpeg_exe
+            return get_ffmpeg_exe()
+        except Exception:
+            return "ffmpeg"
+
     async def _speak_with_retry(self, text: str, output_file: str, scene_id, emotion: str = "normal", rate: str = "+15%", target_dur: float = None, voice_override: str = None) -> bool:
         """Async helper to synthesize a single narration chunk via Edge TTS with retry logic and emotion tuning."""
         import edge_tts
@@ -567,7 +593,12 @@ class VoiceAgent:
             except Exception:
                 print(f"[RETRY] VoiceAgent: Retrying Scene {scene_id} (attempt {attempt}/3)...")
                 await asyncio.sleep(2 ** attempt)
-        
+
+        # Edge TTS pads each clip with dead air; cut it before the tempo fit so only real speech is measured.
+        if success and getattr(self, "trim_tts_silence", True):
+            if await asyncio.to_thread(trim_silence, self._ffmpeg_exe(), output_file):
+                print(f"[*] VoiceAgent: Scene {scene_id} trimmed leading/trailing silence.")
+
         if not success:
             print(f"[WARN] VoiceAgent: Scene {scene_id} TTS failed after 3 attempts.")
             print(f"[*] VoiceAgent: FALLBACK -> Generating silent audio of {target_dur or 3.0}s to preserve video sync.")
@@ -640,13 +671,7 @@ class VoiceAgent:
                         else:
                             filter_str = f"atempo={atempo_val:.3f}"
                         
-                        ffmpeg_bin = shutil.which("ffmpeg") or os.environ.get("IMAGEIO_FFMPEG_EXE")
-                        if not ffmpeg_bin or not os.path.exists(ffmpeg_bin):
-                            try:
-                                from imageio_ffmpeg import get_ffmpeg_exe
-                                ffmpeg_bin = get_ffmpeg_exe()
-                            except Exception:
-                                ffmpeg_bin = "ffmpeg"
+                        ffmpeg_bin = self._ffmpeg_exe()
                         cmd = [
                             ffmpeg_bin, "-y", "-i", temp_file,
                             "-filter:a", filter_str,
@@ -666,8 +691,14 @@ class VoiceAgent:
 
         return True
 
+    def _apply_pronunciation(self, text: str) -> str:
+        """The user's pronunciation dictionary applied to ``text`` (spoken text only; subtitles are untouched)."""
+        pronouncer = getattr(self, "pronouncer", None)
+        return pronouncer.apply(text) if pronouncer else text
+
     def _prepare_tts_text(self, text: str) -> str:
         """Normalize script text so Edge TTS / F5-TTS reads narration naturally."""
+        text = self._apply_pronunciation(text)
         is_burmese = str(self.voice).startswith("my-") or getattr(self, "language", "") == "burmese"
         if is_burmese:
             try:

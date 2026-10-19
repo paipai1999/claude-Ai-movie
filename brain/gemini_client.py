@@ -62,6 +62,22 @@ _FALLBACK_MODELS = [
 # Must be >= 60 to let the per-minute quota window reset.
 _RPM_WAIT_SEC = 65
 
+# One "round" tries every model x key once. A round that failed only for transient reasons (HTTP 503
+# "high demand", 429 rate limits, timeouts) is retried after a wait, so an overnight job survives a
+# few minutes of Gemini overload instead of dying on the first busy spell.
+_MAX_ROUNDS = 5
+# Seconds to wait after a round in which a model answered 503, indexed by the round that just failed.
+_OVERLOAD_BACKOFF_SEC = (15, 30, 60, 120)
+_TRANSIENT_NETWORK_WAIT_SEC = 5
+
+
+class GeminiContentError(Exception):
+    """
+    The service answered, but with no usable text: the prompt/answer was blocked (safety), or the
+    answer was empty/cut off (finishReason MAX_TOKENS, RECITATION...). Unlike an outage this depends on
+    the *content* of the request, so asking for less (a smaller batch) can succeed.
+    """
+
 
 def _extract_text_from_gemini_response(res_data: dict) -> str:
     """Safely extracts text from Gemini REST response, handling multi-part, thoughts, and finishReason."""
@@ -69,7 +85,7 @@ def _extract_text_from_gemini_response(res_data: dict) -> str:
     if not candidates:
         prompt_feedback = res_data.get("promptFeedback", {})
         block_reason = prompt_feedback.get("blockReason", "NO_CANDIDATES")
-        raise Exception(f"Gemini API blocked response: {block_reason}")
+        raise GeminiContentError(f"Gemini API blocked response: {block_reason}")
 
     cand = candidates[0]
     content = cand.get("content") or {}
@@ -96,7 +112,7 @@ def _extract_text_from_gemini_response(res_data: dict) -> str:
 
     if not final_text:
         finish_reason = cand.get("finishReason", "EMPTY_RESPONSE")
-        raise Exception(f"Gemini returned empty text response (finishReason={finish_reason})")
+        raise GeminiContentError(f"Gemini returned empty text response (finishReason={finish_reason})")
 
     return final_text
 
@@ -135,8 +151,9 @@ def call_gemini(
     from brain.tracker import reserve_model_usage
     model_limits = cfg.load_config().get("gemini", {}).get("model_limits", {})
 
-    # Up to 3 full rotation attempts (with 65-second RPM-reset waits in between)
-    for attempt in range(3):
+    # Up to _MAX_ROUNDS full rotations; what the round failed with decides how long to wait before the next.
+    for attempt in range(_MAX_ROUNDS):
+        round_overloaded = round_rpm = round_quota = round_network = False
         for m in models_to_try:
             limit = int(model_limits.get(m, 500 if "flash" in m else 50))
             model_404 = False  # FIX-W2: track per-model 404 to skip whole model
@@ -210,14 +227,19 @@ def call_gemini(
                         is_daily = "daily" in err_body.lower() or "per day" in err_body.lower() or "free_tier_requests" in err_body.lower()
                         setattr(e, "is_quota", is_daily)
                         if is_daily:
+                            round_quota = True
                             print(f"[!] Gemini API Daily Quota Exhausted (429) on '{m}'. Trying next API key...")
                         else:
+                            round_rpm = True
                             print(f"[!] Gemini API Rate Limit (429 RPM) on '{m}'. Trying next API key...")
                         _record_api_usage(key, m, "rate_limited")
                         _interruptible_sleep(2)   # brief pause — don't hammer
                         continue        # next key, same model
                     elif e.code in (404, 503):
                         # FIX-W2: 404/503 = model doesn't exist or service unavailable globally → skip whole model
+                        # (503 is only skipped for this round: the next round tries the model again.)
+                        if e.code == 503:
+                            round_overloaded = True
                         print(
                             f"[!] Gemini API model '{m}' returned HTTP {e.code}. "
                             f"Skipping model and trying next fallback model..."
@@ -235,6 +257,7 @@ def call_gemini(
 
                 except (TimeoutError, urllib.error.URLError) as e:
                     last_err = e
+                    round_network = True
                     _record_api_usage(key, m, "timeout")
                     print(f"[!] Gemini API model '{m}' timed out or connection error on key '{_mask_key(key)}': {e}. Trying next key...")
                     continue
@@ -245,31 +268,48 @@ def call_gemini(
                     print(f"[!] Gemini API model '{m}' failed on key '{_mask_key(key)}': {e}. Trying next key...")
                     continue        # next key, same model
 
-        # All keys × all models exhausted for this attempt
-        if attempt < 2:
-            is_rate_limit = (
-                isinstance(last_err, urllib.error.HTTPError)
-                and last_err.code in (429, 503)
+        # All keys × all models exhausted for this round
+        if attempt < _MAX_ROUNDS - 1:
+            wait_time = _round_wait_seconds(
+                attempt, overloaded=round_overloaded, rpm=round_rpm, quota=round_quota, network=round_network
             )
-            if is_rate_limit:
-                if getattr(last_err, "code", None) == 503:
-                    wait_time = 10
-                    print(
-                        f"[!] Gemini models temporarily overloaded (HTTP 503). "
-                        f"Waiting {wait_time}s before retrying (attempt {attempt + 1}/3)..."
-                    )
-                else:
-                    wait_time = 30 if getattr(last_err, "is_quota", False) else _RPM_WAIT_SEC
-                    print(
-                        f"[!] All API keys hit 429 Rate Limit! "
-                        f"Waiting {wait_time}s for quota window to reset "
-                        f"(attempt {attempt + 1}/3)..."
-                    )
-                _interruptible_sleep(wait_time)
-            else:
-                break   # non-transient error — stop retrying
+            if wait_time is None:
+                break   # nothing transient happened (bad request, auth, blocked prompt...) — retrying cannot help
+            reason = (
+                "models temporarily overloaded (HTTP 503)" if round_overloaded
+                else "rate limit (HTTP 429)" if (round_rpm or round_quota)
+                else "network trouble"
+            )
+            print(f"[!] Gemini {reason}. Waiting {wait_time}s before retrying (round {attempt + 1}/{_MAX_ROUNDS})...")
+            _interruptible_sleep(wait_time)
 
     raise last_err or Exception("All Gemini API keys and models failed.")
+
+
+def _round_wait_seconds(attempt: int, *, overloaded: bool, rpm: bool, quota: bool, network: bool):
+    """
+    Seconds to wait before the next round, or None when the failed round was not transient.
+    ``attempt`` is the 0-based round that just failed. Overload backs off (15s, 30s, 60s, 120s);
+    a per-minute rate limit waits for the quota window; a daily quota gets one short retry only,
+    since waiting minutes cannot refill it.
+    """
+    if not (overloaded or rpm or quota or network):
+        return None
+    waits = []
+    if overloaded:
+        waits.append(_OVERLOAD_BACKOFF_SEC[min(attempt, len(_OVERLOAD_BACKOFF_SEC) - 1)])
+    if rpm:
+        waits.append(_RPM_WAIT_SEC)
+    if quota:
+        if not (overloaded or rpm or network) and attempt >= 1:
+            return None
+        waits.append(30)
+    if network:
+        # A dead connection would otherwise burn every model's timeout on every round: retry once.
+        if not (overloaded or rpm or quota) and attempt >= 1:
+            return None
+        waits.append(_TRANSIENT_NETWORK_WAIT_SEC)
+    return max(waits)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

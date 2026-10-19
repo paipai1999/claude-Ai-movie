@@ -1,6 +1,7 @@
 from brain.diagnostics import log_suppressed
 import os
 from brain.memory import MovieState, TranscriptSegment
+from core.transcript_quality import clean_and_report
 from core.whisper_settings import resolve_whisper_model, resolve_beam_size
 
 class AudioAgent:
@@ -330,7 +331,9 @@ try:
         beam_size=beam_size,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
-        initial_prompt=f"This is a dialogue transcript for the movie {movie_name}."
+        initial_prompt=f"This is a dialogue transcript for the movie {movie_name}.",
+        # Decode each segment on its own - carrying text forward is what lets Whisper loop on music/noise.
+        condition_on_previous_text=False
     )
     detected_lang = whisper_lang or info.language
     for seg in segments:
@@ -383,10 +386,10 @@ print(f"[Whisper] Transcribed {len(results)} segments in language: {detected_lan
             if proc.returncode == 0 and os.path.exists(result_path):
                 with open(result_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                transcript_list = [
+                transcript_list = clean_and_report([
                     TranscriptSegment(start=s["start"], end=s["end"], text=s["text"])
                     for s in data.get("segments", [])
-                ]
+                ], lambda msg: print(f"[*] AudioAgent: {msg}"))
                 state.transcript = transcript_list
                 print(f"[*] AudioAgent completed: Transcribed {len(transcript_list)} dialogue segments "
                       f"(lang: {data.get('language','?')}).")

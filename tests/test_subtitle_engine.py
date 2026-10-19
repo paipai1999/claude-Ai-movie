@@ -209,7 +209,10 @@ class TestSubtitleEngine(unittest.TestCase):
             {"id": 1, "original": "One day she came out.", "english": "One day she came out."},
             {"id": 2, "original": "She looked around.", "english": "She looked around."},
         ]
-        self.engine._translate_to_burmese(segments, "en")
+        # The QA repair pass (covered in test_engine_base) would now re-translate the English fallback;
+        # this test is about the batch stage, so switch it off.
+        with patch.object(self.engine, "_audit_and_repair_untranslated", side_effect=lambda segs, **kw: segs):
+            self.engine._translate_to_burmese(segments, "en")
         self.assertEqual(segments[0]["burmese"], "တစ်ရက်မှာတော့ သူမ ထွက်လာခဲ့တယ်")
         # Second item should safely fallback to english rather than reverting the first
         self.assertEqual(segments[1]["burmese"], "She looked around.")

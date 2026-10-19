@@ -41,6 +41,7 @@
     "tts_voice": "my-MM-ThihaNeural",
     "tts_rate_mm": "+18%",
     "tts_rate_en": "+15%",
+    "trim_silence": true,
     "f5_tts": {
       "model_type": "F5-TTS",
       "auto_character_cloning": true,

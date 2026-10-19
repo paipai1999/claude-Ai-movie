@@ -11,6 +11,7 @@ import shutil
 import subprocess
 
 from agents.merger.encoder import _get_ffmpeg_bin, detect_hardware_encoder
+from core.text_render import draw_text, render_lines
 
 
 class IntroOutroMixin:
@@ -121,7 +122,7 @@ class IntroOutroMixin:
         concat_out = os.path.join(tmp_dir, f"{base_name}_with_outro.mp4")
 
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
             img = Image.new('RGB', (w, h), (15, 23, 42))
             draw = ImageDraw.Draw(img)
 
@@ -130,41 +131,47 @@ class IntroOutroMixin:
             if is_portrait:
                 badge_w = int(w * 0.84)
                 badge_h = int(badge_w * 0.22)
-                bx = (w - badge_w) // 2
-                by = (h - badge_h) // 2 - int(h * 0.06)
                 radius = 28
                 border_w = 4
                 font_title_sz = max(18, int(w * 0.055))
                 font_thanks_sz = max(16, int(w * 0.048))
                 font_sub_sz = max(14, int(w * 0.038))
-                sub_offset = int(h * 0.09)
             else:
                 scale_factor = min(w / 1920.0, h / 1080.0)
                 badge_w = int(720 * scale_factor)
                 badge_h = int(140 * scale_factor)
-                bx = (w - badge_w) // 2
-                by = (h - badge_h) // 2 - int(60 * scale_factor)
                 radius = int(24 * scale_factor)
                 border_w = max(2, int(4 * scale_factor))
                 font_title_sz = max(16, int(52 * scale_factor))
                 font_thanks_sz = max(14, int(42 * scale_factor))
                 font_sub_sz = max(12, int(32 * scale_factor))
-                sub_offset = int(120 * scale_factor)
-
-            draw.rounded_rectangle([bx, by, bx + badge_w, by + badge_h], radius=radius, fill=(30, 41, 59), outline=(234, 179, 8), width=border_w)
+            bx = (w - badge_w) // 2
 
             font_path = os.path.join('assets', 'fonts', 'Padauk.ttf')
-            try:
-                font_title = ImageFont.truetype(font_path, font_title_sz)
-                font_thanks = ImageFont.truetype(font_path, font_thanks_sz)
-                font_sub = ImageFont.truetype(font_path, font_sub_sz)
-            except Exception:
-                font_title = font_thanks = font_sub = ImageFont.load_default()
-
-            draw.text((w // 2, by + badge_h // 2), "Pai Ai Movie Studio", fill=(255, 255, 255), font=font_title, anchor="mm")
-            draw.text((w // 2, by + badge_h + (int(h * 0.04) if is_portrait else int(60 * scale_factor))), "ကျေးဇူးတင်ပါတယ်", fill=(234, 179, 8), font=font_thanks, anchor="mm")
             subtext = "နောက်ထပ် ဇာတ်ကားကောင်းများစွာအတွက်\nLike & Follow လုပ်ထားပေးကြပါဦးခင်ဗျား" if is_portrait else "နောက်ထပ် ဇာတ်ကားကောင်းများစွာအတွက် Like & Follow လုပ်ထားပေးကြပါဦးခင်ဗျား"
-            draw.multiline_text((w // 2, by + badge_h + sub_offset), subtext, fill=(203, 213, 225), font=font_sub, anchor="mm", align="center", spacing=12)
+
+            # Myanmar needs HarfBuzz shaping, which Pillow's default layout lacks (see core.text_render).
+            title_img = draw_text(ffmpeg_bin, "Pai Ai Movie Studio", font_path, font_title_sz, (255, 255, 255, 255))
+            thanks_img = draw_text(ffmpeg_bin, "ကျေးဇူးတင်ပါတယ်", font_path, font_thanks_sz, (234, 179, 8, 255))
+            sub_img = render_lines(ffmpeg_bin, subtext.split("\n"), font_path, font_sub_sz, (203, 213, 225, 255), spacing=int(font_sub_sz * 0.4))
+
+            # Stack badge → thank-you → sub text with gaps that follow the type size, and centre the whole block.
+            gap_badge = int(font_thanks_sz * 1.1)
+            gap_text = int(font_thanks_sz * 0.7)
+            thanks_h = thanks_img.height if thanks_img else 0
+            sub_h = sub_img.height if sub_img else 0
+            block_h = badge_h + gap_badge + thanks_h + gap_text + sub_h
+            by = max(0, (h - block_h) // 2)
+
+            draw.rounded_rectangle([bx, by, bx + badge_w, by + badge_h], radius=radius, fill=(30, 41, 59), outline=(234, 179, 8), width=border_w)
+            if title_img is not None:
+                img.paste(title_img, ((w - title_img.width) // 2, by + (badge_h - title_img.height) // 2), title_img)
+            y = by + badge_h + gap_badge
+            if thanks_img is not None:
+                img.paste(thanks_img, ((w - thanks_img.width) // 2, y), thanks_img)
+            y += thanks_h + gap_text
+            if sub_img is not None:
+                img.paste(sub_img, ((w - sub_img.width) // 2, y), sub_img)
 
             img.save(outro_img_path, "PNG")
 
@@ -237,9 +244,9 @@ class IntroOutroMixin:
           - 'badge': Sleek dark rounded badge pill with gold/white text for masking underlying watermarks.
           - 'transparent': Simple semi-transparent text with drop shadow.
         """
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
         import os
-        
+
         temp_dir = os.path.abspath("temp")
         os.makedirs(temp_dir, exist_ok=True)
         out_path = os.path.join(temp_dir, "watermark.png")
@@ -256,32 +263,18 @@ class IntroOutroMixin:
             except Exception as le:
                 print(f"[WARN] VideoMerger: Failed to load logo image {logo_path}: {le}")
 
+        # The watermark text is user supplied and usually Burmese: shape it with HarfBuzz (core.text_render).
         font_found = self._find_myanmar_font()
-        try:
-            font = ImageFont.truetype(font_found or "arialbd.ttf", font_size)
-        except IOError:
-            try:
-                font = ImageFont.truetype("arial.ttf", font_size)
-            except IOError:
-                font = ImageFont.load_default()
-
-        # Measure text
-        dummy_img = Image.new('RGBA', (1, 1))
-        draw = ImageDraw.Draw(dummy_img)
-        try:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = max(1, bbox[2] - bbox[0])
-            text_height = max(1, bbox[3] - bbox[1])
-        except Exception:
-            try:
-                text_width, text_height = draw.textsize(text, font=font)
-            except Exception:
-                text_width, text_height = max(1, len(text) * 14), 28
+        text_layer = draw_text(
+            _get_ffmpeg_bin(), text, font_found or "arialbd.ttf", font_size, (255, 255, 255, int(255 * opacity))
+        )
+        if text_layer is None:  # empty text
+            text_layer = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
 
         pad_x = 18
         pad_y = 8
-        img_width = text_width + (pad_x * 2)
-        img_height = text_height + (pad_y * 2)
+        img_width = text_layer.width + (pad_x * 2)
+        img_height = text_layer.height + (pad_y * 2)
 
         img = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
@@ -292,16 +285,13 @@ class IntroOutroMixin:
             bg_color = (18, 18, 18, int(230 * opacity))
             border_color = (255, 215, 0, int(200 * opacity)) # Gold accent border
             draw.rounded_rectangle([(0, 0), (img_width - 1, img_height - 1)], radius=radius, fill=bg_color, outline=border_color, width=1)
-            # Gold / Pure White text
-            text_color = (255, 255, 255, int(255 * opacity))
-            draw.text((pad_x, pad_y - 2), text, font=font, fill=text_color)
+            img.paste(text_layer, (pad_x, pad_y), text_layer)
         else:
-            # Transparent shadow style
-            shadow_offset = (2, 2)
-            shadow_color = (0, 0, 0, int(200 * opacity))
-            text_color = (255, 255, 255, int(255 * opacity))
-            draw.text((pad_x + shadow_offset[0], pad_y + shadow_offset[1]), text, font=font, fill=shadow_color)
-            draw.text((pad_x, pad_y), text, font=font, fill=text_color)
+            # Transparent shadow style: the shadow is the text's own coverage, tinted black and slightly fainter
+            shadow = Image.new('RGBA', text_layer.size, (0, 0, 0, 0))
+            shadow.putalpha(text_layer.getchannel('A').point(lambda a: a * 200 // 255))
+            img.paste(shadow, (pad_x + 2, pad_y + 2), shadow)
+            img.paste(text_layer, (pad_x, pad_y), text_layer)
 
         img.save(out_path, "PNG")
         return out_path
