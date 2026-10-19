@@ -410,6 +410,27 @@ def get_active_job(output_dir: str = "outputs") -> Optional[dict]:
         conn.close()
 
 
+def list_jobs(limit: int = 50, output_dir: str = "outputs") -> list[dict]:
+    """The most recent jobs (newest first), for the dashboard's history view."""
+    db_path = get_db_path(output_dir)
+    if not os.path.exists(db_path):
+        return []
+    limit = max(1, min(int(limit), 500))
+
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    try:
+        cursor = conn.execute(
+            "SELECT job_id, input_source, status, phase, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [
+            {"job_id": r[0], "input_source": r[1], "status": r[2], "phase": r[3], "created_at": r[4], "updated_at": r[5]}
+            for r in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
 def get_job(job_id: str, output_dir: str = "outputs") -> Optional[dict]:
     db_path = get_db_path(output_dir)
     if not os.path.exists(db_path):

@@ -72,8 +72,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   // ── per engine: relevance + request defaults ──
   const expectedHidden = {
     recap: ['color_grading'],
-    subtitle: ['custom_thumb_title', 'language', 'subtitle_mode', 'tts_engine', 'watermark_enabled'],
-    hardsub: ['custom_thumb_title', 'language', 'subtitle_mode', 'tts_engine', 'watermark_enabled'],
+    subtitle: ['custom_thumb_title', 'language', 'narrative_tone', 'story_length', 'subtitle_mode', 'tts_engine', 'tts_rate', 'watermark_enabled'],
+    hardsub: ['custom_thumb_title', 'language', 'narrative_tone', 'story_length', 'subtitle_mode', 'tts_engine', 'tts_rate', 'watermark_enabled'],
   };
   const expectedDefaults = {
     recap: { translation_style: 'recap', audio_mode: 'ai_voiceover', render_video: true, video_format: 'both' },
@@ -100,6 +100,28 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
       check(`${engine}: engine_mode`, sent.engine_mode === engine, sent.engine_mode);
     }
   }
+
+  // ── studio views: they render, switch and survive a theme change without errors ──
+  await page.goto(BASE, { waitUntil: 'load' });
+  check('PaiStudio is loaded', await page.evaluate(() => typeof PaiStudio === 'object'));
+  const viewState = {};
+  for (const view of ['projects', 'brand', 'outputs', 'inputs', 'studio', 'welcome']) {
+    await page.evaluate(v => switchView(v), view);
+    await page.waitForTimeout(300);
+    viewState[view] = await page.evaluate(() => document.querySelector('.view-section.active').id);
+  }
+  check('every nav view activates', same(viewState, Object.fromEntries(Object.keys(viewState).map(v => [v, 'view-' + v]))), JSON.stringify(viewState));
+  const themes = await page.evaluate(() => {
+    const read = () => document.documentElement.getAttribute('data-theme');
+    const first = read();
+    document.getElementById('theme-toggle').click();
+    return [first, read()];
+  });
+  check('theme toggle flips the theme', themes[0] !== themes[1] && ['light', 'dark'].includes(themes[1]), JSON.stringify(themes));
+  const navIcons = await page.evaluate(() => document.querySelectorAll('.nav-tab-btn svg').length);
+  check('nav icons survive language changes', navIcons === 6, String(navIcons));
+  await page.evaluate(() => setLanguage('en'));
+  check('nav icons survive setLanguage', (await page.evaluate(() => document.querySelectorAll('.nav-tab-btn svg').length)) === 6);
 
   check('no JavaScript errors', errors.length === 0, errors.join(' | '));
   await browser.close();

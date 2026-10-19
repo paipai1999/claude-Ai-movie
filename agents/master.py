@@ -122,6 +122,9 @@ class MasterAgent:
         render_video: bool = None,
         stage_toggles: dict = None,
         context_hint: str = None,
+        story_length: str = None,
+        narrative_tone: str = None,
+        tts_rate: int = None,
     ):
         self.movie_path = movie_path
         self.resume = bool(resume)
@@ -163,6 +166,9 @@ class MasterAgent:
             self.script_engine = "recap"
 
         self.context_hint = str(context_hint).strip() if context_hint else None
+        self.story_length = str(story_length or "standard").lower().strip()
+        self.narrative_tone = str(narrative_tone or "natural").lower().strip()
+        self.tts_rate = int(tts_rate) if tts_rate not in (None, "") else None
         self.audio_mode = str(audio_mode or os.getenv("AUDIO_MODE") or "ai_voiceover").lower().strip()
         self.sfx_mode = str(sfx_mode or os.getenv("SFX_MODE") or "original_sfx").lower().strip()
         self.sfx_volume = float(sfx_volume if sfx_volume is not None else 0.15)
@@ -197,6 +203,9 @@ class MasterAgent:
         self.state.script_engine = self.script_engine
         self.state.translation_style = self.translation_style
         self.state.context_hint = self.context_hint
+        self.state.story_length = self.story_length
+        self.state.narrative_tone = self.narrative_tone
+        self.state.tts_rate = self.tts_rate
         self.state.audio_mode = self.audio_mode
         self.state.sfx_mode = self.sfx_mode
         self.state.sfx_volume = self.sfx_volume
@@ -281,11 +290,18 @@ class MasterAgent:
             str(self.script_engine),
             str(self.context_hint or "").strip(),
         ]
+        # Added only when chosen, so the signature of every project made before these options existed is unchanged.
+        if self.story_length != "standard":
+            parts.append("length=" + self.story_length)
+        if self.narrative_tone != "natural":
+            parts.append("tone=" + self.narrative_tone)
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _voice_signature(self) -> str:
         """Fingerprint of everything that changes the synthesized voice clips."""
         parts = [str(self.tts_engine).lower(), str(self.tts_voice), str(self.audio_mode)]
+        if self.tts_rate is not None:
+            parts.append("rate=" + str(self.tts_rate))   # a different speed re-voices every line
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _clear_voiceover_clips(self, output_dir: str) -> int:
@@ -627,6 +643,7 @@ class MasterAgent:
             voice=self.tts_voice,
             output_dir=output_dir,
             tts_engine=self.tts_engine,
+            rate=self.tts_rate,
         )
         self.video_merger    = VideoMergerAgent(
             output_dir=output_dir,

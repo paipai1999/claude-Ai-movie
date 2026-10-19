@@ -51,6 +51,8 @@ FLAGS: Dict[str, Flag] = {
     "translation_style": F(("--translation-style",), legacy={MAIN: ("--style",)}),
     "script_engine": F(("--mode", "--script-engine"), programs=(MAIN,)),
     "context_hint": F(("--context-hint", "--hint")),
+    "story_length": F(("--story-length",), programs=(MAIN,)),
+    "narrative_tone": F(("--narrative-tone", "--tone"), programs=(MAIN,)),
 
     "video_format": F(("--format", "--aspect-ratio"), legacy={MAIN: ("--video-size",)}),
     "reels_enabled": F(("--reels",), off=("--no-reels",), programs=(MAIN,)),
@@ -75,6 +77,7 @@ FLAGS: Dict[str, Flag] = {
 
     "tts_engine": F(("--tts-engine",), legacy={MAIN: ("-e", "--engine")}, programs=(MAIN,)),
     "tts_voice": F(("--tts-voice",), legacy={MAIN: ("-v", "--voice")}, programs=(MAIN,)),
+    "tts_rate": F(("--tts-rate",), programs=(MAIN,)),
     "audio_mode": F(("--audio-mode",)),
     "sfx_mode": F(("--sfx-mode",)),
     "sfx_volume": F(("--sfx-volume",)),

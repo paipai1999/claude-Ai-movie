@@ -33,6 +33,11 @@ LEGACY_START_FIELDS = {
 }
 LEGACY_BATCH_FIELDS = (LEGACY_START_FIELDS - {"input", "project_name", "trim_end", "no_smart_trim", "outro_card"}) | {"inputs"}
 
+# Recap options added after the option model (they are appended to the END of the pipeline / batch workers,
+# so jobs queued before they existed - stored positionally - still load).
+ADDED_RECAP_DEFAULTS = {"story_length": "standard", "narrative_tone": "natural", "tts_rate": None}
+ADDED_FIELDS = set(ADDED_RECAP_DEFAULTS)
+
 # Values the OLD request models filled in when a client omitted a field.
 LEGACY_DEFAULTS = {
     "engine_mode": "recap", "project_name": None, "force_whisper": False, "language": "burmese",
@@ -46,6 +51,11 @@ LEGACY_DEFAULTS = {
     "translation_style": "recap", "audio_mode": "ai_voiceover", "sfx_mode": "original_sfx",
     "sfx_volume": 0.15, "render_video": True, "stage_toggles": None, "context_hint": None,
 }
+
+
+def _added(d):
+    """The options added later, as the pipeline / batch workers receive them (appended last)."""
+    return (d.get("story_length") or "standard", d.get("narrative_tone") or "natural", d.get("tts_rate"))
 
 
 # ── The OLD handler logic, copied verbatim from web_ui.py (before the refactor) ──────────────
@@ -104,6 +114,7 @@ def legacy_single_args(d, job_id="J"):
         d["audio_anti_copyright"] or False,
         d["render_video"] if d["render_video"] is not None else True,
         d["stage_toggles"], d["context_hint"],
+        *_added(d),
     )
 
 
@@ -137,6 +148,7 @@ def legacy_batch_args(d, inputs, job_id="J"):
         # already correct). The engine-correct value is the intended behaviour.
         d["render_video"] if d["render_video"] is not None else (engine != "subtitle"),
         d["stage_toggles"], d["context_hint"],
+        *_added(d),
     )
 
 
@@ -162,7 +174,7 @@ def new_batch_args(d, inputs, job_id="J"):
 def _variants():
     """A grid of requests: defaults, each field set to None / '' / a non-default value, and
     combinations of engine x video_format x reels toggle."""
-    base = dict(LEGACY_DEFAULTS, input="movies/a.mp4")
+    base = dict(LEGACY_DEFAULTS, **ADDED_RECAP_DEFAULTS, input="movies/a.mp4")
     yield dict(base)
     nondefault = {
         "project_name": "My Proj", "force_whisper": True, "language": "english",
@@ -176,14 +188,15 @@ def _variants():
         "audio_anti_copyright": True, "translation_style": "wuxia", "audio_mode": "original",
         "sfx_mode": "mute", "sfx_volume": 0.4, "render_video": False,
         "stage_toggles": {"qa": False}, "context_hint": "hint",
+        "story_length": "compact", "narrative_tone": "dramatic", "tts_rate": 15,
     }
     for key, value in nondefault.items():
         yield dict(base, **{key: value})
-    for key in LEGACY_DEFAULTS:
-        if key == "engine_mode":
+    for key in base:
+        if key in ("engine_mode", "input"):
             continue
         yield dict(base, **{key: None})
-        if isinstance(LEGACY_DEFAULTS[key], str):
+        if isinstance(base[key], str):
             yield dict(base, **{key: ""})
     yield dict(base, video_format="", reels_enabled=False)
     yield dict(base, video_format=None, reels_enabled=True)
@@ -223,10 +236,10 @@ class TestLegacyEquivalence(unittest.TestCase):
 
 class TestApiContract(unittest.TestCase):
     def test_start_request_has_exactly_the_previous_fields(self):
-        self.assertEqual(set(StartRequest.model_fields), LEGACY_START_FIELDS)
+        self.assertEqual(set(StartRequest.model_fields), LEGACY_START_FIELDS | ADDED_FIELDS)
 
     def test_batch_request_has_exactly_the_previous_fields(self):
-        self.assertEqual(set(BatchStartRequest.model_fields), LEGACY_BATCH_FIELDS)
+        self.assertEqual(set(BatchStartRequest.model_fields), LEGACY_BATCH_FIELDS | ADDED_FIELDS)
 
     def test_input_is_required_and_inputs_is_required_for_batch(self):
         with self.assertRaises(Exception):

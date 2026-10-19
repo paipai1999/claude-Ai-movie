@@ -37,6 +37,7 @@ from typing import Optional, List, Dict, Any, Callable
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
@@ -133,7 +134,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=_allow_credentials,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "x-auth-token"],
 )
 
@@ -301,6 +302,10 @@ async def auth_status(request: Request):
 
 # Jinja2 template renderer for the web dashboard HTML
 templates = Jinja2Templates(directory="templates")
+
+# The dashboard's stylesheet and script (static/css, static/js). They hold no secrets, so /static is
+# served without login - the auth middleware exempts it so the login page can be styled too.
+app.mount("/static", StaticFiles(directory="static", check_dir=False), name="static")
 
 
 # Upload limits (disk-fill / memory protection). MAX_UPLOAD_MB overrides the 16 GB default.
@@ -518,11 +523,13 @@ __all__ = [
 ]
 
 from core.options import (  # noqa: E402
-    DOWNLOAD, HARDSUB, SUBTITLE,
+    DOWNLOAD, HARDSUB, RECAP, SUBTITLE,
     describe as describe_options,
     normalize_engine,
     resolve as resolve_options,
 )
+from services import projects as project_store, studio_api  # noqa: E402
+from services.key_store import mask_key, resolve_key_lines  # noqa: E402
 from services.job_args import build_worker_args  # noqa: E402
 from services.schemas import (  # noqa: E402
     StartRequest,
@@ -1049,6 +1056,31 @@ def _worker_for_engine(engine: str):
     }.get(engine, pipeline_worker)
 
 
+# Studio endpoints (projects, script editor, quality report, profiles, history) live in services/studio_api.py.
+app.include_router(studio_api.router)
+
+
+@app.post("/api/projects/{name}/rerender")
+async def rerender_project(name: str):
+    """
+    Re-runs a recap project with the settings it was started with. Because the script is cached and the
+    voice clips are fingerprinted, only edited lines are re-voiced and the video is re-rendered.
+    """
+    try:
+        project_dir = project_store.resolve_project("outputs", name)
+    except project_store.ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    saved = project_store.load_job_options(project_dir)
+    if not saved or not saved.get("input"):
+        raise HTTPException(
+            status_code=409,
+            detail="This project has no saved settings (it was created before re-render existed). Start it "
+                   "again from the wizard with the same options and 'Resume' on; your edits are kept.",
+        )
+    saved["resume"] = True
+    return _enqueue_job(RECAP, resolve_options(RECAP, saved))
+
+
 @app.get("/api/options")
 def get_option_model():
     """
@@ -1066,7 +1098,15 @@ async def start_pipeline(req: StartRequest):
 
     # Every default is applied in ONE place (core.options.resolve) for the chosen engine.
     engine = normalize_engine(req.engine_mode)
-    opts = resolve_options(engine, req.model_dump())
+    return _enqueue_job(engine, resolve_options(engine, req.model_dump()))
+
+
+def _enqueue_job(engine: str, opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Registers a job for the resolved options and either starts it or puts it in the FIFO queue.
+    Shared by ``/api/start`` and the project "re-render" action.
+    """
+    input_source = opts["input"]
     language = opts["language"]
     tts_engine = opts["tts_engine"]
 
@@ -2174,30 +2214,9 @@ def save_keys(req: SaveKeysRequest):
         elif not isinstance(existing_keys, list):
             existing_keys = []
 
-        new_keys = req.keys
-        cleaned_keys = []
-        unresolved_masks = []
-        for line in new_keys:
-            tokens = [t.strip() for t in str(line).replace(',', '\n').split('\n') if t.strip()]
-            for k in tokens:
-                # If key contains '...', user might have preserved a masked key from the status view.
-                # Resolve to the full existing key so real key is never lost!
-                if '...' in k:
-                    parts = k.split('...')
-                    prefix, suffix = parts[0].strip(), parts[-1].strip()
-                    # A mask must carry both ends (6 + 4 chars as produced by the UI); a bare
-                    # "AIza..." must never be accepted as a wildcard that reveals a stored key.
-                    matches = [
-                        ek for ek in existing_keys
-                        if len(prefix) >= 4 and len(suffix) >= 4 and ek.startswith(prefix) and ek.endswith(suffix)
-                    ]
-                    if len(matches) != 1:  # unknown or ambiguous mask -> refuse the whole save
-                        unresolved_masks.append(k)
-                        continue
-                    k = matches[0]
-                if k and k not in cleaned_keys:
-                    cleaned_keys.append(k)
-                
+        # A line may be a full key or the mask of a stored one (resolved so a real key is never lost).
+        cleaned_keys, unresolved_masks = resolve_key_lines(req.keys, existing_keys)
+
         if unresolved_masks:
             # Never "save what we understood": that would silently delete the keys behind the masks.
             raise HTTPException(
@@ -2232,6 +2251,32 @@ def save_keys(req: SaveKeysRequest):
     except Exception as e:
         print(f"[ERROR] Failed to save API keys: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+MAX_KEYS_PER_CHECK = 20
+
+
+@app.post("/api/keys/check")
+def check_keys(req: SaveKeysRequest):
+    """
+    Tests pasted Gemini keys against Google WITHOUT saving them (so a typo or a revoked key is found
+    before a job depends on it). Masked lines resolve to the stored key they name. Only masked keys are
+    returned and nothing is persisted or logged.
+    """
+    stored = cfg.load_config().get("gemini", {}).get("api_keys", [])
+    stored = [k.strip() for k in stored.split(",") if k.strip()] if isinstance(stored, str) else (stored if isinstance(stored, list) else [])
+    keys, unresolved = resolve_key_lines(req.keys, stored)
+    if unresolved:
+        raise HTTPException(status_code=400, detail=f"{len(unresolved)} masked key(s) do not match a stored key. Paste the full key.")
+    if not keys:
+        raise HTTPException(status_code=400, detail="No keys to check.")
+    if len(keys) > MAX_KEYS_PER_CHECK:
+        raise HTTPException(status_code=400, detail=f"Check at most {MAX_KEYS_PER_CHECK} keys at a time.")
+    results = _ping_gemini_keys(keys, 8.0)
+    return {"results": [
+        {"key": mask_key(key), "state": state, "http_code": code, "ok": state == "ONLINE"}
+        for key, (state, code) in zip(keys, results)
+    ]}
 
 
 # =============================================================================

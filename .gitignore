@@ -35,3 +35,9 @@ system_audit*.md
 scratch_*.py
 repair_untranslated.py
 post_process_and_audit_srt.py
+
+# Channel profiles (Brand Kit) are per-installation settings
+profiles.json
+profiles.json.tmp
+dictionary.json
+dictionary.json.tmp

@@ -81,6 +81,10 @@ def _o(name, type_, default=None, step=STEP_AUDIO, engines=_PIPELINES, **kw) -> 
 
 TRANSLATION_STYLES = ("recap", "drama_novel", "audio_drama", "dialogue", "persona", "wuxia", "cinematic")
 SUBTITLE_STYLES = ("box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box")
+# Recap storyteller only: how much of the film is told, and in what voice. "standard" / "natural" add nothing
+# to the prompt, so existing projects, prompts and cached scripts behave exactly as before.
+STORY_LENGTHS = ("standard", "compact", "detailed", "scene")
+NARRATIVE_TONES = ("natural", "brisk", "calm", "dramatic")
 
 OPTIONS: Tuple[Option, ...] = (
     # 1 ─ Source
@@ -110,6 +114,10 @@ OPTIONS: Tuple[Option, ...] = (
        help="Script generation mode: recap storyteller or 1:1 translation."),
     _o("context_hint", str, None, STEP_LANGUAGE,
        help="Story / character / genre guidance for the translator."),
+    _o("story_length", str, "standard", STEP_LANGUAGE, {RECAP}, choices=STORY_LENGTHS,
+       help="Recap style: standard, compact (plot-critical only), detailed, or scene-by-scene."),
+    _o("narrative_tone", str, "natural", STEP_LANGUAGE, {RECAP}, choices=NARRATIVE_TONES,
+       help="Recap style: the storyteller's tone of voice."),
 
     # 3 ─ Output & style
     _o("video_format", str, "both", STEP_OUTPUT, choices=("16:9", "9:16", "both"),
@@ -151,6 +159,8 @@ OPTIONS: Tuple[Option, ...] = (
     _o("tts_engine", str, None, STEP_AUDIO, {RECAP}, choices=("edge_tts", "f5_tts"),
        help="Text-to-speech engine."),
     _o("tts_voice", str, None, STEP_AUDIO, {RECAP}, help="Narrator voice."),
+    _o("tts_rate", int, None, STEP_AUDIO, {RECAP},
+       help="Narration speed in percent (-50..+100); empty = the configured default."),
     _o("audio_mode", str, None, STEP_AUDIO, choices=("ai_voiceover", "original", "none"),
        engine_defaults={RECAP: "ai_voiceover", SUBTITLE: "original", HARDSUB: "original"},
        help="AI voice-over or the original audio."),

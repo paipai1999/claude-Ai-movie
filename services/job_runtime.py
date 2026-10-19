@@ -26,6 +26,8 @@ from agents.master import MasterAgent
 from brain.diagnostics import log_suppressed
 from brain.sqlite_store import create_job, update_job
 from services import process_registry
+from services import projects as project_store
+from services.job_args import options_from_call
 from services.job_manager import jobs, jobs_lock
 
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v')
@@ -344,6 +346,9 @@ def pipeline_worker(
     render_video=True,
     stage_toggles=None,
     context_hint=None,
+    story_length="standard",
+    narrative_tone="natural",
+    tts_rate=None,
 ):
     """
     Executes the Complete Movie Recap Pipeline via MasterAgent.
@@ -359,6 +364,7 @@ def pipeline_worker(
       7. Anti-Copyright Hardsubbing & Video Compositing
     """
     _apply_pipeline_env(skip_demucs, detect_scenes, video_format, reels_enabled)
+    started_with = options_from_call(pipeline_worker, locals())   # remembered per project for "re-render"
 
     def work():
         if DownloaderAgent.is_url(input_source):
@@ -405,8 +411,14 @@ def pipeline_worker(
             render_video=render_video,
             stage_toggles=stage_toggles,
             context_hint=context_hint,
+            story_length=story_length,
+            narrative_tone=narrative_tone,
+            tts_rate=tts_rate,
         )
+        project_path = os.path.join(master.output_dir, master.state.project_dir)
+        project_store.save_job_options(project_path, started_with)
         master.run_pipeline()
+        project_store.write_quality_report(project_path, master.state.project_dir)   # shown in the History view
         return {"project_dir": master.state.project_dir}
 
     _run_job(job_id, input_source, "Starting...", work)
@@ -572,6 +584,9 @@ def batch_worker(
     render_video=True,
     stage_toggles=None,
     context_hint=None,
+    story_length="standard",
+    narrative_tone="natural",
+    tts_rate=None,
 ):
     """
     Executes Multi-Video Batch Processing across any of the 3 production engines.
@@ -584,6 +599,8 @@ def batch_worker(
     """
     from brain.planner import BatchProcessor
     _apply_pipeline_env(skip_demucs, detect_scenes, video_format, reels_enabled)
+    started_with = options_from_call(batch_worker, locals())   # remembered per project for "re-render"
+    started_with.pop("inputs", None)
 
     def _run_item_engine(label: str, engine, run_item):
         """Runs an engine over every input, honouring Stop between items."""
@@ -598,6 +615,14 @@ def batch_worker(
                 run_item(engine, item)
             except Exception as item_err:
                 print(f"[ERROR] Batch item {idx} failed: {item_err}")
+
+    def remember_project(stage, master, movie_path):
+        """Per recap project: save the settings it was started with, then its quality report (History view)."""
+        project_path = os.path.join(master.output_dir, master.state.project_dir)
+        if stage == "start":
+            project_store.save_job_options(project_path, dict(started_with, input=movie_path))
+        else:
+            project_store.write_quality_report(project_path, master.state.project_dir)
 
     def work():
         if engine_mode == "hardsub":
@@ -683,6 +708,10 @@ def batch_worker(
                 render_video=render_video if render_video is not None else True,
                 stage_toggles=stage_toggles,
                 context_hint=context_hint,
+                story_length=story_length,
+                narrative_tone=narrative_tone,
+                tts_rate=tts_rate,
+                on_project=remember_project,
             )
             print(f"[*] Batch Mode: Starting batch run for {len(inputs_list)} item(s)...")
             processor.process_all(url_list=urls, local_paths=local_paths)

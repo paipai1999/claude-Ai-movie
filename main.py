@@ -341,6 +341,9 @@ def recap_common_kwargs(args, opts) -> dict:
         audio_anti_copyright=v["audio_anti_copyright"],
         render_video=v["render_video"],
         context_hint=v["context_hint"],
+        story_length=v["story_length"],
+        narrative_tone=v["narrative_tone"],
+        tts_rate=v["tts_rate"],
     )
 
 
