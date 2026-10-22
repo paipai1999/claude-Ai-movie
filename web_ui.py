@@ -394,7 +394,8 @@ _ensure_queue_dispatcher()
 
 def _worker_registry() -> Dict[str, Callable]:
     """name -> worker function (resolved lazily because the workers are defined further below)."""
-    return {fn.__name__: fn for fn in (pipeline_worker, subtitle_worker, hardsub_worker, batch_worker, downloader_worker)}
+    return {fn.__name__: fn for fn in (pipeline_worker, subtitle_worker, hardsub_worker, batch_worker, downloader_worker,
+                                       splitter_worker, shorts_worker)}
 
 
 def _persist_queued_job(job_entry: Dict[str, Any]) -> None:
@@ -515,6 +516,8 @@ from services.job_runtime import (  # noqa: E402  (job execution lives in servic
     hardsub_worker,
     batch_worker,
     downloader_worker,
+    splitter_worker,
+    shorts_worker,
 )
 # Names that tests / external callers historically imported from web_ui (kept as a stable surface)
 __all__ = [
@@ -523,7 +526,7 @@ __all__ = [
 ]
 
 from core.options import (  # noqa: E402
-    DOWNLOAD, HARDSUB, RECAP, SUBTITLE,
+    DOWNLOAD, HARDSUB, RECAP, SHORTS, SPLITTER, SUBTITLE,
     describe as describe_options,
     normalize_engine,
     resolve as resolve_options,
@@ -1053,6 +1056,8 @@ def _worker_for_engine(engine: str):
         HARDSUB: hardsub_worker,
         SUBTITLE: subtitle_worker,
         DOWNLOAD: downloader_worker,
+        SPLITTER: splitter_worker,
+        SHORTS: shorts_worker,
     }.get(engine, pipeline_worker)
 
 
@@ -1147,6 +1152,14 @@ def _enqueue_job(engine: str, opts: Dict[str, Any]) -> Dict[str, Any]:
                 "language": str(opts["source_language"]),
                 "engine_mode": engine,
             })
+        elif engine in (SPLITTER, SHORTS):
+            job_entry.update({
+                "name": f"{'Split' if engine == SPLITTER else 'Shorts'}: {str(opts['project_name'] or input_source)}",
+                "source": str(input_source),
+                "language": "N/A",
+                "tts_engine": "N/A",
+                "engine_mode": engine,
+            })
         elif engine == DOWNLOAD:
             job_entry.update({
                 "name": f"Download: {str(opts['project_name'] or input_source)}",
@@ -1191,6 +1204,8 @@ async def start_batch_pipeline(req: BatchStartRequest):
         raise HTTPException(status_code=400, detail="No inputs provided for batch mode")
 
     engine = normalize_engine(req.engine_mode)
+    if engine in (SPLITTER, SHORTS):
+        raise HTTPException(status_code=400, detail="The Splitter and Long to Short tools work on one video at a time.")
     opts = resolve_options(engine, req.model_dump())
     language = opts["language"]
     tts_engine = opts["tts_engine"]
@@ -1551,7 +1566,8 @@ async def stream_job_logs(job_id: str, request: Request):
 
                     yield {
                         "event": "done",
-                        "data": json.dumps({"status": job_status, "error": current_job.get("error")})
+                        "data": json.dumps({"status": job_status, "error": current_job.get("error"), "job_id": job_id,
+                                            "package_url": _package_url(current_job)})
                     }
                     break
 
@@ -1587,6 +1603,13 @@ async def latest_status_endpoint():
     return await status_endpoint(latest_id)
 
 
+def _package_url(job: Dict[str, Any]) -> Optional[str]:
+    """Download URL of the CapCut package a finished job built (delivery mode capcut / both), else None."""
+    if job.get("status") != "done" or not job.get("package"):
+        return None
+    return "/api/projects/" + quote(str(job["package"]), safe="") + "/capcut"
+
+
 @app.get("/api/status/{job_id}")
 async def status_endpoint(job_id: str):
     """
@@ -1600,15 +1623,19 @@ async def status_endpoint(job_id: str):
         
     buffer = job.get('buffer') or thread_stdout.buffers.get(job_id)
     log_lines = []
+    progress_marks: List[str] = []
     current_phase = job.get('phase', 'Starting...')
     batch_status = None
     phase_timings = {}
     
     if buffer:
         content = buffer.getvalue()
+        # The tools (Splitter, Long to Short) print "[PROGRESS] 0-100"; it drives the bar and is hidden from the log.
+        progress_marks = re.findall(r'\[PROGRESS\]\s*(\d{1,3})', content)
         lines = [
             line for line in content.split('\n')
-            if line.strip() and not any(ign in line for ign in ("GET /api/status", "GET /api/queue", "GET /api/keys", "OPTIONS /api/"))
+            if line.strip() and '[PROGRESS]' not in line
+            and not any(ign in line for ign in ("GET /api/status", "GET /api/queue", "GET /api/keys", "OPTIONS /api/"))
         ]
         log_lines = lines[-35:]
 
@@ -1679,6 +1706,9 @@ async def status_endpoint(job_id: str):
                     progress = min(74, int(30 + (cur_b / tot_b) * 44))
                     batch_found = True
                     break
+        if progress_marks:
+            progress = min(99, int(progress_marks[-1]))
+            batch_found = True
         if not batch_found:
             for phase_key, pval in progress_map.items():
                 if phase_key.lower() in current_phase.lower():
@@ -1700,6 +1730,8 @@ async def status_endpoint(job_id: str):
         "log": log_lines,
         "error": job.get("error"),
         "zip_url": zip_url,
+        "package_url": _package_url(job),
+        "project_dir": job.get("project_dir"),
     }
 
 

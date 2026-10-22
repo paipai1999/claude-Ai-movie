@@ -57,6 +57,7 @@ from agents.video_merger_agent import (
     _get_safe_ascii_id,
 )
 from core.paths import sanitize_project_name, resolve_inside
+from core.delivery import delivers
 from core.engine_base import StudioEngineBase
 from core.subtitle_parse import read_subtitle_cues
 from core.transcribe import transcribe_media
@@ -1020,6 +1021,7 @@ class HardsubEngine(StudioEngineBase):
     # ─────────────────────────────────────────────────────────────────────────
     # Primary Run Method
     # ─────────────────────────────────────────────────────────────────────────
+    @delivers      # adds delivery_mode: "capcut" skips the render and builds the CapCut package
     def run(
         self,
         input_source: str,
@@ -1094,10 +1096,14 @@ class HardsubEngine(StudioEngineBase):
 
         # Step 4: Detect blur region
         print("\n--- [Phase 4: Subtitle Blur & ASS Styling] ---", flush=True)
-        blur_info = self._detect_subtitle_blur_region(
-            video_file, blur_mode, custom_blur_height=blur_height,
-            dialogue_times=[s.get("start") for s in segments],
-        )
+        if render_video:
+            blur_info = self._detect_subtitle_blur_region(
+                video_file, blur_mode, custom_blur_height=blur_height,
+                dialogue_times=[s.get("start") for s in segments],
+            )
+        else:
+            # Nothing is rendered (subtitles only / the CapCut pipeline), so the Vision AI call is not needed.
+            blur_info = (0.0, 0.0, False)
 
         # Step 5: Setup ASS subtitles
         temp_dir = os.path.abspath("temp")
@@ -1257,6 +1263,7 @@ def main():
         force_whisper=v["force_whisper"],
         render_video=v["render_video"],
         context_hint=v["context_hint"],
+        delivery_mode=v["delivery_mode"],
     )
     if isinstance(result, dict) and result.get("status") == "failed":
         sys.exit(1)

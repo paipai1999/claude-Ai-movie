@@ -134,6 +134,15 @@
             optTtsRate: 'Narration speed', optRateDefault: 'Default (from config)', optRateSlow: 'Slow (-15%)', optRateNormal: 'Normal (0%)', optRateFast: 'Fast (+15%)', optRateVeryFast: 'Very fast (+30%)',
             pjCapcut: 'CapCut', capBuilding: 'Building the CapCut package...', capReady: 'CapCut package ready ({mb} MB) - downloading.',
             capFailed: 'Could not build the CapCut package',
+            optDelivery: 'How should it be delivered?', optDeliveryOneclick: 'One-click finished video',
+            optDeliveryOneclickDesc: 'Everything start to end: you get the finished video, rendered for you.',
+            optDeliveryCapcut: 'CapCut pipeline',
+            optDeliveryCapcutDesc: 'Skips the slow final render. You get a package to finish in CapCut: narration track, Burmese-safe captions and a guide.',
+            optDeliveryBoth: 'Both', optDeliveryBothDesc: 'The finished video and the CapCut package.',
+            optDeliveryNoteCapcut: 'No final video is rendered in this mode, so the Deliverable setting below is ignored. The run ends with capcut_package.zip.',
+            optDeliveryNoteBoth: 'Takes as long as the finished video, then adds capcut_package.zip.',
+            revDelivery: 'Delivery: {mode}', dlCapcut: 'Download CapCut package', capDoneToast: 'CapCut package ready - downloading.',
+            engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: '{n} Shorts', pjParts: '{n} parts', pjResults: 'Results',
             issue_over_budget: 'Too long'
         },
         my: {
@@ -194,6 +203,15 @@
             optTtsRate: 'ပြောနှုန်း အမြန်နှေး', optRateDefault: 'မူလ (config အတိုင်း)', optRateSlow: 'နှေး (-15%)', optRateNormal: 'ပုံမှန် (0%)', optRateFast: 'မြန် (+15%)', optRateVeryFast: 'အလွန်မြန် (+30%)',
             pjCapcut: 'CapCut', capBuilding: 'CapCut package ဆောက်နေသည်...', capReady: 'CapCut package အဆင်သင့် ({mb} MB) - ဒေါင်းလုဒ်လုပ်နေသည်။',
             capFailed: 'CapCut package မဆောက်နိုင်ပါ',
+            optDelivery: 'ရလဒ်ကို ဘယ်လို ထုတ်ပေးမလဲ?', optDeliveryOneclick: 'One-click အပြီးသတ်ဗီဒီယို',
+            optDeliveryOneclickDesc: 'အစအဆုံး အလိုအလျောက် လုပ်ပြီး ပြီးသား ဗီဒီယိုကို ထုတ်ပေးမယ်။',
+            optDeliveryCapcut: 'CapCut pipeline',
+            optDeliveryCapcutDesc: 'နှေးတဲ့ နောက်ဆုံး render ကို ကျော်မယ်။ CapCut မှာ ဆက်လုပ်ဖို့ package (အသံတစ်ဖိုင်၊ မြန်မာစာ မပျက်တဲ့ စာတန်း၊ လမ်းညွှန်) ရမယ်။',
+            optDeliveryBoth: 'နှစ်မျိုးလုံး', optDeliveryBothDesc: 'ပြီးသား ဗီဒီယိုရော CapCut package ပါ ရမယ်။',
+            optDeliveryNoteCapcut: 'ဒီ mode မှာ နောက်ဆုံးဗီဒီယို မ render ပါဘူး၊ အောက်က Deliverable ရွေးချယ်မှုကို လျစ်လျူရှုပါမယ်။ အဆုံးမှာ capcut_package.zip ရပါမယ်။',
+            optDeliveryNoteBoth: 'ပြီးသားဗီဒီယိုအတိုင်း အချိန်ကြာပြီးမှ capcut_package.zip ထပ်ထည့်ပေးပါမယ်။',
+            revDelivery: 'ထုတ်ပေးပုံ: {mode}', dlCapcut: 'CapCut package ဒေါင်းလုဒ်', capDoneToast: 'CapCut package အဆင်သင့် - ဒေါင်းလုဒ်လုပ်နေသည်။',
+            engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: 'Shorts {n} ခု', pjParts: 'အပိုင်း {n} ခု', pjResults: 'ရလဒ်များ',
             issue_over_budget: 'ရှည်လွန်း'
         },
         th: {
@@ -252,6 +270,15 @@
             optTtsRate: 'ความเร็วการเล่า', optRateDefault: 'ค่าเริ่มต้น (จาก config)', optRateSlow: 'ช้า (-15%)', optRateNormal: 'ปกติ (0%)', optRateFast: 'เร็ว (+15%)', optRateVeryFast: 'เร็วมาก (+30%)',
             pjCapcut: 'CapCut', capBuilding: 'กำลังสร้างแพ็กเกจ CapCut...', capReady: 'แพ็กเกจ CapCut พร้อมแล้ว ({mb} MB) กำลังดาวน์โหลด',
             capFailed: 'สร้างแพ็กเกจ CapCut ไม่ได้',
+            optDelivery: 'ต้องการรับงานแบบไหน?', optDeliveryOneclick: 'วิดีโอสำเร็จรูปในคลิกเดียว',
+            optDeliveryOneclickDesc: 'ทำให้ตั้งแต่ต้นจนจบ ได้วิดีโอที่เรนเดอร์เสร็จแล้ว',
+            optDeliveryCapcut: 'CapCut pipeline',
+            optDeliveryCapcutDesc: 'ข้ามการเรนเดอร์ขั้นสุดท้ายที่ช้า ได้แพ็กเกจไปตัดต่อใน CapCut: แทร็กเสียงบรรยาย คำบรรยายภาษาพม่าที่ไม่เพี้ยน และคู่มือ',
+            optDeliveryBoth: 'ทั้งสองแบบ', optDeliveryBothDesc: 'ได้ทั้งวิดีโอสำเร็จรูปและแพ็กเกจ CapCut',
+            optDeliveryNoteCapcut: 'โหมดนี้ไม่เรนเดอร์วิดีโอสุดท้าย จึงไม่ใช้ตัวเลือก Deliverable ด้านล่าง งานจบด้วย capcut_package.zip',
+            optDeliveryNoteBoth: 'ใช้เวลาเท่ากับวิดีโอสำเร็จรูป แล้วเพิ่ม capcut_package.zip',
+            revDelivery: 'การส่งมอบ: {mode}', dlCapcut: 'ดาวน์โหลดแพ็กเกจ CapCut', capDoneToast: 'แพ็กเกจ CapCut พร้อมแล้ว กำลังดาวน์โหลด',
+            engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: '{n} Shorts', pjParts: '{n} ส่วน', pjResults: 'ผลลัพธ์',
             issue_over_budget: 'ยาวเกิน'
         }
     };
@@ -273,6 +300,7 @@
         if (state.view === 'projects') renderProjects();
         if (state.view === 'brand') renderProfiles();
         if (state.view === 'editor') updateEditorChrome();
+        document.dispatchEvent(new CustomEvent('pai:language', { detail: lang() }));   // static/js/tools.js re-renders its texts
     }
 
     function viewTitle(view) {
@@ -377,29 +405,39 @@
         grid.replaceChildren(...state.projects.map(projectCard));
     }
 
+    const CAPCUT_ENGINES = ['recap', 'subtitle', 'hardsub', 'shorts'];   // services/capcut_export.supported_engines()
+    const TOOL_ENGINES = ['shorts', 'splitter'];
+
     function projectCard(project) {
         const score = project.score;
         const ring = el('div', { class: 'score-ring ' + verdictClass(project.verdict), style: '--pct:' + (score === null || score === undefined ? 0 : score) },
             el('span', { text: score === null || score === undefined ? '-' : String(score) }));
-        const engineLabel = { recap: t('engineRecap'), subtitle: t('engineSubtitle'), hardsub: t('engineHardsub') }[project.engine_type] || project.engine_type;
+        const engineLabel = { recap: t('engineRecap'), subtitle: t('engineSubtitle'), hardsub: t('engineHardsub'),
+            shorts: t('engineShorts'), splitter: t('engineSplitter') }[project.engine_type] || project.engine_type;
+        const isTool = TOOL_ENGINES.includes(project.engine_type);
+        const countLabel = project.engine_type === 'shorts' ? 'pjClips' : (project.engine_type === 'splitter' ? 'pjParts' : 'pjLines');
         const meta = el('div', { class: 'pj-meta' },
             el('span', { class: 'chip chip-gold', text: engineLabel }),
             project.status ? el('span', { class: 'chip', text: statusLabel(project.status) }) : null,
-            project.lines ? el('span', { text: t('pjLines', { n: project.lines }) }) : null,
+            project.lines ? el('span', { text: t(countLabel, { n: project.lines }) }) : null,
             project.duration ? el('span', { text: project.duration }) : null);
         const flag = project.needs_review
             ? el('span', { class: 'chip chip-warn', text: t('pjToReview', { n: project.needs_review }) })
-            : (project.lines ? el('span', { class: 'chip chip-ok', text: t('pjClean') }) : null);
+            : (project.lines && !isTool ? el('span', { class: 'chip chip-ok', text: t('pjClean') }) : null);
 
         const actions = el('div', { class: 'pj-actions' });
         if (project.engine_type === 'recap' && project.lines) {
             actions.append(el('button', { type: 'button', class: 'btn-primary btn-sm', text: t('pjEdit'), onclick: () => openEditor(project.name) }));
         }
-        actions.append(el('button', { type: 'button', class: 'btn-secondary btn-sm', text: t('pjQuality'), onclick: () => openQuality(project.name) }));
+        if (isTool) {      // Splitter / Long to Short: the parts or Shorts it made, not a quality report
+            actions.append(el('button', { type: 'button', class: 'btn-primary btn-sm', text: t('pjResults'), onclick: () => window.PaiTools && window.PaiTools.openResult(project.name) }));
+        } else {
+            actions.append(el('button', { type: 'button', class: 'btn-secondary btn-sm', text: t('pjQuality'), onclick: () => openQuality(project.name) }));
+        }
         if (project.engine_type === 'recap' && project.lines) {
             actions.append(el('button', { type: 'button', class: 'btn-secondary btn-sm', text: t('pjRerender'), onclick: () => rerender(project.name) }));
         }
-        if (project.engine_type === 'recap' && project.lines) {
+        if (CAPCUT_ENGINES.includes(project.engine_type) && project.lines) {      // every studio can be packaged for CapCut
             actions.append(el('button', { type: 'button', class: 'btn-secondary btn-sm', text: t('pjCapcut'), onclick: event => exportCapcut(project.name, event.currentTarget) }));
         }
         actions.append(el('button', { type: 'button', class: 'btn-nav btn-sm', text: t('pjFiles'), onclick: () => window.switchView('outputs') }));
@@ -943,6 +981,10 @@
         subtitle_style: v => call('selectSubPreset', v),
         subtitle_mode: v => setValue('select-hardsub-mode', v),
         render_video: v => setValue('select-render-video', String(v)),
+        delivery_mode: v => {
+            const radio = document.querySelector('input[name="delivery_mode"][value="' + v + '"]');
+            if (radio) { radio.checked = true; call('handleDeliveryChange'); }
+        },
         watermark_enabled: v => { setChecked('chk-watermark', v); call('toggleWatermarkControls', Boolean(v)); },
         watermark_text: v => setValue('input-watermark-text', v),
         watermark_opacity: v => setNearest('select-watermark-opacity', v),
@@ -1070,6 +1112,7 @@
     }
 
     window.PaiStudio = {
+        ui: { el, api, toast, clock, lang, formatDate },          // shared with static/js/tools.js
         applyLanguage, viewTitle, onShowView, t,
         showProjectsTab, refreshProjects, loadProjects,
         openEditor, saveScript, closeQuality, openQuality,

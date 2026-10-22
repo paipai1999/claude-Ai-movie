@@ -20,6 +20,7 @@ import os
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from agents.story_memory import parse_bible
 from brain.diagnostics import log_suppressed
@@ -528,6 +529,69 @@ def storage_summary(roots: Dict[str, str]) -> Dict[str, Any]:
     return out
 
 
+TOOL_ENGINES = ("splitter", "shorts")      # projects made by the Splitter / Long to Short tools
+_TOOL_MEDIA_PREFIXES = ("short_", "part_")
+_MEDIA_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov")
+
+
+def _has_tool_media(project_dir: str, state: Dict[str, Any]) -> bool:
+    """True when a Splitter / Shorts project has at least one rendered part or Short."""
+    if state.get("engine_type") not in TOOL_ENGINES:
+        return False
+    try:
+        if any(n.startswith(_TOOL_MEDIA_PREFIXES) and n.lower().endswith(_MEDIA_EXTENSIONS) for n in os.listdir(project_dir)):
+            return True
+        clean = os.path.join(project_dir, "capcut_clips")          # CapCut pipeline: clean clips only
+        return os.path.isdir(clean) and any(n.lower().endswith(_MEDIA_EXTENSIONS) for n in os.listdir(clean))
+    except OSError as exc:
+        log_suppressed("services.projects._has_tool_media", exc)
+        return False
+
+
+def tool_result(project_dir: str, name: str) -> Dict[str, Any]:
+    """
+    What a Splitter / Long to Short run produced, with a download / preview URL for every file, so the dashboard
+    can show the parts or the Shorts (cover, title, caption, score) without knowing the folder layout.
+    """
+    state = _read_json(os.path.join(project_dir, STATE_FILE))
+    if not isinstance(state, dict):
+        raise ProjectError("This project has no readable state.json.", code="no_state")
+    engine = state.get("engine_type")
+    manifest_name = {"shorts": "shorts.json", "splitter": "parts.json"}.get(engine)
+    manifest = _read_json(os.path.join(project_dir, manifest_name)) if manifest_name else None
+    if not isinstance(manifest, dict):
+        raise ProjectError("This project has no Splitter / Long to Short result.", code="not_tool")
+
+    def url(filename: Optional[str]) -> Optional[str]:
+        return f"/api/outputs/file?path={quote(name + '/' + filename)}" if filename else None
+
+    items: List[Dict[str, Any]] = []
+    if engine == "shorts":
+        for clip in manifest.get("clips") or []:
+            item = dict(clip)
+            item["videos"] = [{"format": fmt, "name": fn, "url": url(fn)} for fmt, fn in (clip.get("files") or {}).items()]
+            item["cover_url"] = url(clip.get("cover"))
+            item["srt_url"] = url(clip.get("subtitles"))
+            item["clean_url"] = url(clip.get("clean_file"))       # the CapCut pipeline's clip (nothing burnt in)
+            items.append(item)
+    else:
+        for part in manifest.get("parts") or []:
+            items.append(dict(part, url=url(part.get("file"))))
+    return {
+        "project": name,
+        "engine_type": engine,
+        "source": manifest.get("source") or state.get("movie_name") or name,
+        "duration": manifest.get("duration"),
+        "settings": manifest.get("settings") or {},
+        "items": items,
+        "delivery_mode": manifest.get("delivery_mode") or "oneclick",
+        "package_url": "/api/projects/" + quote(name, safe="") + "/capcut"
+                       if os.path.exists(os.path.join(project_dir, "capcut_package.zip")) else None,
+        "captions_url": url("captions.txt") if os.path.exists(os.path.join(project_dir, "captions.txt")) else None,
+        "zip_url": f"/api/outputs/zip?movie={quote(name)}",
+    }
+
+
 def list_projects(base_dir: str) -> List[Dict[str, Any]]:
     """One row per project folder that has a state.json, newest first."""
     rows: List[Dict[str, Any]] = []
@@ -557,7 +621,8 @@ def list_projects(base_dir: str) -> List[Dict[str, Any]]:
             "score": report.get("score") if isinstance(report, dict) else None,
             "verdict": report.get("verdict") if isinstance(report, dict) else None,
             "has_video": any(os.path.exists(os.path.join(entry.path, f))
-                             for f in ("final_recap.mp4", "final_reels.mp4", "01_hardsub_16_9.mp4")),
+                             for f in ("final_recap.mp4", "final_reels.mp4", "01_hardsub_16_9.mp4"))
+                         or _has_tool_media(entry.path, state),
         })
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     for row in rows:

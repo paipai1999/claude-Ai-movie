@@ -248,6 +248,8 @@ def _run_job(job_id: str, source: Any, start_phase: str, work: Callable[[], Any]
             project_dir = _project_dir_from_result(result)
             if project_dir:
                 extra["project_dir"] = project_dir
+                if isinstance(result, dict) and result.get("package"):
+                    extra["package"] = project_dir          # the dashboard downloads capcut_package.zip for this job
             done_phase = result.get("phase") if isinstance(result, dict) and isinstance(result.get("phase"), str) else "Done"
             _set_job_state(job_id, 'done', done_phase, **extra)
     except Exception as e:
@@ -349,6 +351,7 @@ def pipeline_worker(
     story_length="standard",
     narrative_tone="natural",
     tts_rate=None,
+    delivery_mode="oneclick",
 ):
     """
     Executes the Complete Movie Recap Pipeline via MasterAgent.
@@ -414,12 +417,14 @@ def pipeline_worker(
             story_length=story_length,
             narrative_tone=narrative_tone,
             tts_rate=tts_rate,
+            delivery_mode=delivery_mode,
         )
         project_path = os.path.join(master.output_dir, master.state.project_dir)
         project_store.save_job_options(project_path, started_with)
         master.run_pipeline()
         project_store.write_quality_report(project_path, master.state.project_dir)   # shown in the History view
-        return {"project_dir": master.state.project_dir}
+        package = (master.package_info or {}).get("zip")          # set when the delivery mode built a CapCut package
+        return {"project_dir": master.state.project_dir, "package": package}
 
     _run_job(job_id, input_source, "Starting...", work)
 
@@ -445,6 +450,7 @@ def subtitle_worker(
     audio_anti_copyright=False,
     stage_toggles=None,
     context_hint=None,
+    delivery_mode="oneclick",
 ):
     """
     Executes the Subtitle Generation & Translation Engine.
@@ -481,6 +487,7 @@ def subtitle_worker(
             audio_anti_copyright=audio_anti_copyright,
             stage_toggles=stage_toggles,
             context_hint=context_hint,
+            delivery_mode=delivery_mode,
         )
 
     _run_job(job_id, input_source, "Starting Subtitle Engine...", work)
@@ -507,6 +514,7 @@ def hardsub_worker(
     render_video=True,
     stage_toggles=None,
     context_hint=None,
+    delivery_mode="oneclick",
 ):
     """
     Executes the Anti-Copyright Hardsub Video Compositing Engine.
@@ -544,6 +552,7 @@ def hardsub_worker(
             render_video=render_video,
             stage_toggles=stage_toggles,
             context_hint=context_hint,
+            delivery_mode=delivery_mode,
         )
 
     _run_job(job_id, input_source, "Starting Hardsub Studio...", work)
@@ -587,6 +596,7 @@ def batch_worker(
     story_length="standard",
     narrative_tone="natural",
     tts_rate=None,
+    delivery_mode="oneclick",
 ):
     """
     Executes Multi-Video Batch Processing across any of the 3 production engines.
@@ -647,6 +657,7 @@ def batch_worker(
                 render_video=render_video if render_video is not None else True,
                 stage_toggles=stage_toggles,
                 context_hint=context_hint,
+                delivery_mode=delivery_mode,
             ))
         elif engine_mode == "subtitle":
             from subtitle_engine import SubtitleEngine
@@ -670,6 +681,7 @@ def batch_worker(
                 audio_anti_copyright=audio_anti_copyright,
                 stage_toggles=stage_toggles,
                 context_hint=context_hint,
+                delivery_mode=delivery_mode,
             ))
         else:
             urls = [i for i in inputs_list if DownloaderAgent.is_url(i)]
@@ -712,6 +724,7 @@ def batch_worker(
                 narrative_tone=narrative_tone,
                 tts_rate=tts_rate,
                 on_project=remember_project,
+                delivery_mode=delivery_mode,
             )
             print(f"[*] Batch Mode: Starting batch run for {len(inputs_list)} item(s)...")
             processor.process_all(url_list=urls, local_paths=local_paths)
@@ -734,3 +747,87 @@ def downloader_worker(job_id, url, resolution="1080p", custom_filename=None):
         return {"phase": f"Downloaded: {os.path.basename(downloaded)}"}
 
     _run_job(job_id, url, "Downloading Video...", work, db_status="running")
+
+
+def splitter_worker(
+    job_id,
+    input_source,
+    project_name=None,
+    split_mode="duration",
+    split_minutes=10.0,
+    split_parts=2,
+    split_snap=True,
+    split_reencode=False,
+    resolution="1080p",
+):
+    """
+    Executes the Splitter tool: cuts a long video into parts.
+    ရှည်လျားသော ဗီဒီယိုကို အပိုင်းများအဖြစ် ဖြတ်ပေးသည့် Worker ဖြစ်ပါသည်။
+    """
+    def work():
+        from splitter_engine import SplitterEngine
+        engine = SplitterEngine(output_base_dir="outputs", cancel_event=cancel_events.get(job_id))
+        _set_job_state(job_id, phase='Splitting video...')
+        print(f"[*] Splitter: Starting job {job_id} for {input_source}...")
+        return engine.run(
+            input_source=input_source,
+            project_name=project_name,
+            split_mode=split_mode,
+            split_minutes=split_minutes,
+            split_parts=split_parts,
+            split_snap=split_snap,
+            split_reencode=split_reencode,
+            resolution=resolution,
+        )
+
+    _run_job(job_id, input_source, "Starting Splitter...", work)
+
+
+def shorts_worker(
+    job_id,
+    input_source,
+    project_name=None,
+    source_language="auto",
+    clip_count=5,
+    clip_min_sec=20.0,
+    clip_max_sec=60.0,
+    clip_focus="balanced",
+    short_subtitles="burmese",
+    short_hook_title=True,
+    short_framing="fit",
+    translation_style="dialogue",
+    subtitle_style="box_black",
+    video_format="9:16",
+    resolution="1080p",
+    context_hint=None,
+    delivery_mode="oneclick",
+):
+    """
+    Executes the Long to Short tool: picks the best moments of a long video and renders them as Shorts.
+    ဗီဒီယိုရှည်ထဲက အကောင်းဆုံး အပိုင်းများကို Shorts / Reels အဖြစ် ထုတ်ပေးသည့် Worker ဖြစ်ပါသည်။
+    """
+    def work():
+        from shorts_engine import ShortsEngine
+        engine = ShortsEngine(output_base_dir="outputs", cancel_event=cancel_events.get(job_id))
+        _set_job_state(job_id, phase='Making Shorts...')
+        print(f"[*] Shorts: Starting job {job_id} for {input_source}...")
+        return engine.run(
+            input_source=input_source,
+            project_name=project_name,
+            source_language=source_language,
+            clip_count=clip_count,
+            clip_min_sec=clip_min_sec,
+            clip_max_sec=clip_max_sec,
+            clip_focus=clip_focus,
+            short_subtitles=short_subtitles,
+            short_hook_title=short_hook_title,
+            short_framing=short_framing,
+            translation_style=translation_style,
+            subtitle_style=subtitle_style,
+            video_format=video_format,
+            resolution=resolution,
+            context_hint=context_hint,
+            delivery_mode=delivery_mode,
+        )
+
+    _run_job(job_id, input_source, "Starting Shorts...", work)

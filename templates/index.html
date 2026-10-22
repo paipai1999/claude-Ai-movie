@@ -173,32 +173,13 @@
                     </div>
                 </div>
 
-                <div class="engine-grid">
-                    <div class="engine-card">
-                        <div class="engine-no">Engine 1</div>
-                        <div class="engine-card-title" id="card-engine1-title">Movie Recap Studio</div>
-                        <div class="engine-card-desc" id="card-engine1-desc">
-                            Automated storytelling scripts, Microsoft Edge Neural voiceover narration, 9:16 vertical reels canvas, and dynamic SFX Foley mixing.
-                        </div>
-                    </div>
-
-                    <div class="engine-card">
-                        <div class="engine-no">Engine 2</div>
-                        <div class="engine-card-title" id="card-engine2-title">Burmese Subtitle & Transcript</div>
-                        <div class="engine-card-desc" id="card-engine2-desc">
-                            Timestamped speech recognition, natural spoken dialogue translations, and multi-format subtitle exports (.srt, .ass, .txt).
-                        </div>
-                    </div>
-
-                    <div class="engine-card">
-                        <div class="engine-no">Engine 3</div>
-                        <div class="engine-card-title" id="card-engine3-title">Original Audio & Hardsub Studio</div>
-                        <div class="engine-card-desc" id="card-engine3-desc">
-                            Retains 100% original actor audio, applies Vision AI smart subtitle blurring, and embeds cinema-grade hardsub subtitles.
-                        </div>
-                    </div>
-                </div>
             </div>
+
+            <!-- Tool hub: one tile per way of working (built by static/js/tools.js) -->
+            <section class="tool-hub" aria-labelledby="tool-hub-title">
+                <h2 class="tool-hub-title" id="tool-hub-title">Choose how you want to work</h2>
+                <div class="tool-grid" id="tool-grid"></div>
+            </section>
         </div>
 
         <!-- ══════════════════════════════════════════════════════════════════ -->
@@ -387,8 +368,34 @@
                     </div>
                 </div>
 
+                <!-- Delivery: finished video, CapCut pipeline, or both (core/delivery.py) -->
+                <div data-option="delivery_mode" class="delivery-picker" role="radiogroup" aria-labelledby="label-delivery">
+                    <div class="delivery-title" id="label-delivery" data-st="optDelivery">How should it be delivered?</div>
+                    <div class="delivery-cards">
+                        <label class="delivery-card is-selected">
+                            <input type="radio" name="delivery_mode" value="oneclick" checked onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 9-14 9z"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryOneclick">Oneclick</span>
+                            <span class="delivery-desc" data-st="optDeliveryOneclickDesc"></span>
+                        </label>
+                        <label class="delivery-card">
+                            <input type="radio" name="delivery_mode" value="capcut" onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM8.1 7.9L20 20M8.1 16.1L20 4"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryCapcut">Capcut</span>
+                            <span class="delivery-desc" data-st="optDeliveryCapcutDesc"></span>
+                        </label>
+                        <label class="delivery-card">
+                            <input type="radio" name="delivery_mode" value="both" onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h10v10H4zM10 10h10v10H10z"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryBoth">Both</span>
+                            <span class="delivery-desc" data-st="optDeliveryBothDesc"></span>
+                        </label>
+                    </div>
+                    <div class="delivery-note" id="delivery-note" aria-live="polite"></div>
+                </div>
+
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
-                    <div data-option="render_video" class="form-group">
+                    <div data-option="render_video" id="wrap-render-video" class="form-group">
                         <label class="form-label" id="label-deliverable-mode">Deliverable Output Mode:</label>
                         <select id="select-render-video" class="select-control">
                             <option value="true" selected>Render Full MP4 Video</option>
@@ -698,6 +705,7 @@
                         </div>
                         <div class="review-box-content" id="rev-engine">Movie Recap Studio</div>
                         <div class="review-box-sub" id="rev-style">Style: Movie Recap Storyteller</div>
+                        <div class="review-box-sub" id="rev-delivery"></div>
                         <div class="review-box-sub" id="rev-context-hint" style="display:none; color:var(--primary); font-size:0.75rem; margin-top:2px;"></div>
                     </div>
 
@@ -999,6 +1007,9 @@
         <!-- ══════════════════════════════════════════════════════════════════ -->
         <!-- VIEW 7: BRAND KIT (channel profiles)                              -->
         <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- Long to Short / Splitter panels and their results (built by static/js/tools.js) -->
+        <div id="view-tool" class="view-section"></div>
+
         <div id="view-brand" class="view-section">
             <div class="view-head">
                 <div>
@@ -1530,8 +1541,8 @@
 
         // ── View Switcher ──
         // Views the router knows about; "editor" has no nav button of its own (it lives under Projects).
-        const VIEWS = ['welcome', 'studio', 'projects', 'editor', 'outputs', 'inputs', 'brand'];
-        const NAV_OF_VIEW = { editor: 'projects' };
+        const VIEWS = ['welcome', 'studio', 'projects', 'editor', 'outputs', 'inputs', 'brand', 'tool'];
+        const NAV_OF_VIEW = { editor: 'projects', tool: 'welcome' };
 
         function switchView(viewName) {
             const titles = {
@@ -1541,7 +1552,8 @@
                 'editor': 'Script Editor',
                 'outputs': 'Output Videos',
                 'inputs': 'Source Media Library',
-                'brand': 'Brand Kit'
+                'brand': 'Brand Kit',
+                'tool': 'Tools'
             };
             const titleEl = document.getElementById('header-title-text');
             const title = (window.PaiStudio && PaiStudio.viewTitle(viewName)) || titles[viewName];
@@ -1837,6 +1849,13 @@
             };
             document.getElementById('rev-engine').textContent = engineNames[engine] || engine;
             document.getElementById('rev-style').textContent = `Style: ${styleNames[style] || style}`;
+            const revDelivery = document.getElementById('rev-delivery');
+            if (revDelivery) {
+                const mode = readDeliveryMode();
+                revDelivery.textContent = (typeof PaiStudio !== 'undefined' && PaiStudio.t)
+                    ? PaiStudio.t('revDelivery', { mode: PaiStudio.t('optDelivery' + mode.charAt(0).toUpperCase() + mode.slice(1)) })
+                    : `Delivery: ${mode}`;
+            }
 
             const hintVal = document.getElementById('input-context-hint') ? document.getElementById('input-context-hint').value.trim() : '';
             const revHintEl = document.getElementById('rev-context-hint');
@@ -1890,8 +1909,31 @@
             return null;
         }
 
+        // ── Delivery: finished video / CapCut pipeline / both ──
+        function readDeliveryMode() {
+            const checked = document.querySelector('input[name="delivery_mode"]:checked');
+            return checked ? checked.value : 'oneclick';
+        }
+
+        function handleDeliveryChange() {
+            const mode = readDeliveryMode();
+            document.querySelectorAll('.delivery-card').forEach(card => {
+                const input = card.querySelector('input');
+                card.classList.toggle('is-selected', Boolean(input && input.checked));
+            });
+            // In the CapCut pipeline the final render is skipped whatever the "Deliverable" menu says.
+            const renderWrap = document.getElementById('wrap-render-video');
+            if (renderWrap) renderWrap.classList.toggle('is-overridden', mode === 'capcut');
+            const note = document.getElementById('delivery-note');
+            if (note && typeof PaiStudio !== 'undefined' && PaiStudio.t) {
+                note.textContent = mode === 'capcut' ? PaiStudio.t('optDeliveryNoteCapcut') : (mode === 'both' ? PaiStudio.t('optDeliveryNoteBoth') : '');
+                note.style.display = note.textContent ? 'block' : 'none';
+            }
+        }
+
         const OPTION_READERS = {
             engine_mode:          () => $val('select-engine-mode'),
+            delivery_mode:        readDeliveryMode,
             source_language:      () => $val('select-source-lang'),
             language:             () => $val('select-lang'),
             translation_style:    () => $val('select-translation-style'),
@@ -1953,7 +1995,8 @@
                 resolution: options.resolution,
                 blurMode: options.blur_mode,
                 thumbTitle: options.custom_thumb_title === 'none' ? 'No Title' : (options.custom_thumb_title || 'Auto AI'),
-                contextHint: options.context_hint
+                contextHint: options.context_hint,
+                deliveryMode: options.delivery_mode
             };
             renderActiveJobConfigBox();
 
@@ -2001,6 +2044,7 @@
             // Jobs started outside the wizard (e.g. a re-render from the Script Editor) bring their own tags.
             const tags = currentJobConfig.customTags || [
                 `Engine: ${currentJobConfig.engine}`,
+                `Delivery: ${currentJobConfig.deliveryMode || 'oneclick'}`,
                 `Style: ${currentJobConfig.translationStyle}`,
                 `Audio: ${currentJobConfig.audioMode}`,
                 `SFX: ${currentJobConfig.sfxMode} (${Math.round(currentJobConfig.sfxVolume * 100)}%)`,
@@ -2078,9 +2122,14 @@
             const compActions = document.getElementById('completion-actions');
             if (compActions) compActions.style.display = 'flex';
             
-            const zipUrl = (data && data.zip_url) ? data.zip_url : '/api/download/zip?movie=latest';
+            // A job that built a CapCut package (delivery mode capcut / both) hands over that package.
+            const packageUrl = data && data.package_url ? data.package_url : null;
+            const zipUrl = packageUrl || ((data && data.zip_url) ? data.zip_url : '/api/download/zip?movie=latest');
             const zipBtn = document.getElementById('btn-auto-download-zip');
-            if (zipBtn) zipBtn.href = zipUrl;
+            if (zipBtn) {
+                zipBtn.href = zipUrl;
+                if (packageUrl && typeof PaiStudio !== 'undefined' && PaiStudio.t) zipBtn.textContent = PaiStudio.t('dlCapcut');
+            }
             
             const jid = (data && data.job_id) || currentJobId || 'default_job';
             const autoDlChk = document.getElementById('chk-auto-download');
@@ -2088,7 +2137,9 @@
 
             if (shouldDl && !downloadedJobs.has(jid)) {
                 downloadedJobs.add(jid);
-                showToast('🎉 Video Complete! Auto-downloading Output ZIP Bundle...', 'success');
+                showToast(packageUrl && typeof PaiStudio !== 'undefined' && PaiStudio.t
+                    ? PaiStudio.t('capDoneToast')
+                    : '🎉 Video Complete! Auto-downloading Output ZIP Bundle...', 'success');
                 setTimeout(() => {
                     const dlLink = document.createElement('a');
                     dlLink.href = zipUrl;
@@ -2629,5 +2680,6 @@
         setInterval(checkQueueStatus, 8000);
     </script>
     <script src="/static/js/studio.js" defer></script>
+    <script src="/static/js/tools.js" defer></script>
 </body>
 </html>

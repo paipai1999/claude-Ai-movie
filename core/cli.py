@@ -26,7 +26,13 @@ from core import options as O
 MAIN = "main"          # main.py - all three engines through --engine-mode
 HARDSUB = "hardsub"    # hardsub_engine.py
 SUBTITLE = "subtitle"  # subtitle_engine.py
-PROGRAMS = (MAIN, HARDSUB, SUBTITLE)
+SPLITTER = "splitter"  # splitter_engine.py
+SHORTS = "shorts"      # shorts_engine.py
+PROGRAMS = (MAIN, HARDSUB, SUBTITLE)            # the studios
+TOOL_PROGRAMS = (SPLITTER, SHORTS)              # the tools
+ALL_PROGRAMS = PROGRAMS + TOOL_PROGRAMS
+# Programs that run exactly one engine (main.py picks one with --engine-mode).
+_PROGRAM_ENGINE = {HARDSUB: O.HARDSUB, SUBTITLE: O.SUBTITLE, SPLITTER: O.SPLITTER, SHORTS: O.SHORTS}
 
 
 @dataclass(frozen=True)
@@ -35,7 +41,7 @@ class Flag:
     off: Tuple[str, ...] = ()                          # flags that switch a boolean off
     legacy: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)      # program -> extra flags
     legacy_off: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)  # program -> extra "off" flags
-    programs: Tuple[str, ...] = PROGRAMS               # programs that offer it
+    programs: Tuple[str, ...] = ALL_PROGRAMS           # programs that offer it
     metavar: Optional[str] = None
 
 
@@ -60,6 +66,7 @@ FLAGS: Dict[str, Flag] = {
                         legacy={MAIN: ("--preset",), HARDSUB: ("--style",), SUBTITLE: ("--style",)}),
     "subtitle_mode": F(("--sub-mode", "--subtitle-mode"), programs=(MAIN,)),
     "render_video": F(("--render-video",), off=("--no-render", "--no-render-video", "--subtitles-only")),
+    "delivery_mode": F(("--delivery", "--delivery-mode")),
     "custom_thumb_title": F(("--thumb-title",), programs=(MAIN,)),
     "thumbnail_intro": F(("--thumbnail-intro",), off=("--no-thumbnail-intro",), programs=(MAIN,)),
     "trim_end": F(("--trim-end",), programs=(MAIN,)),
@@ -74,6 +81,21 @@ FLAGS: Dict[str, Flag] = {
     "mirror": F(("--mirror",)),
     "color_grading": F(("--color-grading",), off=("--no-color-grading",)),
     "audio_anti_copyright": F(("--audio-anti-copyright", "--audio-shield")),
+
+    # Tool: Splitter
+    "split_mode": F(("--split-mode",), programs=(SPLITTER,)),
+    "split_minutes": F(("--split-minutes", "--minutes"), programs=(SPLITTER,)),
+    "split_parts": F(("--split-parts", "--parts"), programs=(SPLITTER,)),
+    "split_snap": F(("--split-snap",), off=("--no-split-snap", "--exact-cuts"), programs=(SPLITTER,)),
+    "split_reencode": F(("--split-reencode", "--frame-accurate"), programs=(SPLITTER,)),
+    # Tool: Long to Short
+    "clip_count": F(("--clips", "--clip-count"), programs=(SHORTS,)),
+    "clip_min_sec": F(("--clip-min",), programs=(SHORTS,)),
+    "clip_max_sec": F(("--clip-max",), programs=(SHORTS,)),
+    "clip_focus": F(("--focus", "--clip-focus"), programs=(SHORTS,)),
+    "short_subtitles": F(("--short-subtitles",), programs=(SHORTS,)),
+    "short_hook_title": F(("--hook-title",), off=("--no-hook-title",), programs=(SHORTS,)),
+    "short_framing": F(("--framing", "--short-framing"), programs=(SHORTS,)),
 
     "tts_engine": F(("--tts-engine",), legacy={MAIN: ("-e", "--engine")}, programs=(MAIN,)),
     "tts_voice": F(("--tts-voice",), legacy={MAIN: ("-v", "--voice")}, programs=(MAIN,)),
@@ -99,10 +121,8 @@ RECAP_CONFIG_DRIVEN = frozenset({
 
 
 def _engine_for(program: str, engine: Optional[str]) -> str:
-    if program == HARDSUB:
-        return O.HARDSUB
-    if program == SUBTITLE:
-        return O.SUBTITLE
+    if program in _PROGRAM_ENGINE:
+        return _PROGRAM_ENGINE[program]
     return O.normalize_engine(engine)
 
 
@@ -111,17 +131,15 @@ def _offered(program: str, name: str) -> bool:
     flag = FLAGS.get(name)
     if opt is None or flag is None or program not in flag.programs:
         return False
-    if program == HARDSUB:
-        return opt.applies_to(O.HARDSUB)
-    if program == SUBTITLE:
-        return opt.applies_to(O.SUBTITLE)
+    if program in _PROGRAM_ENGINE:
+        return opt.applies_to(_PROGRAM_ENGINE[program])
     return True  # main.py runs every engine
 
 
 def _help_text(program: str, opt: O.Option) -> str:
     text = opt.help or opt.name
     if program == MAIN:
-        engines = [e for e in O.ENGINES if e in opt.engines and e != O.DOWNLOAD]
+        engines = [e for e in O.WIZARD_ENGINES if e in opt.engines]
         if len(engines) < 3:
             text += f" [{'/'.join(engines)} only]"
         if opt.engine_defaults:
@@ -138,7 +156,7 @@ def _help_text(program: str, opt: O.Option) -> str:
 
 def add_option_arguments(parser: argparse.ArgumentParser, program: str) -> None:
     """Adds every option the ``program`` offers. Unset flags are ``None`` (resolved later)."""
-    if program not in PROGRAMS:
+    if program not in ALL_PROGRAMS:
         raise ValueError(f"unknown program {program!r}")
 
     for name, flag in FLAGS.items():
@@ -162,6 +180,8 @@ def add_option_arguments(parser: argparse.ArgumentParser, program: str) -> None:
             kwargs["type"] = opt.type
         if opt.choices:
             kwargs["choices"] = list(opt.choices)
+        if name == "engine_mode":
+            kwargs["choices"] = [e for e in O.ENGINES if e not in (O.SPLITTER, O.SHORTS)]   # tools have their own scripts
         if flag.metavar:
             kwargs["metavar"] = flag.metavar
         parser.add_argument(*on, **kwargs)

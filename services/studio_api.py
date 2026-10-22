@@ -12,6 +12,7 @@ same-origin guard are applied by the app-wide middleware in ``web_ui``.
     POST   /api/projects/{name}/capcut       build capcut_package.zip (narration track + BOM SRT + guide)
     GET    /api/projects/{name}/capcut       download that package
     GET    /api/projects/{name}/quality      what still needs a human look (also saved as quality_report.json)
+    GET    /api/projects/{name}/tool-result  the parts / Shorts a Splitter or Long to Short run made, with URLs
     GET    /api/jobs/history                 recent jobs
     GET    /api/storage                      disk usage of outputs / movies / temp
     GET/POST/PUT/DELETE /api/profiles[/{id}] channel profiles (Brand Kit)
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/api")
 
 OUTPUTS_DIR = "outputs"
 _STATUS_FOR_CODE = {"not_found": 404, "no_state": 409, "no_script": 409, "duplicate": 409, "limit": 409,
-                    "not_ready": 409, "no_audio": 409, "encode_failed": 500}
+                    "not_ready": 409, "no_audio": 409, "encode_failed": 500, "not_tool": 409, "unsupported": 409}
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -119,6 +120,14 @@ def download_capcut_package(name: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Build the CapCut package first.")
     return FileResponse(path, media_type="application/zip", filename=f"{name}_capcut.zip")
+
+
+@router.get("/projects/{name}/tool-result")
+def get_tool_result(name: str):
+    try:
+        return project_store.tool_result(project_store.resolve_project(OUTPUTS_DIR, name), name)
+    except project_store.ProjectError as exc:
+        raise _http_error(exc)
 
 
 @router.get("/projects/{name}/quality")

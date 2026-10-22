@@ -47,6 +47,7 @@ from brain.prompts import (
     get_subtitle_drama_novel_prompt,
 )
 from core.paths import sanitize_project_name, resolve_inside
+from core.delivery import delivers
 from core.engine_base import StudioEngineBase
 from core.subtitle_parse import read_subtitle_cues
 from core.transcribe import transcribe_media
@@ -168,6 +169,7 @@ class SubtitleEngine(StudioEngineBase):
             for idx, seg in enumerate(raw, 1)
         ]
 
+    @delivers      # adds delivery_mode: "capcut" skips the render and builds the CapCut package
     def run(
         self,
         input_source: str,
@@ -1063,6 +1065,7 @@ def main():
             blur_height=v["blur_height"],
             audio_anti_copyright=v["audio_anti_copyright"],
             context_hint=v["context_hint"],
+            delivery_mode=v["delivery_mode"],
         )
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {e}")

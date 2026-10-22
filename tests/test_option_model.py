@@ -36,7 +36,17 @@ LEGACY_BATCH_FIELDS = (LEGACY_START_FIELDS - {"input", "project_name", "trim_end
 # Recap options added after the option model (they are appended to the END of the pipeline / batch workers,
 # so jobs queued before they existed - stored positionally - still load).
 ADDED_RECAP_DEFAULTS = {"story_length": "standard", "narrative_tone": "natural", "tts_rate": None}
-ADDED_FIELDS = set(ADDED_RECAP_DEFAULTS)
+# The Splitter / Long to Short tools have their own options. They are in the start schema (the dashboard posts to
+# /api/start for every tool) but no studio engine reads them and the batch endpoint does not take them.
+TOOL_FIELDS = {
+    "split_mode", "split_minutes", "split_parts", "split_snap", "split_reencode",
+    "clip_count", "clip_min_sec", "clip_max_sec", "clip_focus", "short_subtitles", "short_hook_title", "short_framing",
+}
+# ``delivery_mode`` (finished video / CapCut pipeline / both) is appended last to the pipeline, batch, subtitle and
+# hardsub workers, for the same reason.
+ADDED_DEFAULTS = dict(ADDED_RECAP_DEFAULTS, delivery_mode="oneclick")
+ADDED_FIELDS = set(ADDED_DEFAULTS) | TOOL_FIELDS
+ADDED_BATCH_FIELDS = set(ADDED_DEFAULTS)
 
 # Values the OLD request models filled in when a client omitted a field.
 LEGACY_DEFAULTS = {
@@ -55,7 +65,8 @@ LEGACY_DEFAULTS = {
 
 def _added(d):
     """The options added later, as the pipeline / batch workers receive them (appended last)."""
-    return (d.get("story_length") or "standard", d.get("narrative_tone") or "natural", d.get("tts_rate"))
+    return (d.get("story_length") or "standard", d.get("narrative_tone") or "natural", d.get("tts_rate"),
+            d.get("delivery_mode") or "oneclick")
 
 
 # ── The OLD handler logic, copied verbatim from web_ui.py (before the refactor) ──────────────
@@ -82,7 +93,7 @@ def legacy_single_args(d, job_id="J"):
             d["sfx_mode"] or "original_sfx",
             d["sfx_volume"] if d["sfx_volume"] is not None else 0.15,
             d["render_video"] if d["render_video"] is not None else True,
-            d["stage_toggles"], d["context_hint"],
+            d["stage_toggles"], d["context_hint"], d.get("delivery_mode") or "oneclick",
         )
     if d["engine_mode"] == "subtitle":
         return "subtitle_worker", (
@@ -95,7 +106,7 @@ def legacy_single_args(d, job_id="J"):
             d["mirror"] or False,
             d["color_grading"] if d["color_grading"] is not None else True,
             d["blur_height"], d["audio_anti_copyright"] or False,
-            d["stage_toggles"], d["context_hint"],
+            d["stage_toggles"], d["context_hint"], d.get("delivery_mode") or "oneclick",
         )
     if d["engine_mode"] == "download":
         return "downloader_worker", (job_id, input_source, resolution or "1080p", d["project_name"])
@@ -174,7 +185,7 @@ def new_batch_args(d, inputs, job_id="J"):
 def _variants():
     """A grid of requests: defaults, each field set to None / '' / a non-default value, and
     combinations of engine x video_format x reels toggle."""
-    base = dict(LEGACY_DEFAULTS, **ADDED_RECAP_DEFAULTS, input="movies/a.mp4")
+    base = dict(LEGACY_DEFAULTS, **ADDED_DEFAULTS, input="movies/a.mp4")
     yield dict(base)
     nondefault = {
         "project_name": "My Proj", "force_whisper": True, "language": "english",
@@ -188,7 +199,7 @@ def _variants():
         "audio_anti_copyright": True, "translation_style": "wuxia", "audio_mode": "original",
         "sfx_mode": "mute", "sfx_volume": 0.4, "render_video": False,
         "stage_toggles": {"qa": False}, "context_hint": "hint",
-        "story_length": "compact", "narrative_tone": "dramatic", "tts_rate": 15,
+        "story_length": "compact", "narrative_tone": "dramatic", "tts_rate": 15, "delivery_mode": "capcut",
     }
     for key, value in nondefault.items():
         yield dict(base, **{key: value})
@@ -239,7 +250,7 @@ class TestApiContract(unittest.TestCase):
         self.assertEqual(set(StartRequest.model_fields), LEGACY_START_FIELDS | ADDED_FIELDS)
 
     def test_batch_request_has_exactly_the_previous_fields(self):
-        self.assertEqual(set(BatchStartRequest.model_fields), LEGACY_BATCH_FIELDS | ADDED_FIELDS)
+        self.assertEqual(set(BatchStartRequest.model_fields), LEGACY_BATCH_FIELDS | ADDED_BATCH_FIELDS)
 
     def test_input_is_required_and_inputs_is_required_for_batch(self):
         with self.assertRaises(Exception):

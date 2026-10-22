@@ -126,16 +126,31 @@ class CapcutExportTests(unittest.TestCase):
         self.assertIn("re-render", str(caught.exception))
         self.assertFalse(os.path.exists(os.path.join(self.dir, "capcut_package.zip")))
 
-    def test_missing_script_or_audio(self):
+    def test_a_missing_script_is_refused(self):
         self.write_state(movie_name="x", completed_phases=PHASES)
         with self.assertRaises(ce.CapcutError) as caught:
             self.build()
         self.assertEqual(caught.exception.code, "no_script")
-        self.write_state(movie_name="x", generated_script=self.script, completed_phases=PHASES)
+
+    def test_without_a_voice_over_the_package_has_the_captions_and_the_script_only(self):
         shutil.rmtree(os.path.join(self.dir, "voiceover"))
-        with self.assertRaises(ce.CapcutError) as caught:
-            self.build()
-        self.assertEqual(caught.exception.code, "no_audio")
+        result = self.build()
+        self.assertFalse(result["narration"])
+        self.assertEqual(sorted(result["files"]), ["README.txt", "script.txt", "subtitles.srt"])
+        with zipfile.ZipFile(os.path.join(self.dir, "capcut_package.zip")) as zf:
+            self.assertTrue(zf.read("subtitles.srt").startswith(b"\xef\xbb\xbf"))
+            self.assertIn("[00:00:05] ဒုတိယစာကြောင်း", zf.read("script.txt").decode("utf-8"))
+            self.assertIn("No voice-over", zf.read("README.txt").decode("utf-8"))
+        # The same when the voice step never ran (audio mode "original"): there is no folder to be out of date.
+        self.write_state(movie_name="My Film", generated_script=self.script, completed_phases=PHASES[:1], duration="00:00:15")
+        self.assertFalse(self.build()["narration"])
+
+    def test_the_readme_belongs_to_this_studio(self):
+        self.build()
+        with zipfile.ZipFile(os.path.join(self.dir, "capcut_package.zip")) as zf:
+            readme = zf.read("README.txt").decode("utf-8")
+        self.assertIn("Pai AI Movie Studio", readme)
+        self.assertNotIn("Narrator", readme)
 
     def test_a_missing_clip_is_reported_not_fatal(self):
         os.remove(os.path.join(self.dir, "voiceover", "scene_0002.mp3"))

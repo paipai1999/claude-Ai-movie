@@ -47,10 +47,12 @@ class BatchProcessor:
         narrative_tone: str = None,
         tts_rate: int = None,
         on_project: Optional[Callable[[str, MasterAgent, str], None]] = None,
+        delivery_mode: str = None,
     ):
         # ``on_project(stage, master, movie_path)`` is called with stage "start" (agent built) and "done"
         # (pipeline finished); the dashboard uses it to remember each project's settings and quality report.
         self.on_project = on_project
+        self.delivery_mode = delivery_mode
         self.movies_folder = movies_folder
         self.context_hint = context_hint
         self.story_length = story_length
@@ -207,6 +209,7 @@ class BatchProcessor:
                     story_length=self.story_length,
                     narrative_tone=self.narrative_tone,
                     tts_rate=self.tts_rate,
+                    delivery_mode=self.delivery_mode,
                 )
                 self._notify("start", master, movie_path)
                 master.run_pipeline()

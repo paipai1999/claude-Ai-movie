@@ -82,16 +82,19 @@ class WiringTests(unittest.TestCase):
     def test_every_view_has_a_container_and_the_router_knows_it(self):
         views = re.search(r"const VIEWS = \[([^\]]+)\]", HTML).group(1)
         names = re.findall(r"'([a-z]+)'", views)
-        self.assertEqual(names, ["welcome", "studio", "projects", "editor", "outputs", "inputs", "brand"])
+        self.assertEqual(names, ["welcome", "studio", "projects", "editor", "outputs", "inputs", "brand", "tool"])
         for name in names:
             self.assertIn(f'id="view-{name}"', HTML)
         for name in names:
-            if name != "editor":   # the editor lives under the Projects nav entry
+            if name not in ("editor", "tool"):   # the editor lives under Projects, the tool panels under the home (Tools) entry
                 self.assertIn(f'id="btn-tab-{name}"', HTML)
+        self.assertIn("tool: 'welcome'", HTML)
 
     def test_the_page_uses_the_external_assets_and_no_inline_stylesheet(self):
         self.assertIn('href="/static/css/studio.css"', HTML)
         self.assertIn('src="/static/js/studio.js"', HTML)
+        self.assertIn('src="/static/js/tools.js"', HTML)
+        self.assertLess(HTML.index('src="/static/js/studio.js"'), HTML.index('src="/static/js/tools.js"'))      # tools.js uses what studio.js exports
         self.assertNotIn("<style", HTML)
 
     def test_theme_is_set_before_first_paint(self):
