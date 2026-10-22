@@ -116,6 +116,25 @@ class ShortsEngine(HardsubEngine):
 
     cancel_message = "ShortsEngine execution cancelled by user."
 
+    # ── 1. ingest ────────────────────────────────────────────────────────────
+    def _ingest_video(self, input_source: str, project_dir: str, force_whisper: bool = False):
+        """
+        A local file is used where it is: copying a multi-gigabyte source into every project only doubles the disk
+        use. A link is downloaded into the project (the hardsub studio's own behaviour) so a re-run does not fetch it again.
+        """
+        if self.is_url(input_source):
+            return super()._ingest_video(input_source, project_dir, force_whisper)
+        self._check_cancellation()
+        local = os.path.abspath(input_source)
+        if not os.path.isfile(local):
+            raise FileNotFoundError(f"Input video file not found: {local}")
+        print(f"[*] Input is local video -> {local}")
+        title = os.path.splitext(os.path.basename(local))[0]
+        meta = self._probe_video_metadata(local)
+        meta["title"] = title
+        print(f"[OK] Ingestion ready: '{title}' ({float(meta.get('duration') or 0.0):.1f}s, {meta.get('width')}x{meta.get('height')})")
+        return local, None, title, meta
+
     # ── 2. transcript ────────────────────────────────────────────────────────
     def _cached_transcript(self, video_file: str, sub_file: Optional[str], source_language: str,
                            meta: Dict[str, Any], project_dir: str) -> List[Dict[str, Any]]:

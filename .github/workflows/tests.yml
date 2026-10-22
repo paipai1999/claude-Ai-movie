@@ -34,7 +34,7 @@ jobs:
           pip install -r requirements-ci.txt
 
       - name: Static analysis (pyflakes)
-        run: python -m pyflakes agents brain core services main.py web_ui.py hardsub_engine.py subtitle_engine.py regenerate_thumbnail.py
+        run: python -m pyflakes agents brain core services main.py web_ui.py hardsub_engine.py subtitle_engine.py splitter_engine.py shorts_engine.py regenerate_thumbnail.py
 
       - name: Unit tests
         env:

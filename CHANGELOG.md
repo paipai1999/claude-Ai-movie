@@ -43,6 +43,7 @@ All notable changes, architectural overhauls, and bug fixes to the AI Movie Tran
 - **Tools hub and panels** (`static/js/tools.js`): the home page is a tile grid (Recap, Recap -> CapCut, Subtitle, Hardsub, Long to Short, Splitter). The two tool panels are generated from the option model, show live progress from the job (`[PROGRESS]` markers) and a result viewer (cover, score, title, caption, hashtags, copy buttons, downloads); Projects gets a *Results* button for them and the *CapCut* button for every studio.
 - API: `GET /api/projects/{name}/tool-result`, `POST|GET /api/projects/{name}/capcut` for all studios; CLI: `splitter_engine.py`, `shorts_engine.py`, `--delivery`.
 - Hardsub no longer calls the Vision AI blur detection when nothing is rendered.
+- Long to Short uses a local source where it is (no multi-gigabyte copy per project); the ZIP bundle of a Splitter / Long to Short project holds the result only (no source video, transcript cache or working files); CI now lints `splitter_engine.py` and `shorts_engine.py`.
 
 ### 🎨 Dashboard
 - New design system in `static/css/studio.css` (the inline stylesheet is gone): light and dark themes (saved choice, else the OS), gold accent, Burmese-friendly typography, responsive down to phone width. New views and their logic live in `static/js/studio.js` (Burmese, English and Thai labels).

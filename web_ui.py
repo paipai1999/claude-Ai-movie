@@ -1899,12 +1899,20 @@ def download_project_zip(movie: Optional[str] = Query(None), job_id: Optional[st
     zip_path = os.path.join(temp_dir, f"{clean_base}_{unique_suffix}_bundle.zip")
 
     excluded_names = {"state.json", "checkpoint.json", "temp", "temp_test_dl"}
+    skip_dirs = {"voiceover", "temp", "__pycache__"}
+    skip_prefixes: tuple = ()
+    # A Splitter / Long to Short folder also keeps the (often multi-gigabyte) source video and its working files for
+    # re-runs; the bundle a creator downloads is the result only.
+    project_state = project_store._read_json(os.path.join(selected_dir, "state.json")) if selected_dir != outputs_dir else None
+    if isinstance(project_state, dict) and project_state.get("engine_type") in project_store.TOOL_ENGINES:
+        skip_prefixes = ("01_video_original", "source_transcript", "clips_plan")
+        skip_dirs |= {"_download", "_work"}
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(selected_dir):
-            dirs[:] = [d for d in dirs if d not in ["voiceover", "temp", "__pycache__"]]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in sorted(files):
-                if f in excluded_names or f.endswith(".tmp") or f.endswith(".part"):
+                if f in excluded_names or f.endswith(".tmp") or f.endswith(".part") or f.startswith(skip_prefixes):
                     continue
                 file_full = os.path.join(root, f)
                 rel_in_zip = os.path.relpath(file_full, selected_dir)

@@ -256,6 +256,16 @@ class ShortsTests(unittest.TestCase):
             engine.run(self.video, project_name="stop")
         self.assertEqual(self.llm_calls, [])
 
+    def test_a_local_source_is_used_in_place_not_copied(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        before = os.path.getsize(self.video)
+        self.run_tool(project="inplace", clip_count=1)
+        folder = self.folder("inplace")
+        self.assertFalse(os.path.exists(os.path.join(folder, "01_video_original.mp4")), "a local source must not be copied")
+        self.assertEqual(os.path.getsize(self.video), before)
+        with self.assertRaises(FileNotFoundError):
+            self.engine.run(os.path.join(self.base, "missing.mp4"), project_name="nofile")
+
     def test_the_counts_are_kept_in_range(self):
         self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
         result = self.run_tool(project="range", clip_count=0, clip_min_sec=1, clip_max_sec=2)   # -> 1 clip, 8-13 s

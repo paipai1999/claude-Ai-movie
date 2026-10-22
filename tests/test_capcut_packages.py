@@ -218,5 +218,48 @@ class ApiTests(unittest.TestCase):
         self.assertIn("splitter", res.json()["detail"])
 
 
+class BundleTests(unittest.TestCase):
+    """GET /api/outputs/zip: a tool project's bundle is its result, not its multi-gigabyte source and working files."""
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix="pai_bundle_")
+        self.old = os.getcwd()
+        os.chdir(self.work)
+        self.addCleanup(lambda: (os.chdir(self.old), shutil.rmtree(self.work, ignore_errors=True)))
+        import web_ui
+        from fastapi.testclient import TestClient
+        self.client = TestClient(web_ui.app)
+
+    def make(self, name, engine):
+        folder = os.path.join("outputs", name)
+        write(os.path.join(folder, "state.json"), json.dumps({"engine_type": engine, "movie_name": name}))
+        for relative in ("01_video_original.mp4", "short_01.mp4", "capcut_clips/clip_01.mp4", "_work/a.ass", "_download/b.mp4"):
+            write(os.path.join(folder, relative), b"x" * 64, mode="wb")
+        for relative in ("source_transcript.json", "clips_plan.json", "captions.txt"):
+            write(os.path.join(folder, relative), "{}")
+
+    def names(self, movie):
+        res = self.client.get("/api/outputs/zip", params={"movie": movie})
+        self.assertEqual(res.status_code, 200)
+        with open("bundle.zip", "wb") as fh:
+            fh.write(res.content)
+        return sorted(zipfile.ZipFile("bundle.zip").namelist())
+
+    def test_a_shorts_bundle_leaves_out_the_source_and_the_working_files(self):
+        self.make("Show", "shorts")
+        self.assertEqual(self.names("Show"), ["capcut_clips/clip_01.mp4", "captions.txt", "short_01.mp4"])
+
+    def test_a_splitter_bundle_too(self):
+        self.make("Parts", "splitter")
+        self.assertNotIn("01_video_original.mp4", self.names("Parts"))
+
+    def test_other_studios_keep_their_behaviour(self):
+        self.make("Film", "hardsub")
+        names = self.names("Film")
+        self.assertIn("01_video_original.mp4", names)
+        self.assertIn("short_01.mp4", names)
+        self.assertNotIn("state.json", names)
+
+
 if __name__ == "__main__":
     unittest.main()
