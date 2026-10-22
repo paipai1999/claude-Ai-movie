@@ -178,6 +178,8 @@ The following real-world benchmark was measured on a full 15-minute movie recap 
 ```text
 pai-ai-movie-studio/
 ├── hardsub_engine.py          ← Engine 3: 100% Original Audio & Burmese Hardsub Studio
+├── shorts_engine.py           ← Tool: Long to Short (best moments -> vertical Shorts / Reels)
+├── splitter_engine.py         ← Tool: cut a long video into parts
 ├── subtitle_engine.py         ← Engine 2: YouTube to Burmese Subtitle & Transcript Studio
 ├── main.py                    ← CLI: build_parser() + single / batch / download run modes
 ├── web_ui.py                  ← FastAPI app: middleware, REST endpoints, queue dispatcher
@@ -195,6 +197,11 @@ pai-ai-movie-studio/
 │   ├── text_compare.py        ← Script-safe normalisation (keeps Myanmar vowel signs) + trigram similarity
 │   ├── text_render.py         ← Myanmar-safe text rendering via FFmpeg/HarfBuzz (outro card, watermark)
 │   ├── audio_trim.py          ← Trims Edge TTS lead-in / tail silence
+│   ├── delivery.py            ← Delivery mode (one-click / CapCut pipeline / both) and the @delivers decorator
+│   ├── clip_selection.py      ← Long to Short: validates the model's clips, offline scorer, overlap rules
+│   ├── short_ass.py           ← Subtitles + hook title for one Short (clip-relative times)
+│   ├── split_plan.py          ← Splitter: where to cut, snapped to pauses
+│   ├── encoders.py            ← Hardware / CPU encoder arguments shared by the tools
 │   ├── pronunciation.py       ← Pronunciation dictionary: the voice reads the spoken form, subtitles keep the written one
 │   ├── user_files.py          ← Where per-user settings live (next to config.json, or on Drive in Colab)
 │   └── video_blur.py          ← Vision AI bounding box calculation & FFmpeg boxblur filters
@@ -207,7 +214,7 @@ pai-ai-movie-studio/
 │   ├── schemas.py             ← Pydantic request models
 │   ├── projects.py            ← Script Editor (edit + un-complete render phases), quality report, saved job options
 │   ├── profiles.py            ← Brand Kit: channel profiles validated against the option model
-│   ├── capcut_export.py       ← capcut_package.zip: one narration track + BOM SRT + import guide
+│   ├── capcut_export.py       ← capcut_package.zip for Recap / Subtitle / Hardsub / Shorts (BOM SRT + guide)
 │   ├── studio_api.py          ← Projects / script / quality / profiles / history / storage endpoints
 │   └── security.py            ← Auth, same-origin, DNS-rebinding and bind-address policy
 │
@@ -241,9 +248,11 @@ pai-ai-movie-studio/
 │   └── index.html             ← Dashboard markup + wizard logic (theater cinema player included)
 ├── static/
 │   ├── css/studio.css         ← Design system: light / dark themes, gold accent, responsive
-│   └── js/studio.js           ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
+│   └── js/
+│       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
+│       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 594 unit / regression tests (pytest) + tests/ui browser smoke test
+├── tests/                     ← 750 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -332,7 +341,9 @@ Open your browser at: `http://localhost:5000`
 * **Pronunciation dictionary (Brand Kit):** one `written => spoken` pair per line (`dictionary.json`, git-ignored). The voice says the spoken form; subtitles keep the written one, and only the lines an entry touches are re-voiced.
 * **Story bible & rename (Script Editor):** see the characters / places / terms the translator used, and rename a character across the whole script with a live preview before applying.
 * **Story length, tone and speaking speed:** pick how long the recap is (`compact` … `scene by scene`), its tone (`brisk`, `calm`, `dramatic`) and the voice speed (-50…+100 %) in the wizard, or with `--story-length`, `--narrative-tone`, `--tts-rate` on the CLI.
-* **CapCut package:** the *CapCut* button on a finished recap project downloads `capcut_package.zip` (one narration track, Burmese-safe SRT, guide) so the final edit can continue in CapCut.
+* **CapCut package:** the *CapCut* button on a finished project of any studio downloads `capcut_package.zip` (Recap: one narration track + Burmese-safe SRT + guide; Subtitle / Hardsub: SRT, original-language SRT, ASS, transcript; Shorts: clean clips + SRT + captions) so the final edit can continue in CapCut.
+* **Delivery mode - One-click or CapCut pipeline:** choose per production (wizard step 2, or `--delivery`) between the *finished video* (everything start to end), the *CapCut pipeline* (no slow final render; you get the package at the end, downloaded automatically) or *both*.
+* **Tools hub:** the home page is a grid of tools. **Long to Short** picks the best moments of a long video with Gemini and renders them as vertical Shorts / Reels (subtitles, hook title, caption and hashtags per clip); **Splitter** cuts a long video into parts at a pause in the speech.
 * **Test your Gemini keys** before saving them (*Test keys*): each key is checked and only masked results are shown.
 * **Light / dark theme** (press `T`), with Burmese, English and Thai labels.
 
@@ -354,8 +365,20 @@ python main.py --batch --format both
 # 4. Skip Demucs vocal separation on CPU for ultra-fast processing
 python main.py "movies/sample.mp4" --skip-demucs
 
+# 4b. The CapCut pipeline: no final render, a CapCut package at the end
+python main.py "movies/sample.mp4" --delivery capcut
+
 # 5. A shorter, faster-paced recap with a slightly quicker voice
 python main.py "movies/sample.mp4" --story-length compact --narrative-tone brisk --tts-rate 10
+```
+
+#### ✂️ Tools: Long to Short (`shorts_engine.py`) and Splitter (`splitter_engine.py`)
+```bash
+# Five vertical Shorts (20-60 s) with Burmese subtitles, as a CapCut package of clean clips
+python shorts_engine.py "movies/podcast.mp4" --clips 5 --focus funny --delivery capcut
+
+# Cut a long video into 10-minute parts at a pause in the speech
+python splitter_engine.py "movies/long_film.mp4" --minutes 10
 ```
 
 #### 📝 Engine 2: YouTube Subtitle & Transcript Studio (`subtitle_engine.py`)
