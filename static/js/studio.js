@@ -143,6 +143,8 @@
             optDeliveryNoteBoth: 'Takes as long as the finished video, then adds capcut_package.zip.',
             revDelivery: 'Delivery: {mode}', dlCapcut: 'Download CapCut package', capDoneToast: 'CapCut package ready - downloading.',
             engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: '{n} Shorts', pjParts: '{n} parts', pjResults: 'Results',
+            seSilent: 'Silent (not translated)', qSilent: 'Silent lines',
+            seSilentHint: 'This line could not be translated, so it is not voiced or subtitled. Translate it, then re-render.',
             issue_over_budget: 'Too long'
         },
         my: {
@@ -212,6 +214,8 @@
             optDeliveryNoteBoth: 'ပြီးသားဗီဒီယိုအတိုင်း အချိန်ကြာပြီးမှ capcut_package.zip ထပ်ထည့်ပေးပါမယ်။',
             revDelivery: 'ထုတ်ပေးပုံ: {mode}', dlCapcut: 'CapCut package ဒေါင်းလုဒ်', capDoneToast: 'CapCut package အဆင်သင့် - ဒေါင်းလုဒ်လုပ်နေသည်။',
             engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: 'Shorts {n} ခု', pjParts: 'အပိုင်း {n} ခု', pjResults: 'ရလဒ်များ',
+            seSilent: 'တိတ်ထားသည် (ဘာသာမပြန်ရ)', qSilent: 'တိတ်ထားသောစာကြောင်းများ',
+            seSilentHint: 'ဒီစာကြောင်းကို ဘာသာမပြန်နိုင်လို့ အသံနဲ့ စာတန်း မထည့်ပါဘူး။ ဘာသာပြန်ပြီး re-render လုပ်ပါ။',
             issue_over_budget: 'ရှည်လွန်း'
         },
         th: {
@@ -279,6 +283,8 @@
             optDeliveryNoteBoth: 'ใช้เวลาเท่ากับวิดีโอสำเร็จรูป แล้วเพิ่ม capcut_package.zip',
             revDelivery: 'การส่งมอบ: {mode}', dlCapcut: 'ดาวน์โหลดแพ็กเกจ CapCut', capDoneToast: 'แพ็กเกจ CapCut พร้อมแล้ว กำลังดาวน์โหลด',
             engineShorts: 'Shorts', engineSplitter: 'Splitter', pjClips: '{n} Shorts', pjParts: '{n} ส่วน', pjResults: 'ผลลัพธ์',
+            seSilent: 'ปิดเสียง (ยังไม่ได้แปล)', qSilent: 'บรรทัดที่ปิดเสียง',
+            seSilentHint: 'บรรทัดนี้แปลไม่ได้ จึงไม่พากย์และไม่ใส่คำบรรยาย แปลแล้วเรนเดอร์ใหม่',
             issue_over_budget: 'ยาวเกิน'
         }
     };
@@ -589,7 +595,7 @@
             const s = report.script, v = report.voice || {};
             parts.push(el('div', { class: 'card', style: 'padding:1rem 1.2rem;margin-bottom:1rem;' },
                 el('div', { class: 'card-title', style: 'margin-bottom:0.7rem;font-size:0.95rem;', text: t('qScript') }),
-                kv([[t('qLines'), s.lines], [t('qNeedsReview'), s.needs_review], [t('qOverBudget'), s.over_budget], [t('qEdited'), s.edited],
+                kv([[t('qLines'), s.lines], [t('qNeedsReview'), s.needs_review], [t('qSilent'), s.silent || 0], [t('qOverBudget'), s.over_budget], [t('qEdited'), s.edited],
                     [t('qClips'), v.clips], [t('qMissing'), v.missing_clips], [t('qOverflow'), v.overflowing_clips]]),
                 Object.keys(s.issues || {}).length ? el('div', { class: 'row', style: 'margin-top:0.8rem;' },
                     Object.entries(s.issues).map(([code, n]) => el('span', { class: 'chip chip-warn', text: t('issue_' + code) + ' · ' + n }))) : null));
@@ -687,7 +693,9 @@
 
         const count = el('span', { class: 'se-count', 'data-count': idx });
         const side = el('div', { class: 'se-side' }, gender, count,
-            el('div', { class: 'se-issues' }, (block.issues || []).map(code => el('span', { class: 'chip chip-warn', text: t('issue_' + code) }))));
+            el('div', { class: 'se-issues' },
+                block.untranslated ? el('span', { class: 'chip chip-err', title: t('seSilentHint'), text: t('seSilent') }) : null,
+                (block.issues || []).map(code => el('span', { class: 'chip chip-warn', text: t('issue_' + code) }))));
         if (block.needs_review) {
             side.append(el('button', {
                 type: 'button', class: 'btn-nav btn-sm', text: t('seMarkChecked'),

@@ -10,12 +10,20 @@ from brain.memory import MovieState
 from agents.f5_tts_engine import F5TTSEngine
 from core.audio_trim import trim_silence
 from core.pronunciation import Pronouncer, load_entries
+from core.translation_quality import block_is_silent
 
 _CACHED_AVAILABLE_VOICES = None
 
 # Per-project record of WHICH text/voice each scene_XXXX.mp3 was synthesized from.
 # Lets a resume reuse only clips that still match the current script (and re-synthesize the rest).
 VOICE_MANIFEST_NAME = "voice_manifest.json"
+
+
+def spoken_narration(item) -> str:
+    """The text of a script block that must be voiced; "" for an empty line and for one that was never translated."""
+    if not isinstance(item, dict) or block_is_silent(item):
+        return ""
+    return str(item.get("narration", "")).strip()
 _KNOWN_EDGE_VOICES = {
     "my-mm-thihaneural",
     "my-mm-nilarneural",
@@ -116,7 +124,7 @@ class VoiceAgent:
         """Records the fingerprint of every clip that exists on disk (atomic write)."""
         clips = {}
         for idx, item in enumerate(script or []):
-            if not isinstance(item, dict) or not str(item.get("narration", "")).strip():
+            if not spoken_narration(item):
                 continue
             path = os.path.join(audio_out_dir, self._clip_name(idx))
             if os.path.exists(path) and os.path.getsize(path) > 1000:
@@ -145,6 +153,13 @@ class VoiceAgent:
             if not isinstance(item, dict):
                 continue
             path = os.path.join(audio_out_dir, self._clip_name(idx))
+            if block_is_silent(item) and os.path.exists(path):         # voiced by an older run: it must not stay in the video
+                try:
+                    os.remove(path)
+                    purged += 1
+                except OSError as _exc:
+                    log_suppressed("agents.voice_agent._purge_stale_clips", _exc)
+                continue
             if os.path.exists(path) and manifest.get(self._clip_name(idx)) != self._clip_fingerprint(item):
                 try:
                     os.remove(path)
@@ -319,10 +334,11 @@ class VoiceAgent:
 
         # Drop clips that were synthesized from different text / voice, then check completeness.
         self._purge_stale_clips(audio_out_dir, state.generated_script)
-        needed = [
-            idx for idx, item in enumerate(state.generated_script)
-            if isinstance(item, dict) and str(item.get("narration", "")).strip()
-        ]
+        needed = [idx for idx, item in enumerate(state.generated_script) if spoken_narration(item)]
+        silent = sum(1 for item in state.generated_script if block_is_silent(item))
+        if silent:
+            print(f"[WARN] VoiceAgent: {silent} line(s) could not be translated and are left silent instead of being read in "
+                  "the wrong language - fix them in the Script Editor, then re-render.")
         valid_clips = [
             idx for idx in needed
             if os.path.exists(os.path.join(audio_out_dir, self._clip_name(idx)))
@@ -409,7 +425,7 @@ class VoiceAgent:
 
         audio_files = []
         for idx, item in enumerate(state.generated_script):
-            narration = item.get("narration", "").strip()
+            narration = spoken_narration(item)
             if not narration:
                 continue
 
@@ -488,7 +504,7 @@ class VoiceAgent:
         output_files = []
 
         for idx, item in enumerate(state.generated_script):
-            narration = item.get("narration", "").strip()
+            narration = spoken_narration(item)
             emotion = item.get("emotion", "normal").lower()
             gender = str(item.get("gender", "male")).strip().lower()
             character = str(item.get("character", "Narrator")).strip()

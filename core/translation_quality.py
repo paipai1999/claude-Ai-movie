@@ -53,6 +53,28 @@ RETRY_CODES = frozenset({
     "missing", "placeholder", "meta_text", "untranslated", "foreign_script", "latin_words", "copied_source",
 })
 
+# After every retry a line with one of these problems has no usable narration in the target language: it is empty,
+# a placeholder, a copy of the source, or not in Burmese script at all. Voicing it would read foreign text aloud
+# in the Burmese voice, so such a line is left silent (and not shown as a subtitle) until a human fixes it.
+UNSPEAKABLE_CODES = frozenset({"missing", "placeholder", "untranslated", "copied_source"})
+
+
+def is_unspeakable(issues) -> bool:
+    """True when the problems still present on a line mean it must not be voiced."""
+    return any(code in UNSPEAKABLE_CODES for code in (issues or ()))
+
+
+def block_is_silent(block) -> bool:
+    """
+    True for a script block that must be neither voiced nor subtitled: the writer marked it ``untranslated``, or it is
+    still flagged for review with a problem that leaves it without usable narration (this also covers projects made
+    before the ``untranslated`` mark existed). A human edit clears the flag and the review state together.
+    """
+    if not isinstance(block, dict):
+        return False
+    return bool(block.get("untranslated")) or (bool(block.get("needs_review")) and is_unspeakable(block.get("issues")))
+
+
 # Human-readable correction sentences, one per problem code (sent back to the model).
 _ADVICE = {
     "missing": "no translation was returned for this line - translate it",

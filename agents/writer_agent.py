@@ -6,6 +6,7 @@ from brain.memory import MovieState
 from brain.gemini_client import call_gemini
 from agents.story_memory import build_story_context, context_key as story_context_key
 from agents.translation_flow import TranslationFlow
+from core.translation_quality import is_unspeakable
 from brain.prompts import (
     FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT,
     MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT,
@@ -613,6 +614,8 @@ class WriterAgent:
             if res.needs_review:
                 block["needs_review"] = True
                 block["issues"] = list(res.issues)
+            if res.origin == "source" or is_unspeakable(res.issues):
+                block["untranslated"] = True       # never voiced / subtitled in the wrong language (VoiceAgent, merger)
             all_translated.append(block)
 
         s = flow.stats

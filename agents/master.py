@@ -1,5 +1,6 @@
 from brain.diagnostics import log_suppressed
 from core import delivery
+from core.translation_quality import block_is_silent
 import os
 import sys
 import io
@@ -406,11 +407,13 @@ class MasterAgent:
             vo_dir = os.path.join(proj_dir, "voiceover")
             if not os.path.exists(vo_dir):
                 return False
-            n_script = len(getattr(self.state, "generated_script", []) or [])
-            if n_script == 0:
+            script = getattr(self.state, "generated_script", []) or []
+            if not script:
                 return False
+            # Lines that were never translated are left silent on purpose: they have no clip to wait for.
+            n_voiced = sum(1 for b in script if not block_is_silent(b))
             mp3s = [f for f in os.listdir(vo_dir) if f.startswith("scene_") and f.endswith(".mp3") and os.path.getsize(os.path.join(vo_dir, f)) > 1000]
-            return len(mp3s) >= n_script
+            return len(mp3s) >= n_voiced
 
         elif phase_id == PHASE_6_MERGE:
             final_mp4 = os.path.join(proj_dir, "final_recap.mp4")
@@ -918,7 +921,7 @@ class MasterAgent:
                         s_start = float(block.get("start_sec") or 0.0)
                         s_end = float(block.get("end_sec") or (s_start + 3.0))
                         txt = str(block.get("narration") or block.get("text") or "").strip()
-                        if txt:
+                        if txt and not block_is_silent(block):
                             sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
             if sub_timings:
                 out_p = os.path.join(self.output_dir, self.state.project_dir)

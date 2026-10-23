@@ -92,7 +92,9 @@ class LoadScriptTests(ProjectCase):
         self.assertEqual(second["issues"], ["untranslated"])
         self.assertTrue(third["over_budget"])
         self.assertEqual(first["max_chars"], 44)          # 4 s slot * 11 chars/s
-        self.assertEqual(view["summary"], {"total": 4, "needs_review": 1, "edited": 0, "over_budget": 1})
+        # the flagged "untranslated" line is also silent: it is neither voiced nor subtitled until a human translates it
+        self.assertEqual(view["summary"], {"total": 4, "needs_review": 1, "edited": 0, "over_budget": 1, "silent": 1})
+        self.assertTrue(second["untranslated"])
         self.assertFalse(view["has_saved_options"])
         self.assertFalse(view["rendered"])
 

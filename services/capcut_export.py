@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from brain.diagnostics import log_suppressed
+from core.translation_quality import block_is_silent
 from services import projects as project_store
 
 PACKAGE_NAME = "capcut_package.zip"
@@ -252,7 +253,7 @@ def _recap_package(project_dir: str, name: str, state: Dict[str, Any]) -> Dict[s
         timings = []
         for block in blocks:
             text = str(block.get("narration") or block.get("text") or "").strip()
-            if text:
+            if text and not block_is_silent(block):             # source-language text is not a caption
                 start = float(block.get("start_sec") or 0.0)
                 end = float(block.get("end_sec") or start + 3.0)
                 timings.append((start, max(end - start, 0.8), text))

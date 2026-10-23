@@ -25,7 +25,7 @@ from urllib.parse import quote
 from agents.story_memory import parse_bible
 from brain.diagnostics import log_suppressed
 from core.paths import resolve_inside
-from core.translation_quality import OVER_BUDGET_RATIO, find_damaged_lines
+from core.translation_quality import OVER_BUDGET_RATIO, block_is_silent, find_damaged_lines, has_myanmar
 
 STATE_FILE = "state.json"
 CHECKPOINT_FILE = "checkpoint.json"
@@ -108,6 +108,7 @@ def _block_view(index: int, block: Dict[str, Any]) -> Dict[str, Any]:
         "gender": block.get("gender") or "male",
         "emotion": block.get("emotion") or "normal",
         "needs_review": bool(block.get("needs_review")),
+        "untranslated": block_is_silent(block),               # left silent until a human translates it
         "issues": list(block.get("issues") or []),
         "edited": bool(block.get("edited")),
         "chars": len(narration),
@@ -149,6 +150,7 @@ def _script_summary(blocks: List[Dict[str, Any]]) -> Dict[str, int]:
         "needs_review": sum(1 for b in blocks if b["needs_review"]),
         "edited": sum(1 for b in blocks if b["edited"]),
         "over_budget": sum(1 for b in blocks if b["over_budget"]),
+        "silent": sum(1 for b in blocks if b["untranslated"]),
     }
 
 
@@ -220,6 +222,7 @@ def save_script(project_dir: str, edits: Any) -> Dict[str, Any]:
         raise ProjectError("This project has no editable script.", code="no_script")
 
     changed: List[int] = []
+    burmese = str(state.get("language") or "burmese").lower() in ("burmese", "mm", "myanmar")
     for edit in _validated_edits(edits, len(script)):
         block = script[edit["index"]]
         if not isinstance(block, dict):
@@ -227,6 +230,11 @@ def save_script(project_dir: str, edits: Any) -> Dict[str, Any]:
         touched = False
         if "narration" in edit and edit["narration"] != block.get("narration"):
             block["narration"] = edit["narration"]
+            # A human translation makes a silent line speakable again; a text that is still not Burmese does not.
+            if burmese and not has_myanmar(edit["narration"]):
+                block["untranslated"] = True
+            else:
+                block.pop("untranslated", None)
             touched = True
         if "gender" in edit and edit["gender"] != block.get("gender"):
             block["gender"] = edit["gender"]
@@ -451,7 +459,9 @@ def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Di
         slot = views[idx]["slot_sec"]
         if actual > slot * STRETCH_LIMIT:
             overflow.append({"index": idx, "slot_sec": slot, "clip_sec": round(actual, 2)})
-    missing = [i for i in range(len(views)) if i not in durations] if os.path.isdir(os.path.join(project_dir, "voiceover")) else []
+    silent = [v for v in views if v["untranslated"]]
+    # A silent (untranslated) line has no clip on purpose; it is reported on its own, not as a missing clip.
+    missing = [i for i in range(len(views)) if i not in durations and not views[i]["untranslated"]] if os.path.isdir(os.path.join(project_dir, "voiceover")) else []
 
     section = {
         "script": {
@@ -459,6 +469,7 @@ def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Di
             "needs_review": len(review),
             "edited": sum(1 for v in views if v["edited"]),
             "over_budget": len(over),
+            "silent": len(silent),
             "issues": issue_counts,
             "review_lines": [
                 {"index": v["index"], "scene_id": v["scene_id"], "issues": v["issues"],
@@ -473,7 +484,8 @@ def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Di
             "overflow": overflow[:30],
         },
     }
-    section["score"], section["verdict"] = _score(len(views), len(review) + len(over), len(overflow), pipeline)
+    unreviewed_silent = sum(1 for v in silent if not v["needs_review"])      # silent lines a human already confirmed still count
+    section["score"], section["verdict"] = _score(len(views), len(review) + len(over) + unreviewed_silent, len(overflow), pipeline)
     return section
 
 
