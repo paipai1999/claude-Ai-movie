@@ -53,7 +53,12 @@
             hint_short_hook_title: 'A short, bold hook line at the top: it is what makes people keep watching.',
             opt_short_framing: 'Vertical framing',
             ch_split_mode_duration: 'Every N minutes', ch_split_mode_parts: 'N equal parts',
-            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p',
+            opt_split_format: 'Shape of every part', hint_split_format: 'Original keeps the picture as it is (instant cuts). Vertical, square or wide re-encodes every part.',
+            opt_split_fill: 'When the shape differs', opt_split_label: 'Label on every part',
+            hint_split_label: 'For example "Part {n}/{total}". {n} = 1, 2, 3 · {mm} = ၁, ၂, ၃ · {total} = number of parts. Leave empty for none.',
+            ch_split_format_original: 'Original', ch_split_format_916: 'Vertical 9:16 (TikTok, Reels, Shorts)', ch_split_format_11: 'Square 1:1', ch_split_format_169: 'Wide 16:9',
+            ch_split_fill_blur: 'Over a blurred copy of the picture', ch_split_fill_black: 'Between black bars', ch_split_fill_crop: 'Fill the screen (crop the edges)',
+            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p', ch_resolution_480p: '480p (Draft, fastest)',
             ch_clip_focus_balanced: 'The strongest moments', ch_clip_focus_funny: 'Funny moments', ch_clip_focus_emotional: 'Emotional moments',
             ch_clip_focus_informative: 'Useful tips and facts', ch_clip_focus_action: 'Action and big reveals',
             ch_short_subtitles_burmese: 'Burmese (translated)', ch_short_subtitles_original: 'Original language', ch_short_subtitles_none: 'No subtitles',
@@ -98,7 +103,12 @@
             hint_short_hook_title: 'အပေါ်ဆုံးမှာ စာတိုပြချက် - လူတွေ ဆက်ကြည့်စေတဲ့ အရာပါ။',
             opt_short_framing: 'ဒေါင်လိုက် framing',
             ch_split_mode_duration: 'N မိနစ်တိုင်း', ch_split_mode_parts: 'ညီတူ N ပိုင်း',
-            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p',
+            opt_split_format: 'အပိုင်းတိုင်းရဲ့ ပုံသဏ္ဍာန်', hint_split_format: 'Original = ပုံကို မပြောင်း (ချက်ချင်းဖြတ်)။ ဒေါင်လိုက် / လေးထောင့်ကွက် / ကျယ် ရွေးရင် အပိုင်းတိုင်းကို ပြန် encode လုပ်မယ်။',
+            opt_split_fill: 'ပုံသဏ္ဍာန် မတူရင်', opt_split_label: 'အပိုင်းတိုင်းမှာ ပေါ်မယ့် စာ',
+            hint_split_label: 'ဥပမာ "အပိုင်း {mm}/{total_mm}" သို့ "Part {n}/{total}"။ {n} = 1, 2, 3 · {mm} = ၁, ၂, ၃ · {total} = အပိုင်းစုစုပေါင်း။ မထည့်ချင်ရင် ဗလာထားပါ။',
+            ch_split_format_original: 'မူရင်းအတိုင်း', ch_split_format_916: 'ဒေါင်လိုက် 9:16 (TikTok, Reels, Shorts)', ch_split_format_11: 'လေးထောင့်ကွက် 1:1', ch_split_format_169: 'ကျယ် 16:9',
+            ch_split_fill_blur: 'ဝါးထားတဲ့ ပုံအပေါ်မှာ', ch_split_fill_black: 'အနက်ရောင် ဘောင်ကြားမှာ', ch_split_fill_crop: 'မျက်နှာပြင်ပြည့် (အစွန်းဖြတ်)',
+            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p', ch_resolution_480p: '480p (Draft)',
             ch_clip_focus_balanced: 'အကောင်းဆုံး အပိုင်းတွေ', ch_clip_focus_funny: 'ရယ်စရာ အပိုင်း', ch_clip_focus_emotional: 'ခံစားချက်ပြင်းတဲ့ အပိုင်း',
             ch_clip_focus_informative: 'အသုံးဝင်တဲ့ အကြံ၊ အချက်အလက်', ch_clip_focus_action: 'အက်ရှင်နဲ့ အံ့အားသင့်စရာ',
             ch_short_subtitles_burmese: 'မြန်မာ (ဘာသာပြန်)', ch_short_subtitles_original: 'မူရင်းဘာသာ', ch_short_subtitles_none: 'စာတန်း မထည့်',
@@ -143,7 +153,12 @@
             hint_short_hook_title: 'ข้อความสั้นเด่นที่ด้านบน ช่วยให้คนดูต่อ',
             opt_short_framing: 'การจัดเฟรมแนวตั้ง',
             ch_split_mode_duration: 'ทุก N นาที', ch_split_mode_parts: 'N ส่วนเท่า ๆ กัน',
-            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p',
+            opt_split_format: 'รูปทรงของแต่ละส่วน', hint_split_format: 'ต้นฉบับ = ไม่แก้ภาพ (ตัดทันที) แนวตั้ง / จัตุรัส / กว้าง = เข้ารหัสใหม่ทุกส่วน',
+            opt_split_fill: 'เมื่อรูปทรงต่างกัน', opt_split_label: 'ข้อความบนทุกส่วน',
+            hint_split_label: 'เช่น "Part {n}/{total}" {n} = 1, 2, 3 · {mm} = ၁, ၂, ၃ · {total} = จำนวนส่วน เว้นว่างถ้าไม่ต้องการ',
+            ch_split_format_original: 'ต้นฉบับ', ch_split_format_916: 'แนวตั้ง 9:16 (TikTok, Reels, Shorts)', ch_split_format_11: 'จัตุรัส 1:1', ch_split_format_169: 'กว้าง 16:9',
+            ch_split_fill_blur: 'บนภาพเบลอของตัวเอง', ch_split_fill_black: 'ระหว่างแถบดำ', ch_split_fill_crop: 'เต็มจอ (ตัดขอบ)',
+            ch_resolution_1080p: '1080p (Full HD)', ch_resolution_720p: '720p', ch_resolution_480p: '480p (Draft)',
             ch_clip_focus_balanced: 'ช่วงที่ดีที่สุด', ch_clip_focus_funny: 'ช่วงตลก', ch_clip_focus_emotional: 'ช่วงอารมณ์แรง',
             ch_clip_focus_informative: 'เคล็ดลับและข้อเท็จจริงที่มีประโยชน์', ch_clip_focus_action: 'แอ็กชันและการเฉลย',
             ch_short_subtitles_burmese: 'พม่า (แปลแล้ว)', ch_short_subtitles_original: 'ภาษาต้นฉบับ', ch_short_subtitles_none: 'ไม่มีคำบรรยาย',
@@ -180,14 +195,14 @@
         splitter: {
             engine: 'splitter',
             icon: 'M6 3v18M18 3v18M6 12h12',
-            basic: ['split_mode', 'split_minutes', 'split_parts', 'split_snap'],
-            advanced: ['split_reencode', 'resolution', 'project_name']
+            basic: ['split_mode', 'split_minutes', 'split_parts', 'split_snap', 'split_format', 'split_label'],
+            advanced: ['split_fill', 'split_reencode', 'resolution', 'project_name']
         }
     };
 
     // [min, max, step] for the number controls
     const RANGES = { clip_count: [1, 20, 1], clip_min_sec: [8, 170, 1], clip_max_sec: [13, 180, 1], split_minutes: [0.5, 600, 0.5], split_parts: [2, 99, 1] };
-    const CHOICE_KEY = { '9:16': '916', '16:9': '169' };      // option values that are not safe in a text key
+    const CHOICE_KEY = { '9:16': '916', '16:9': '169', '1:1': '11' };      // option values that are not safe in a text key
 
     const state = { tool: null, model: null, controls: {}, jobId: null, timer: null, view: 'form' };
 

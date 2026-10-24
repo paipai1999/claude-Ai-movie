@@ -145,7 +145,7 @@ class TestSameFlagSameMeaningPerProgram(unittest.TestCase):
             self.assertIsNone(getattr(args, name), name)
 
     def test_choices_come_from_the_model(self):
-        for bad in (["--format", "4:3"], ["--blur-mode", "maybe"], ["--res", "480p"]):
+        for bad in (["--format", "4:3"], ["--blur-mode", "maybe"], ["--res", "360p"]):
             with self.assertRaises(SystemExit):
                 parse(cli.HARDSUB, *bad)
 

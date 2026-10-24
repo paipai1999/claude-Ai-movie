@@ -120,7 +120,7 @@ class OptionTests(unittest.TestCase):
                         continue                          # its texts come from studio.js
                     self.assertIn("opt_" + name, texts, f"{lang}: no label for {name}")
                     for choice in O.BY_NAME[name].choices:
-                        key = "ch_%s_%s" % (name, {"9:16": "916", "16:9": "169"}.get(choice, choice))
+                        key = "ch_%s_%s" % (name, {"9:16": "916", "16:9": "169", "1:1": "11"}.get(choice, choice))
                         self.assertIn(key, texts, f"{lang}: no label for {name}={choice}")
 
     def test_number_controls_have_ranges_the_engines_accept(self):

@@ -168,6 +168,8 @@ def build_ass_script(
     is_vertical = video_h > video_w
     if resolution == "1080p":
         font_size = 38 if is_vertical else 42
+    elif resolution == "480p":
+        font_size = 20 if is_vertical else 22
     else:
         font_size = 28 if is_vertical else 32
 

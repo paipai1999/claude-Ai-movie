@@ -36,7 +36,8 @@ class MovieState(BaseModel):
     duration: Optional[str] = None
     fps: Optional[float] = None
     frames_count: Optional[int] = None
-    resolution: Optional[str] = None
+    resolution: Optional[str] = None  # SOURCE video size "WxH" (VideoAgent overwrites it in Phase 1)
+    output_resolution: Optional[str] = None  # the quality PRESET the user asked for ("1080p" | "720p" | "480p")
     genre: Optional[str] = None
     characters: List[str] = Field(default_factory=list)
     transcript: List[TranscriptSegment] = Field(default_factory=list)

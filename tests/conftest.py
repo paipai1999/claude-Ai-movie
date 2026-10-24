@@ -25,4 +25,7 @@ def _no_tts_network(monkeypatch):
     network: the probe is off by default here, and tests/test_tts_guard.py turns it on against a fake service.
     """
     monkeypatch.setenv("PAI_SKIP_TTS_PREFLIGHT", "1")
+    # Edge TTS being down must not make a test reach for Gemini with its dummy key; tests/test_gemini_tts.py turns it on.
+    monkeypatch.setenv("PAI_TTS_FALLBACK", "off")
+    monkeypatch.setenv("GEMINI_TTS_MODEL", "test-tts-model")
     yield

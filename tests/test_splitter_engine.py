@@ -135,6 +135,145 @@ class SplitterTests(unittest.TestCase):
                          ["parts.json", "state.json"])
 
 
+def luma_band(video, at, rows, ffmpeg):
+    """Mean brightness (0-255) of a horizontal band of the frame at ``at`` seconds (rows given as fractions of the height)."""
+    import numpy as np
+    from PIL import Image
+    folder = tempfile.mkdtemp(prefix="pai_split_frame_")
+    try:
+        png = os.path.join(folder, "frame.png")
+        subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-ss", str(at), "-i", video, "-frames:v", "1", png], capture_output=True)
+        frame = np.asarray(Image.open(png).convert("L"), dtype="float32")
+        return float(frame[int(rows[0] * frame.shape[0]):int(rows[1] * frame.shape[0])].mean())
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+class ShapeAndLabelTests(unittest.TestCase):
+    """Parts in another shape (vertical, square, wide) and with a label, rendered by the real FFmpeg at 480p to stay quick."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = tempfile.mkdtemp(prefix="pai_split_shape_")
+        cls.video = os.path.join(cls.base, "long film.mp4")
+        if not make_video(cls.video):
+            raise unittest.SkipTest("FFmpeg could not generate the test video")
+        cls.ffmpeg = _get_ffmpeg_bin()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="pai_split_shape_out_")
+        self.addCleanup(shutil.rmtree, self.out, ignore_errors=True)
+        self.engine = splitter_engine.SplitterEngine(output_base_dir=self.out)
+
+    def run_styled(self, project, **kwargs):
+        defaults = dict(split_mode="duration", split_minutes=1, split_snap=False, resolution="480p")
+        defaults.update(kwargs)
+        with mock.patch.object(splitter_engine, "detect_hardware_encoder", return_value=CPU):
+            return self.engine.run(self.video, project_name=project, **defaults)
+
+    def path(self, project, name="part_01.mp4"):
+        return os.path.join(self.out, project, name)
+
+    def shape_of(self, project, name="part_01.mp4"):
+        meta = self.engine._probe_video_metadata(self.path(project, name))
+        return meta["width"], meta["height"], meta["has_audio"]
+
+    def manifest(self, project):
+        return json.load(open(self.path(project, "parts.json"), encoding="utf-8"))
+
+    def test_a_vertical_canvas_re_encodes_every_part_and_keeps_the_sound(self):
+        result = self.run_styled("vertical", split_format="9:16")
+        self.assertEqual(len(result["parts"]), 2)
+        for part in result["parts"]:
+            self.assertEqual(self.shape_of("vertical", part["file"]), (480, 854, True))
+        self.assertAlmostEqual(result["parts"][0]["duration"], 60.0, delta=0.6)
+        settings = self.manifest("vertical")["settings"]
+        self.assertEqual((settings["format"], settings["fill"], settings["label"]), ("9:16", "blur", ""))
+
+    def test_square_and_wide_canvases(self):
+        self.run_styled("square", split_format="1:1")
+        self.assertEqual(self.shape_of("square")[:2], (480, 480))
+        self.run_styled("wide", split_format="16:9")
+        self.assertEqual(self.shape_of("wide")[:2], (854, 480))
+
+    def test_the_picture_is_filled_three_ways(self):
+        for fill in ("blur", "black", "crop"):
+            self.run_styled(fill, split_format="9:16", split_fill=fill)
+        top = lambda project: luma_band(self.path(project), 1.0, (0.02, 0.12), self.ffmpeg)   # noqa: E731
+        self.assertLess(top("black"), 25)            # black bars above the picture
+        self.assertGreater(top("blur"), 30)          # the blurred copy of the picture
+        self.assertGreater(top("crop"), 30)          # the picture itself, edge to edge
+
+    def test_the_label_is_burnt_in_and_listed_in_the_manifest(self):
+        result = self.run_styled("labelled", split_format="9:16", split_label="Part {n}/{total}")
+        self.run_styled("plain", split_format="9:16")
+        self.assertEqual([p["label"] for p in result["parts"]], ["Part 1/2", "Part 2/2"])
+        a, b = (self.path(name) for name in ("labelled", "plain"))
+        near_top = lambda video: luma_band(video, 1.0, (0.02, 0.12), self.ffmpeg)               # noqa: E731
+        middle = lambda video: luma_band(video, 1.0, (0.45, 0.55), self.ffmpeg)                 # noqa: E731
+        self.assertGreater(abs(near_top(a) - near_top(b)), 5.0)          # the label box is at the top
+        self.assertLess(abs(middle(a) - middle(b)), 2.0)                 # and nothing else changed
+
+    def test_a_burmese_label_uses_myanmar_digits(self):
+        result = self.run_styled("burmese", split_label="အပိုင်း {mm}/{total_mm}")
+        self.assertEqual([p["label"] for p in result["parts"]], ["အပိုင်း ၁/၂", "အပိုင်း ၂/၂"])
+
+    def test_a_label_alone_keeps_the_shape_of_the_source(self):
+        self.run_styled("label_only", split_label="Part {n}/{total}")
+        self.assertEqual(self.shape_of("label_only"), (320, 240, True))
+        self.assertEqual(self.manifest("label_only")["settings"]["format"], "original")
+
+    def test_nothing_new_without_a_shape_or_a_label(self):
+        result = self.engine.run(self.video, project_name="plain_copy", split_mode="duration", split_minutes=1, split_snap=False)
+        self.assertEqual(self.shape_of("plain_copy"), (320, 240, True))
+        self.assertTrue(all("label" not in part for part in result["parts"]))
+        settings = self.manifest("plain_copy")["settings"]
+        self.assertNotIn("format", settings)
+        self.assertNotIn("label", settings)
+
+    def test_an_unknown_shape_or_fill_falls_back_to_the_defaults(self):
+        self.engine.run(self.video, project_name="fallback", split_mode="duration", split_minutes=1, split_snap=False,
+                        split_format="4:3", split_fill="rainbow")
+        self.assertEqual(self.shape_of("fallback"), (320, 240, True))          # "original": stream copy
+
+    def test_no_working_files_are_left_in_the_project(self):
+        self.run_styled("tidy", split_format="9:16", split_label="Part {n}/{total}")
+        self.assertEqual(sorted(n for n in os.listdir(self.path("tidy", "")) if not n.startswith("part_")), ["parts.json", "state.json"])
+
+    def test_the_cli_takes_the_new_options(self):
+        import argparse
+        from core.cli import SPLITTER, add_option_arguments, resolve_args
+        parser = argparse.ArgumentParser()
+        parser.add_argument("input")
+        add_option_arguments(parser, SPLITTER)
+        values = resolve_args(SPLITTER, parser.parse_args(["film.mp4", "--split-format", "9:16", "--split-fill", "crop", "--label", "Part {n}"]))
+        self.assertEqual((values["split_format"], values["split_fill"], values["split_label"]), ("9:16", "crop", "Part {n}"))
+        defaults = resolve_args(SPLITTER, parser.parse_args(["film.mp4"]))
+        self.assertEqual((defaults["split_format"], defaults["split_fill"], defaults["split_label"]), ("original", "blur", ""))
+
+    def test_the_queue_worker_passes_the_new_options_on(self):
+        from services import job_runtime as rt
+        seen = {}
+
+        class Engine:
+            def __init__(self, **kwargs):
+                pass
+
+            def run(self, **kwargs):
+                seen.update(kwargs)
+                return {"status": "completed"}
+
+        with mock.patch.object(rt, "_run_job", side_effect=lambda job_id, source, text, work: work()), \
+                mock.patch.object(rt, "_set_job_state"), mock.patch.dict(sys.modules, {"splitter_engine": mock.Mock(SplitterEngine=Engine)}):
+            rt.splitter_worker("job1", "film.mp4", "p", "duration", 5.0, 2, True, False, "720p", "1:1", "crop", "Part {n}")
+        self.assertEqual((seen["split_format"], seen["split_fill"], seen["split_label"]), ("1:1", "crop", "Part {n}"))
+        self.assertEqual(seen["resolution"], "720p")
+
+
 class CommandLineTests(unittest.TestCase):
     def test_the_cli_is_generated_from_the_option_model(self):
         import argparse

@@ -88,6 +88,9 @@ FLAGS: Dict[str, Flag] = {
     "split_parts": F(("--split-parts", "--parts"), programs=(SPLITTER,)),
     "split_snap": F(("--split-snap",), off=("--no-split-snap", "--exact-cuts"), programs=(SPLITTER,)),
     "split_reencode": F(("--split-reencode", "--frame-accurate"), programs=(SPLITTER,)),
+    "split_format": F(("--split-format",), programs=(SPLITTER,)),
+    "split_fill": F(("--split-fill",), programs=(SPLITTER,)),
+    "split_label": F(("--split-label", "--label"), programs=(SPLITTER,)),
     # Tool: Long to Short
     "clip_count": F(("--clips", "--clip-count"), programs=(SHORTS,)),
     "clip_min_sec": F(("--clip-min",), programs=(SHORTS,)),

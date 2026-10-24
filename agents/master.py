@@ -1,5 +1,5 @@
 from brain.diagnostics import log_suppressed
-from core import delivery
+from core import delivery, resolution as res_presets
 from core.translation_quality import block_is_silent
 import os
 import sys
@@ -140,7 +140,7 @@ class MasterAgent:
 
         self.subtitle_mode = str(subtitle_mode or "burn").lower()
         self.subtitle_style = str(subtitle_style or os.getenv("SUBTITLE_STYLE") or cfg.get("subtitle_overlay", {}).get("style_preset", "box_black")).lower()
-        self.resolution = str(resolution or "1080p").lower()
+        self.resolution = res_presets.normalize(resolution)
 
         fmt_candidate = str(video_format or os.getenv("VIDEO_FORMAT") or cfg.get("pipeline", {}).get("video_format", "both")).lower()
         if fmt_candidate in ["16:9", "landscape", "youtube", "horizontal"]:
@@ -207,6 +207,7 @@ class MasterAgent:
         self.state.subtitle_mode = self.subtitle_mode
         self.state.subtitle_style_preset = self.subtitle_style
         self.state.resolution = self.resolution
+        self.state.output_resolution = self.resolution
         self.state.video_format = self.video_format
         self.state.source_language = str(source_language or "auto").lower().strip()
         self.state.script_engine = self.script_engine
@@ -416,6 +417,8 @@ class MasterAgent:
             return len(mp3s) >= n_voiced
 
         elif phase_id == PHASE_6_MERGE:
+            if (self.state.phase_checkpoints.get(PHASE_6_MERGE) or {}).get("rendered") is False:
+                return False        # a CapCut-pipeline run only exported subtitles; a video on disk is from an older run
             final_mp4 = os.path.join(proj_dir, "final_recap.mp4")
             has_16_9 = os.path.exists(final_mp4) and os.path.getsize(final_mp4) > 50000
             if self.video_format == "9:16":
@@ -561,15 +564,17 @@ class MasterAgent:
 
                 # Track changes between saved state and current invocation parameters
                 prev_engine = getattr(prev_state, "script_engine", None)
-                prev_res = getattr(prev_state, "resolution", None)
+                # The saved *preset*: `resolution` holds the source size ("720x1280") after Phase 1, which is not a quality
+                # choice - comparing it with "1080p" invalidated the render on every resume. Old states have no preset, so
+                # they count as unchanged.
+                prev_res = getattr(prev_state, "output_resolution", None)
                 prev_fmt = getattr(prev_state, "video_format", None)
                 prev_title = getattr(prev_state, "custom_thumb_title", None)
                 prev_voice = getattr(prev_state, "tts_voice", None)
 
                 # Prioritize explicit parameters over prev_state
                 if not resolution and prev_res:
-                    self.state.resolution = prev_res
-                    self.resolution = prev_res
+                    self.state.resolution = self.state.output_resolution = self.resolution = res_presets.normalize(prev_res)
                 if not custom_thumb_title and prev_title:
                     self.state.custom_thumb_title = prev_title
                     self.custom_thumb_title = prev_title
@@ -926,6 +931,10 @@ class MasterAgent:
             if sub_timings:
                 out_p = os.path.join(self.output_dir, self.state.project_dir)
                 self.video_merger._export_standalone_srt(sub_timings, out_p)
+            # Phase 6 is "done" for this run, but no video was made: a later one-click run of the same project must render.
+            # (An earlier run's finished render, still valid, stays valid - switching delivery mode back and forth costs nothing.)
+            if not (self.state.is_phase_completed(PHASE_6_MERGE) and self._validate_artifacts(PHASE_6_MERGE)):
+                self.state.phase_checkpoints[PHASE_6_MERGE] = {"rendered": False}
             self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Subtitle Export Only (Video Render Disabled)")
         elif self._should_run_phase(PHASE_6_MERGE):
             p6_t0 = time.time()
@@ -999,6 +1008,7 @@ class MasterAgent:
             else:
                 print(f"[*] Phase 6b (9:16 Reels): Skipped (Video format is '{self.video_format}')")
 
+            self.state.phase_checkpoints.pop(PHASE_6_MERGE, None)          # a real video exists now
             self.save_checkpoint(PHASE_6_MERGE, "Phase 6: Video Merge & Subtitle Pass")
         else:
             print("[*] Phase 6: Video Merge skipped (reusing completed final recap video).")

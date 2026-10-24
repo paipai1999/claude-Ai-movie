@@ -21,6 +21,7 @@ import threading
 import traceback
 from typing import Any, Callable, Dict, Optional
 
+from agents import gemini_tts
 from agents.downloader_agent import DownloaderAgent
 from agents.master import MasterAgent
 from brain.diagnostics import log_suppressed
@@ -293,6 +294,7 @@ def _resolve_voice_mapping(language: str, tts_voice: Optional[str]) -> tuple:
         "nilar": "my-MM-NilarNeural", "female": "my-MM-NilarNeural", "burmese_nilar": "my-MM-NilarNeural",
         "guy": "en-US-GuyNeural", "english_guy": "en-US-GuyNeural",
         "jenny": "en-US-JennyNeural", "english_jenny": "en-US-JennyNeural",
+        **gemini_tts.SHORTCUTS,
     }
     language_defaults = {
         "burmese_thiha": ("burmese", "my-MM-ThihaNeural"), "thiha": ("burmese", "my-MM-ThihaNeural"),
@@ -302,9 +304,10 @@ def _resolve_voice_mapping(language: str, tts_voice: Optional[str]) -> tuple:
         "english_guy": ("english", "en-US-GuyNeural"), "guy": ("english", "en-US-GuyNeural"),
         "english_jenny": ("english", "en-US-JennyNeural"), "jenny": ("english", "en-US-JennyNeural"),
         "english": ("english", "en-US-GuyNeural"), "en": ("english", "en-US-GuyNeural"),  # auto multi-voice
+        **{shortcut: ("burmese", voice) for shortcut, voice in gemini_tts.SHORTCUTS.items()},
     }
     if tts_voice:
-        return language, voice_aliases.get(tts_voice, tts_voice)
+        return language, gemini_tts.canonical_voice(voice_aliases.get(tts_voice, tts_voice))
     return language_defaults.get(language, (language, None))
 
 
@@ -759,6 +762,9 @@ def splitter_worker(
     split_snap=True,
     split_reencode=False,
     resolution="1080p",
+    split_format="original",
+    split_fill="blur",
+    split_label="",
 ):
     """
     Executes the Splitter tool: cuts a long video into parts.
@@ -778,6 +784,9 @@ def splitter_worker(
             split_snap=split_snap,
             split_reencode=split_reencode,
             resolution=resolution,
+            split_format=split_format,
+            split_fill=split_fill,
+            split_label=split_label,
         )
 
     _run_job(job_id, input_source, "Starting Splitter...", work)

@@ -40,13 +40,12 @@ from brain.diagnostics import log_suppressed
 from core import clip_selection as cs
 from core import delivery
 from core.encoders import CPU_VIDEO_ARGS, is_cpu_encoder, video_encoder_args
-from core.letterbox import plan_canvas_mode
+from core import canvas
 from core.paths import resolve_inside, sanitize_project_name
 from core.short_ass import build_short_ass, geometry, relative_lines, text_lines_for_clip
 from core.subtitle_builder import build_srt_script
 from hardsub_engine import HardsubEngine
 
-FONTS_DIR = os.path.join(PROJECT_ROOT, "assets", "fonts")
 _WORK_DIR = "_work"
 
 SELECT_SYSTEM = (
@@ -103,9 +102,7 @@ def clean_clips_dir() -> str:
     return CLEAN_CLIPS_DIR
 
 
-def _escape_filter_path(value: str) -> str:
-    """A path inside an FFmpeg filter argument: forward slashes, with quotes and the drive colon escaped."""
-    return value.replace("\\", "/").replace("'", r"\'").replace(":", r"\:")
+_escape_filter_path = canvas.escape_filter_path       # (the name the tests use)
 
 
 class ShortsEngine(HardsubEngine):
@@ -225,19 +222,12 @@ class ShortsEngine(HardsubEngine):
     # ── 5. rendering ─────────────────────────────────────────────────────────
     def _filter_graph(self, fmt: str, out_w: int, out_h: int, framing: str, meta: Dict[str, Any], ass_name: str) -> str:
         """The video filter graph: canvas for the format, then the subtitles. Output label ``[vout]``."""
-        ass = f"ass=filename='{_escape_filter_path(ass_name)}':shaping=1:fontsdir='{_escape_filter_path(FONTS_DIR)}'"
+        ass = canvas.ass_filter(ass_name)
         if fmt == "9:16" and framing == "fill":
             # Fill the whole screen from the middle of the picture (good for one person talking to the camera).
             return (f"[0:v]crop='trunc(min(iw,ih*9/16)/2)*2':ih,scale={out_w}:{out_h}:flags=lanczos,setsar=1,{ass}[vout]")
-        if fmt == "16:9" and plan_canvas_mode(meta.get("width"), meta.get("height"), out_w, out_h) == "direct":
-            return f"[0:v]scale={out_w}:{out_h},setsar=1,{ass}[vout]"
-        # The whole picture, fitted inside the canvas over a blurred copy of itself (nothing is cropped away).
-        bg_w, bg_h = out_w // 4, out_h // 4
-        return (f"[0:v]split=2[bg_src][fg_src];"
-                f"[bg_src]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},boxblur=12:3,"
-                f"scale={out_w}:{out_h}[bg];"
-                f"[fg_src]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
-                f"[bg][fg]overlay=(W-w)/2:(H-h)/2[canvas];[canvas]setsar=1,{ass}[vout]")
+        # Otherwise the whole picture, fitted inside the canvas over a blurred copy of itself (nothing is cropped away).
+        return f"{canvas.graph(meta.get('width'), meta.get('height'), out_w, out_h, 'blur')};[canvas]{ass}[vout]"
 
     def _render_clip(self, video_file: str, clip: Dict[str, Any], fmt: str, target: str, work_dir: str, meta: Dict[str, Any],
                      resolution: str, preset: str, framing: str, hook: bool, has_audio: bool) -> bool:

@@ -39,7 +39,7 @@ ADDED_RECAP_DEFAULTS = {"story_length": "standard", "narrative_tone": "natural",
 # The Splitter / Long to Short tools have their own options. They are in the start schema (the dashboard posts to
 # /api/start for every tool) but no studio engine reads them and the batch endpoint does not take them.
 TOOL_FIELDS = {
-    "split_mode", "split_minutes", "split_parts", "split_snap", "split_reencode",
+    "split_mode", "split_minutes", "split_parts", "split_snap", "split_reencode", "split_format", "split_fill", "split_label",
     "clip_count", "clip_min_sec", "clip_max_sec", "clip_focus", "short_subtitles", "short_hook_title", "short_framing",
 }
 # ``delivery_mode`` (finished video / CapCut pipeline / both) is appended last to the pipeline, batch, subtitle and

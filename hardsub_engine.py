@@ -58,6 +58,7 @@ from agents.video_merger_agent import (
 )
 from core.paths import sanitize_project_name, resolve_inside
 from core.delivery import delivers
+from core import resolution as res_presets
 from core.engine_base import StudioEngineBase
 from core.subtitle_parse import read_subtitle_cues
 from core.transcribe import transcribe_media
@@ -673,10 +674,7 @@ class HardsubEngine(StudioEngineBase):
             quality_args = enc_info.get("quality_args", ["-crf", "21"])
 
         # Target dimensions
-        if aspect_ratio == "9:16":
-            out_w, out_h = (1080, 1920) if resolution == "1080p" else (720, 1280)
-        else:
-            out_w, out_h = (1920, 1080) if resolution == "1080p" else (1280, 720)
+        out_w, out_h = res_presets.canvas(aspect_ratio, resolution)
 
         # Prepare safe temp directory for libass on Windows
         ass_dir = os.path.dirname(os.path.abspath(ass_path))
@@ -894,10 +892,7 @@ class HardsubEngine(StudioEngineBase):
         fmt_slug = video_format.replace(":", "_")
         ass_path = os.path.join(temp_dir, f"{safe_ass_id}_{fmt_slug}.ass")
 
-        if video_format == "9:16":
-            ass_w, ass_h, font_sz, margin_v = (720, 1280, 36, 95) if resolution == "720p" else (1080, 1920, 48, 140)
-        else:
-            ass_w, ass_h, font_sz, margin_v = (1280, 720, 36, 40) if resolution == "720p" else (1920, 1080, 48, 55)
+        ass_w, ass_h, font_sz, margin_v = res_presets.subtitle_metrics(video_format, resolution)
 
         self._generate_ass_file(
             segments,
@@ -1029,7 +1024,7 @@ class HardsubEngine(StudioEngineBase):
         source_language: str = "auto",
         force_whisper: bool = False,
         video_format: str = "both",       # "16:9" | "9:16" | "both"
-        resolution: str = "1080p",        # "1080p" | "720p"
+        resolution: str = "1080p",        # "1080p" | "720p" | "480p" (draft)
         subtitle_style: str = "box_black",# "box_black" | "yellow_pop" | "white_stroke" | "cyan_cyber" | "crimson_box"
         blur_mode: str = "auto",          # "auto" | "yes" | "no"
         mirror: bool = False,
@@ -1111,14 +1106,7 @@ class HardsubEngine(StudioEngineBase):
         safe_ass_id = _get_safe_ascii_id(title, prefix="ass")
 
         def _get_ass_geometry(fmt: str, res: str):
-            if fmt == "9:16":
-                if res == "720p":
-                    return 720, 1280, 36, 95
-                return 1080, 1920, 48, 140
-            else:  # 16:9
-                if res == "720p":
-                    return 1280, 720, 36, 40
-                return 1920, 1080, 48, 55
+            return res_presets.subtitle_metrics(fmt, res)
 
         # Primary ASS file for reports export / standalone mode
         primary_fmt = "9:16" if video_format == "9:16" else "16:9"
