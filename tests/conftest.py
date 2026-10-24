@@ -16,3 +16,13 @@ def _hermetic_gemini_key(monkeypatch):
     if not os.environ.get("GEMINI_API_KEYS") and not os.environ.get("GEMINI_API_KEY"):
         monkeypatch.setenv("GEMINI_API_KEYS", "dummy-key-for-tests")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_tts_network(monkeypatch):
+    """
+    The voice step probes Microsoft's speech service once before it starts (agents/voice_agent.py). Tests never go to the
+    network: the probe is off by default here, and tests/test_tts_guard.py turns it on against a fake service.
+    """
+    monkeypatch.setenv("PAI_SKIP_TTS_PREFLIGHT", "1")
+    yield

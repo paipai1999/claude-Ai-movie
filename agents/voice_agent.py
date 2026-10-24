@@ -6,6 +6,8 @@ import hashlib
 import shutil
 import asyncio
 import subprocess
+import tempfile
+import time
 from brain.memory import MovieState
 from agents.f5_tts_engine import F5TTSEngine
 from core.audio_trim import trim_silence
@@ -24,6 +26,43 @@ def spoken_narration(item) -> str:
     if not isinstance(item, dict) or block_is_silent(item):
         return ""
     return str(item.get("narration", "")).strip()
+
+
+class TTSUnavailableError(RuntimeError):
+    """Text-to-speech cannot produce the narration (service refused, offline, or most lines failed)."""
+
+
+PREFLIGHT_TIMEOUT_SEC = 25          # one tiny synthesis before the real work
+PREFLIGHT_VALID_SEC = 600           # a service that answered a moment ago is not asked again for every video of a batch
+MAX_FAILED_SHARE = 0.5              # half of the lines (or more) failing means the video would be mostly silent
+_tts_verified_at = {}               # voice -> time.monotonic() of the last successful preflight
+
+
+def _short_error(error: BaseException, limit: int = 220) -> str:
+    """One readable line for an exception: its type and message, links removed, whitespace collapsed."""
+    text = " ".join(f"{type(error).__name__}: {error}".split())
+    return re.sub(r"(wss?|https?)://\S+", "<url>", text)[:limit]
+
+
+def explain_tts_error(error: BaseException, voice: str) -> str:
+    """What failed, why it usually does, and what to do - shown instead of a silent video."""
+    detail = _short_error(error)
+    low = detail.lower()
+    try:
+        import importlib.metadata as metadata
+        version = metadata.version("edge-tts")
+    except Exception:
+        version = "unknown"
+    if "403" in low or "handshake" in low:
+        hint = (f"Microsoft refused the connection (HTTP 403). This is almost always an outdated edge-tts "
+                f"(installed: {version}): run  pip install -U edge-tts  and try again. A wrong system clock can cause it too.")
+    elif any(word in low for word in ("timeout", "timed out", "connect", "network", "dns", "resolve")):
+        hint = "Microsoft's speech service did not answer: check the internet connection, VPN or firewall and try again."
+    else:
+        hint = "Check the internet connection and the edge-tts version (pip install -U edge-tts), then try again."
+    return f"Text-to-speech is not working, so no narration can be made (voice {voice}). {detail}. {hint}"
+
+
 _KNOWN_EDGE_VOICES = {
     "my-mm-thihaneural",
     "my-mm-nilarneural",
@@ -124,7 +163,7 @@ class VoiceAgent:
         """Records the fingerprint of every clip that exists on disk (atomic write)."""
         clips = {}
         for idx, item in enumerate(script or []):
-            if not spoken_narration(item):
+            if not spoken_narration(item) or self._clip_name(idx) in getattr(self, "_fallback_clips", ()):
                 continue
             path = os.path.join(audio_out_dir, self._clip_name(idx))
             if os.path.exists(path) and os.path.getsize(path) > 1000:
@@ -334,7 +373,8 @@ class VoiceAgent:
 
         # Drop clips that were synthesized from different text / voice, then check completeness.
         self._purge_stale_clips(audio_out_dir, state.generated_script)
-        needed = [idx for idx, item in enumerate(state.generated_script) if spoken_narration(item)]
+        self._tts_failures, self._fallback_clips = [], set()
+        needed = [idx for idx in range(len(state.generated_script)) if spoken_narration(state.generated_script[idx])]
         silent = sum(1 for item in state.generated_script if block_is_silent(item))
         if silent:
             print(f"[WARN] VoiceAgent: {silent} line(s) could not be translated and are left silent instead of being read in "
@@ -380,12 +420,80 @@ class VoiceAgent:
                 print("[TIP] To use F5-TTS Voice Cloning, run: pip install f5-tts soundfile")
                 use_f5 = False
 
+        if not use_f5:
+            self._preflight_tts()                 # a dead service stops the run now, not after 3 retries for every line
         if use_f5:
             result_state = self._generate_f5_voiceover(state, audio_out_dir)
         else:
             result_state = self._generate_edge_voiceover(state, audio_out_dir)
+        self._check_voice_results(state, audio_out_dir, len(needed) - len(valid_clips))
         self._save_manifest(audio_out_dir, state.generated_script)
         return result_state
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # A video with no narration must never be reported as a success
+    # ─────────────────────────────────────────────────────────────────────────
+    def _preflight_tts(self) -> None:
+        """
+        One tiny synthesis with the configured voice before any real work. Raises ``TTSUnavailableError`` with the cause
+        and the fix when the service refuses (HTTP 403 from an outdated edge-tts is the usual one) or is unreachable.
+        ``PAI_SKIP_TTS_PREFLIGHT=1`` skips it (offline set-ups, tests).
+        """
+        voice = str(self.voice)
+        if os.environ.get("PAI_SKIP_TTS_PREFLIGHT") == "1":
+            return
+        verified = _tts_verified_at.get(voice)
+        if verified is not None and time.monotonic() - verified < PREFLIGHT_VALID_SEC:
+            return
+        import edge_tts
+        probe = tempfile.mkstemp(prefix="pai_tts_probe_", suffix=".mp3")
+        os.close(probe[0])
+        text = "\u1019\u1004\u103a\u1039\u1002\u101c\u102c\u1015\u102b" if voice.startswith("my-") else "Hello"
+
+        async def synthesize():
+            await asyncio.wait_for(edge_tts.Communicate(text, voice).save(probe[1]), timeout=PREFLIGHT_TIMEOUT_SEC)
+
+        try:
+            self._run_async(synthesize())
+            if not os.path.exists(probe[1]) or os.path.getsize(probe[1]) < 500:
+                raise RuntimeError("the service answered with an empty audio file")
+        except Exception as exc:
+            raise TTSUnavailableError(explain_tts_error(exc, voice)) from exc
+        finally:
+            try:
+                os.remove(probe[1])
+            except OSError as _exc:
+                log_suppressed("agents.voice_agent._preflight_tts", _exc)
+        _tts_verified_at[voice] = time.monotonic()
+        print(f"[OK] VoiceAgent: text-to-speech preflight passed ({voice}).")
+
+    def _check_voice_results(self, state: MovieState, audio_out_dir: str, attempted: int) -> None:
+        """
+        Looks at what the retries left behind. Half of the lines or more failing stops the run (the silent stand-ins are
+        removed so they cannot be reused); fewer failures finish with a warning that names the lines.
+        """
+        failures = list(getattr(self, "_tts_failures", None) or [])
+        if not failures:
+            return
+        failed, total = len(failures), max(attempted, len(failures))
+        if failed / total >= MAX_FAILED_SHARE:
+            for name in getattr(self, "_fallback_clips", ()):
+                try:
+                    os.remove(os.path.join(audio_out_dir, name))
+                except OSError as _exc:
+                    log_suppressed("agents.voice_agent._check_voice_results", _exc)
+            # The clips that did succeed are real: keep them (and vouch for them) so that the next run only voices the rest.
+            self._save_manifest(audio_out_dir, state.generated_script)
+            raise TTSUnavailableError(
+                f"Voice generation failed for {failed} of {total} line(s) (last error: {failures[-1]['error']}). "
+                "The video would be mostly silent, so the run was stopped. Fix the cause (pip install -U edge-tts, "
+                "check the connection) and run again: the transcript and the script are kept, only the voice step repeats.")
+        scenes = ", ".join(str(f["scene"]) for f in failures[:12]) + (" ..." if failed > 12 else "")
+        message = (f"Voice: {failed} of {total} line(s) could not be synthesized and were left silent (scene {scenes}). "
+                   "Run again to retry them.")
+        print(f"[WARN] VoiceAgent: {message}")
+        if hasattr(state, "warnings"):
+            state.warnings.append(message)
 
     def _run_async(self, coro):
         """Safely executes an async coroutine, handling nested event loops in Jupyter / FastAPI."""
@@ -599,6 +707,7 @@ class VoiceAgent:
             volume = "+20%"
 
         success = False
+        last_error = None
         voice_to_use = voice_override if voice_override else self.voice
         for attempt in range(1, 4):
             try:
@@ -606,7 +715,8 @@ class VoiceAgent:
                 await communicate.save(output_file)
                 success = True
                 break
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 print(f"[RETRY] VoiceAgent: Retrying Scene {scene_id} (attempt {attempt}/3)...")
                 await asyncio.sleep(2 ** attempt)
 
@@ -616,7 +726,13 @@ class VoiceAgent:
                 print(f"[*] VoiceAgent: Scene {scene_id} trimmed leading/trailing silence.")
 
         if not success:
-            print(f"[WARN] VoiceAgent: Scene {scene_id} TTS failed after 3 attempts.")
+            reason = _short_error(last_error) if last_error is not None else "no details"
+            print(f"[WARN] VoiceAgent: Scene {scene_id} TTS failed after 3 attempts: {reason}")
+            failures = getattr(self, "_tts_failures", None)
+            if failures is not None:
+                # The silent stand-in below only keeps the timeline in step; it is never trusted as a real clip.
+                failures.append({"scene": scene_id, "error": reason})
+                self._fallback_clips.add(os.path.basename(output_file))
             print(f"[*] VoiceAgent: FALLBACK -> Generating silent audio of {target_dur or 3.0}s to preserve video sync.")
             try:
                 dur = target_dur if target_dur else 3.0

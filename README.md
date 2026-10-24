@@ -252,7 +252,7 @@ pai-ai-movie-studio/
 │       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
 │       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 770 unit / regression tests (pytest) + tests/ui browser smoke test
+├── tests/                     ← 786 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
