@@ -1,9 +1,10 @@
 import os
 import glob
 import json
-from typing import List
+from typing import Callable, List, Optional
 from agents.master import MasterAgent
 from agents.downloader_agent import DownloaderAgent
+from brain.diagnostics import log_suppressed
 from brain.memory import MovieState  # Fix: was missing — caused NameError in _is_completed()
 import brain.config as cfg
 
@@ -42,9 +43,21 @@ class BatchProcessor:
         render_video: bool = None,
         stage_toggles: dict = None,
         context_hint: str = None,
+        story_length: str = None,
+        narrative_tone: str = None,
+        tts_rate: int = None,
+        on_project: Optional[Callable[[str, MasterAgent, str], None]] = None,
+        delivery_mode: str = None,
     ):
+        # ``on_project(stage, master, movie_path)`` is called with stage "start" (agent built) and "done"
+        # (pipeline finished); the dashboard uses it to remember each project's settings and quality report.
+        self.on_project = on_project
+        self.delivery_mode = delivery_mode
         self.movies_folder = movies_folder
         self.context_hint = context_hint
+        self.story_length = story_length
+        self.narrative_tone = narrative_tone
+        self.tts_rate = tts_rate
         self.output_dir = output_dir or cfg.load_config().get("paths", {}).get("output_dir", "outputs")
         self.skip_completed = skip_completed
         self.resume = bool(resume)
@@ -193,8 +206,14 @@ class BatchProcessor:
                     render_video=self.render_video,
                     stage_toggles=self.stage_toggles,
                     context_hint=self.context_hint,
+                    story_length=self.story_length,
+                    narrative_tone=self.narrative_tone,
+                    tts_rate=self.tts_rate,
+                    delivery_mode=self.delivery_mode,
                 )
+                self._notify("start", master, movie_path)
                 master.run_pipeline()
+                self._notify("done", master, movie_path)
                 pipeline_status = getattr(master.state, "pipeline_status", "COMPLETED")
                 result_status = "SUCCESS" if pipeline_status == "COMPLETED" else pipeline_status
                 self.results.append({"movie": movie_name, "status": result_status, "warnings": getattr(master.state, "warnings", [])})
@@ -213,6 +232,14 @@ class BatchProcessor:
 
         # Step 4: Print batch summary
         self._print_summary()
+
+    def _notify(self, stage: str, master: MasterAgent, movie_path: str) -> None:
+        """Calls the optional ``on_project`` hook; a failing hook never breaks the batch."""
+        if self.on_project:
+            try:
+                self.on_project(stage, master, movie_path)
+            except Exception as exc:
+                log_suppressed("brain.planner._notify", exc)
 
     def _print_summary(self):
         """Print a final summary report of the batch run."""

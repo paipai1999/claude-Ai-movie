@@ -17,15 +17,22 @@ Pure Python: no FastAPI / pydantic / argparse imports, so it can be used (and te
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from core.delivery import MODES as DELIVERY_MODES
+
 # ── Engines ──────────────────────────────────────────────────────────────────
 RECAP = "recap"        # Engine 1 – movie recap + AI dubbing
 SUBTITLE = "subtitle"  # Engine 2 – subtitle & transcript studio
 HARDSUB = "hardsub"    # Engine 3 – original audio + burnt-in Burmese subtitles
 DOWNLOAD = "download"  # dedicated downloader
+SPLITTER = "splitter"  # Tool - cut a long video into parts
+SHORTS = "shorts"      # Tool - pick the best moments of a long video and render them as Shorts / Reels
 
-ENGINES: Tuple[str, ...] = (RECAP, SUBTITLE, HARDSUB, DOWNLOAD)
+ENGINES: Tuple[str, ...] = (RECAP, SUBTITLE, HARDSUB, DOWNLOAD, SPLITTER, SHORTS)
 ALL = frozenset(ENGINES)
 _PIPELINES = frozenset({RECAP, SUBTITLE, HARDSUB})
+_WITH_SHORTS = _PIPELINES | {SHORTS}     # options the Shorts tool shares with the subtitle studios
+# Engines the production wizard drives. The tools (splitter, shorts) have their own panel and are not offered there.
+WIZARD_ENGINES: Tuple[str, ...] = (RECAP, SUBTITLE, HARDSUB)
 
 # ── Steps (asked in this order) ──────────────────────────────────────────────
 STEP_SOURCE = "source"
@@ -81,6 +88,14 @@ def _o(name, type_, default=None, step=STEP_AUDIO, engines=_PIPELINES, **kw) -> 
 
 TRANSLATION_STYLES = ("recap", "drama_novel", "audio_drama", "dialogue", "persona", "wuxia", "cinematic")
 SUBTITLE_STYLES = ("box_black", "yellow_pop", "white_stroke", "cyan_cyber", "crimson_box")
+# Recap storyteller only: how much of the film is told, and in what voice. "standard" / "natural" add nothing
+# to the prompt, so existing projects, prompts and cached scripts behave exactly as before.
+STORY_LENGTHS = ("standard", "compact", "detailed", "scene")
+NARRATIVE_TONES = ("natural", "brisk", "calm", "dramatic")
+SPLIT_MODES = ("duration", "parts")
+CLIP_FOCUSES = ("balanced", "funny", "emotional", "informative", "action")
+SHORT_SUBTITLES = ("burmese", "original", "none")
+SHORT_FRAMINGS = ("fit", "fill")
 
 OPTIONS: Tuple[Option, ...] = (
     # 1 ─ Source
@@ -88,7 +103,7 @@ OPTIONS: Tuple[Option, ...] = (
        help="Which studio engine runs the job."),
     _o("input", str, None, STEP_SOURCE, ALL, required=True,
        help="Video path or URL."),
-    _o("project_name", str, None, STEP_SOURCE, {SUBTITLE, HARDSUB, DOWNLOAD}, batch=False,
+    _o("project_name", str, None, STEP_SOURCE, {SUBTITLE, HARDSUB, DOWNLOAD, SPLITTER, SHORTS}, batch=False,
        help="Custom project / file name."),
     _o("force_whisper", bool, False, STEP_SOURCE, {SUBTITLE, HARDSUB},
        help="Transcribe with Whisper even when captions exist."),
@@ -96,34 +111,41 @@ OPTIONS: Tuple[Option, ...] = (
        help="Download / output resolution."),
 
     # 2 ─ Language & translation
-    _o("source_language", str, "auto", STEP_LANGUAGE,
+    _o("source_language", str, "auto", STEP_LANGUAGE, _WITH_SHORTS,
        help="Spoken language of the source (auto = detect)."),
     # Target language *and* narrator-voice shortcut (burmese_thiha, nilar ...): the dashboard shows
     # it as the voice picker, so it is asked together with the audio options.
     _o("language", str, "burmese", STEP_AUDIO, {RECAP},
        choices=("burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha"),
        help="Target language / narrator voice shortcut."),
-    _o("translation_style", str, None, STEP_LANGUAGE, choices=TRANSLATION_STYLES,
-       engine_defaults={RECAP: "recap", SUBTITLE: "dialogue", HARDSUB: "persona"},
+    _o("translation_style", str, None, STEP_LANGUAGE, _WITH_SHORTS, choices=TRANSLATION_STYLES,
+       engine_defaults={RECAP: "recap", SUBTITLE: "dialogue", HARDSUB: "persona", SHORTS: "dialogue"},
        help="Voice of the translation."),
     _o("script_engine", str, "recap", STEP_LANGUAGE, {RECAP}, choices=("recap", "translate"),
        help="Script generation mode: recap storyteller or 1:1 translation."),
-    _o("context_hint", str, None, STEP_LANGUAGE,
-       help="Story / character / genre guidance for the translator."),
+    _o("context_hint", str, None, STEP_LANGUAGE, _WITH_SHORTS,
+       help="Story / character / genre guidance for the translator (Shorts: also what a good clip is for you)."),
+    _o("story_length", str, "standard", STEP_LANGUAGE, {RECAP}, choices=STORY_LENGTHS,
+       help="Recap style: standard, compact (plot-critical only), detailed, or scene-by-scene."),
+    _o("narrative_tone", str, "natural", STEP_LANGUAGE, {RECAP}, choices=NARRATIVE_TONES,
+       help="Recap style: the storyteller's tone of voice."),
 
     # 3 ─ Output & style
-    _o("video_format", str, "both", STEP_OUTPUT, choices=("16:9", "9:16", "both"),
-       engine_defaults={SUBTITLE: "16:9"},
+    _o("video_format", str, "both", STEP_OUTPUT, _WITH_SHORTS, choices=("16:9", "9:16", "both"),
+       engine_defaults={SUBTITLE: "16:9", SHORTS: "9:16"},
        help="Landscape, vertical Reels, or both."),
     _o("reels_enabled", bool, True, STEP_OUTPUT, {RECAP}, keep_none=True,
        help="Legacy toggle: also export 9:16 when video_format is not set."),
-    _o("subtitle_style", str, "box_black", STEP_OUTPUT, choices=SUBTITLE_STYLES,
+    _o("subtitle_style", str, "box_black", STEP_OUTPUT, _WITH_SHORTS, choices=SUBTITLE_STYLES,
        help="Subtitle look."),
     _o("subtitle_mode", str, "burn", STEP_OUTPUT, {RECAP}, choices=("burn", "none", "auto"),
        help="How subtitles are delivered."),
     _o("render_video", bool, True, STEP_OUTPUT,
        engine_defaults={RECAP: True, SUBTITLE: False, HARDSUB: True},
        help="Render the video (otherwise only text deliverables)."),
+    _o("delivery_mode", str, "oneclick", STEP_OUTPUT, _WITH_SHORTS, choices=DELIVERY_MODES,
+       help="How the result is delivered: the finished video (oneclick), the CapCut pipeline - no final render, "
+            "a CapCut package instead (capcut) - or both."),
     _o("custom_thumb_title", str, None, STEP_OUTPUT, {RECAP}, help="Thumbnail headline."),
     _o("thumbnail_intro", bool, False, STEP_OUTPUT, {RECAP}, keep_none=True,
        help="Prepend a thumbnail intro."),
@@ -151,6 +173,8 @@ OPTIONS: Tuple[Option, ...] = (
     _o("tts_engine", str, None, STEP_AUDIO, {RECAP}, choices=("edge_tts", "f5_tts"),
        help="Text-to-speech engine."),
     _o("tts_voice", str, None, STEP_AUDIO, {RECAP}, help="Narrator voice."),
+    _o("tts_rate", int, None, STEP_AUDIO, {RECAP},
+       help="Narration speed in percent (-50..+100); empty = the configured default."),
     _o("audio_mode", str, None, STEP_AUDIO, choices=("ai_voiceover", "original", "none"),
        engine_defaults={RECAP: "ai_voiceover", SUBTITLE: "original", HARDSUB: "original"},
        help="AI voice-over or the original audio."),
@@ -161,6 +185,34 @@ OPTIONS: Tuple[Option, ...] = (
     _o("detect_scenes", bool, False, STEP_AUDIO, {RECAP}, help="Scene-cut detection."),
     _o("resume", bool, True, STEP_AUDIO, {RECAP}, help="Resume from cached phases."),
     _o("stage_toggles", dict, None, STEP_AUDIO, help="Per-stage on/off switches."),
+
+    # Tool: Splitter - cut a long video into parts
+    _o("split_mode", str, "duration", STEP_OUTPUT, {SPLITTER}, choices=SPLIT_MODES, batch=False,
+       help="Cut every N minutes (duration) or into N equal parts (parts)."),
+    _o("split_minutes", float, 10.0, STEP_OUTPUT, {SPLITTER}, batch=False,
+       help="Minutes per part when the mode is duration."),
+    _o("split_parts", int, 2, STEP_OUTPUT, {SPLITTER}, batch=False,
+       help="Number of equal parts when the mode is parts."),
+    _o("split_snap", bool, True, STEP_OUTPUT, {SPLITTER}, batch=False,
+       help="Move each cut to the nearest pause so a part does not end mid-sentence."),
+    _o("split_reencode", bool, False, STEP_OUTPUT, {SPLITTER}, batch=False,
+       help="Re-encode for frame-accurate cuts (slower); the default stream copy cuts on keyframes."),
+
+    # Tool: Long to Short - pick the best moments and render them
+    _o("clip_count", int, 5, STEP_OUTPUT, {SHORTS}, batch=False,
+       help="How many Shorts to make (1-20)."),
+    _o("clip_min_sec", float, 20.0, STEP_OUTPUT, {SHORTS}, batch=False,
+       help="Shortest clip in seconds."),
+    _o("clip_max_sec", float, 60.0, STEP_OUTPUT, {SHORTS}, batch=False,
+       help="Longest clip in seconds (YouTube Shorts: 60)."),
+    _o("clip_focus", str, "balanced", STEP_OUTPUT, {SHORTS}, choices=CLIP_FOCUSES, batch=False,
+       help="What kind of moments to look for."),
+    _o("short_subtitles", str, "burmese", STEP_OUTPUT, {SHORTS}, choices=SHORT_SUBTITLES, batch=False,
+       help="Burn Burmese subtitles, keep the original-language ones, or none."),
+    _o("short_hook_title", bool, True, STEP_OUTPUT, {SHORTS}, batch=False,
+       help="Show the clip title over the first seconds."),
+    _o("short_framing", str, "fit", STEP_OUTPUT, {SHORTS}, choices=SHORT_FRAMINGS, batch=False,
+       help="Vertical framing: fit (whole picture over a blurred background) or fill (centre crop)."),
 )
 
 BY_NAME: Dict[str, Option] = {o.name: o for o in OPTIONS}
@@ -194,6 +246,7 @@ def describe() -> Dict[str, Any]:
     """JSON-serialisable description of the whole model (for ``GET /api/options``)."""
     return {
         "engines": list(ENGINES),
+        "wizard_engines": list(WIZARD_ENGINES),
         "steps": [
             {
                 "id": s.id,

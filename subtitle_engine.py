@@ -47,6 +47,7 @@ from brain.prompts import (
     get_subtitle_drama_novel_prompt,
 )
 from core.paths import sanitize_project_name, resolve_inside
+from core.delivery import delivers
 from core.engine_base import StudioEngineBase
 from core.subtitle_parse import read_subtitle_cues
 from core.transcribe import transcribe_media
@@ -168,6 +169,7 @@ class SubtitleEngine(StudioEngineBase):
             for idx, seg in enumerate(raw, 1)
         ]
 
+    @delivers      # adds delivery_mode: "capcut" skips the render and builds the CapCut package
     def run(
         self,
         input_source: str,
@@ -624,6 +626,9 @@ class SubtitleEngine(StudioEngineBase):
         total_batches = (len(segments) + batch_size - 1) // batch_size
         recent_context: List[str] = []
 
+        # One extra call up front: characters/genders/places with fixed Burmese spellings for every batch.
+        story_block = self._story_block([s.get("original", "") or s.get("english", "") for s in segments], context_hint)
+
         # Dynamic Entity & Character Name Glossary (maintained across batches)
         dynamic_glossary: Dict[str, str] = {}
         if context_hint and str(context_hint).strip():
@@ -741,6 +746,7 @@ class SubtitleEngine(StudioEngineBase):
                 glossary_str = "ESTABLISHED CHARACTER & ENTITY GLOSSARY (Strictly adhere for 100% naming consistency across the movie):\n" + "\n".join(items) + "\n\n"
 
             user_prompt = (
+                f"{story_block}"
                 f"{context_str}"
                 f"{glossary_str}"
                 f"{hint_str}"
@@ -1059,6 +1065,7 @@ def main():
             blur_height=v["blur_height"],
             audio_anti_copyright=v["audio_anti_copyright"],
             context_hint=v["context_hint"],
+            delivery_mode=v["delivery_mode"],
         )
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {e}")

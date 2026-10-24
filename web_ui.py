@@ -37,6 +37,7 @@ from typing import Optional, List, Dict, Any, Callable
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
@@ -133,7 +134,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=_allow_credentials,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "x-auth-token"],
 )
 
@@ -302,6 +303,10 @@ async def auth_status(request: Request):
 # Jinja2 template renderer for the web dashboard HTML
 templates = Jinja2Templates(directory="templates")
 
+# The dashboard's stylesheet and script (static/css, static/js). They hold no secrets, so /static is
+# served without login - the auth middleware exempts it so the login page can be styled too.
+app.mount("/static", StaticFiles(directory="static", check_dir=False), name="static")
+
 
 # Upload limits (disk-fill / memory protection). MAX_UPLOAD_MB overrides the 16 GB default.
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "16384")) * 1024 * 1024
@@ -389,7 +394,8 @@ _ensure_queue_dispatcher()
 
 def _worker_registry() -> Dict[str, Callable]:
     """name -> worker function (resolved lazily because the workers are defined further below)."""
-    return {fn.__name__: fn for fn in (pipeline_worker, subtitle_worker, hardsub_worker, batch_worker, downloader_worker)}
+    return {fn.__name__: fn for fn in (pipeline_worker, subtitle_worker, hardsub_worker, batch_worker, downloader_worker,
+                                       splitter_worker, shorts_worker)}
 
 
 def _persist_queued_job(job_entry: Dict[str, Any]) -> None:
@@ -510,6 +516,8 @@ from services.job_runtime import (  # noqa: E402  (job execution lives in servic
     hardsub_worker,
     batch_worker,
     downloader_worker,
+    splitter_worker,
+    shorts_worker,
 )
 # Names that tests / external callers historically imported from web_ui (kept as a stable surface)
 __all__ = [
@@ -518,11 +526,13 @@ __all__ = [
 ]
 
 from core.options import (  # noqa: E402
-    DOWNLOAD, HARDSUB, SUBTITLE,
+    DOWNLOAD, HARDSUB, RECAP, SHORTS, SPLITTER, SUBTITLE,
     describe as describe_options,
     normalize_engine,
     resolve as resolve_options,
 )
+from services import projects as project_store, studio_api  # noqa: E402
+from services.key_store import mask_key, resolve_key_lines  # noqa: E402
 from services.job_args import build_worker_args  # noqa: E402
 from services.schemas import (  # noqa: E402
     StartRequest,
@@ -1045,7 +1055,34 @@ def _worker_for_engine(engine: str):
         HARDSUB: hardsub_worker,
         SUBTITLE: subtitle_worker,
         DOWNLOAD: downloader_worker,
+        SPLITTER: splitter_worker,
+        SHORTS: shorts_worker,
     }.get(engine, pipeline_worker)
+
+
+# Studio endpoints (projects, script editor, quality report, profiles, history) live in services/studio_api.py.
+app.include_router(studio_api.router)
+
+
+@app.post("/api/projects/{name}/rerender")
+async def rerender_project(name: str):
+    """
+    Re-runs a recap project with the settings it was started with. Because the script is cached and the
+    voice clips are fingerprinted, only edited lines are re-voiced and the video is re-rendered.
+    """
+    try:
+        project_dir = project_store.resolve_project("outputs", name)
+    except project_store.ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    saved = project_store.load_job_options(project_dir)
+    if not saved or not saved.get("input"):
+        raise HTTPException(
+            status_code=409,
+            detail="This project has no saved settings (it was created before re-render existed). Start it "
+                   "again from the wizard with the same options and 'Resume' on; your edits are kept.",
+        )
+    saved["resume"] = True
+    return _enqueue_job(RECAP, resolve_options(RECAP, saved))
 
 
 @app.get("/api/options")
@@ -1065,7 +1102,15 @@ async def start_pipeline(req: StartRequest):
 
     # Every default is applied in ONE place (core.options.resolve) for the chosen engine.
     engine = normalize_engine(req.engine_mode)
-    opts = resolve_options(engine, req.model_dump())
+    return _enqueue_job(engine, resolve_options(engine, req.model_dump()))
+
+
+def _enqueue_job(engine: str, opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Registers a job for the resolved options and either starts it or puts it in the FIFO queue.
+    Shared by ``/api/start`` and the project "re-render" action.
+    """
+    input_source = opts["input"]
     language = opts["language"]
     tts_engine = opts["tts_engine"]
 
@@ -1104,6 +1149,14 @@ async def start_pipeline(req: StartRequest):
                 "name": str(opts["project_name"] or input_source),
                 "source": str(input_source),
                 "language": str(opts["source_language"]),
+                "engine_mode": engine,
+            })
+        elif engine in (SPLITTER, SHORTS):
+            job_entry.update({
+                "name": f"{'Split' if engine == SPLITTER else 'Shorts'}: {str(opts['project_name'] or input_source)}",
+                "source": str(input_source),
+                "language": "N/A",
+                "tts_engine": "N/A",
                 "engine_mode": engine,
             })
         elif engine == DOWNLOAD:
@@ -1150,6 +1203,8 @@ async def start_batch_pipeline(req: BatchStartRequest):
         raise HTTPException(status_code=400, detail="No inputs provided for batch mode")
 
     engine = normalize_engine(req.engine_mode)
+    if engine in (SPLITTER, SHORTS):
+        raise HTTPException(status_code=400, detail="The Splitter and Long to Short tools work on one video at a time.")
     opts = resolve_options(engine, req.model_dump())
     language = opts["language"]
     tts_engine = opts["tts_engine"]
@@ -1510,7 +1565,8 @@ async def stream_job_logs(job_id: str, request: Request):
 
                     yield {
                         "event": "done",
-                        "data": json.dumps({"status": job_status, "error": current_job.get("error")})
+                        "data": json.dumps({"status": job_status, "error": current_job.get("error"), "job_id": job_id,
+                                            "package_url": _package_url(current_job)})
                     }
                     break
 
@@ -1546,6 +1602,13 @@ async def latest_status_endpoint():
     return await status_endpoint(latest_id)
 
 
+def _package_url(job: Dict[str, Any]) -> Optional[str]:
+    """Download URL of the CapCut package a finished job built (delivery mode capcut / both), else None."""
+    if job.get("status") != "done" or not job.get("package"):
+        return None
+    return "/api/projects/" + quote(str(job["package"]), safe="") + "/capcut"
+
+
 @app.get("/api/status/{job_id}")
 async def status_endpoint(job_id: str):
     """
@@ -1559,15 +1622,19 @@ async def status_endpoint(job_id: str):
         
     buffer = job.get('buffer') or thread_stdout.buffers.get(job_id)
     log_lines = []
+    progress_marks: List[str] = []
     current_phase = job.get('phase', 'Starting...')
     batch_status = None
     phase_timings = {}
     
     if buffer:
         content = buffer.getvalue()
+        # The tools (Splitter, Long to Short) print "[PROGRESS] 0-100"; it drives the bar and is hidden from the log.
+        progress_marks = re.findall(r'\[PROGRESS\]\s*(\d{1,3})', content)
         lines = [
             line for line in content.split('\n')
-            if line.strip() and not any(ign in line for ign in ("GET /api/status", "GET /api/queue", "GET /api/keys", "OPTIONS /api/"))
+            if line.strip() and '[PROGRESS]' not in line
+            and not any(ign in line for ign in ("GET /api/status", "GET /api/queue", "GET /api/keys", "OPTIONS /api/"))
         ]
         log_lines = lines[-35:]
 
@@ -1638,6 +1705,9 @@ async def status_endpoint(job_id: str):
                     progress = min(74, int(30 + (cur_b / tot_b) * 44))
                     batch_found = True
                     break
+        if progress_marks:
+            progress = min(99, int(progress_marks[-1]))
+            batch_found = True
         if not batch_found:
             for phase_key, pval in progress_map.items():
                 if phase_key.lower() in current_phase.lower():
@@ -1659,6 +1729,8 @@ async def status_endpoint(job_id: str):
         "log": log_lines,
         "error": job.get("error"),
         "zip_url": zip_url,
+        "package_url": _package_url(job),
+        "project_dir": job.get("project_dir"),
     }
 
 
@@ -1826,12 +1898,20 @@ def download_project_zip(movie: Optional[str] = Query(None), job_id: Optional[st
     zip_path = os.path.join(temp_dir, f"{clean_base}_{unique_suffix}_bundle.zip")
 
     excluded_names = {"state.json", "checkpoint.json", "temp", "temp_test_dl"}
+    skip_dirs = {"voiceover", "temp", "__pycache__"}
+    skip_prefixes: tuple = ()
+    # A Splitter / Long to Short folder also keeps the (often multi-gigabyte) source video and its working files for
+    # re-runs; the bundle a creator downloads is the result only.
+    project_state = project_store._read_json(os.path.join(selected_dir, "state.json")) if selected_dir != outputs_dir else None
+    if isinstance(project_state, dict) and project_state.get("engine_type") in project_store.TOOL_ENGINES:
+        skip_prefixes = ("01_video_original", "source_transcript", "clips_plan")
+        skip_dirs |= {"_download", "_work"}
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(selected_dir):
-            dirs[:] = [d for d in dirs if d not in ["voiceover", "temp", "__pycache__"]]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in sorted(files):
-                if f in excluded_names or f.endswith(".tmp") or f.endswith(".part"):
+                if f in excluded_names or f.endswith(".tmp") or f.endswith(".part") or f.startswith(skip_prefixes):
                     continue
                 file_full = os.path.join(root, f)
                 rel_in_zip = os.path.relpath(file_full, selected_dir)
@@ -2173,30 +2253,9 @@ def save_keys(req: SaveKeysRequest):
         elif not isinstance(existing_keys, list):
             existing_keys = []
 
-        new_keys = req.keys
-        cleaned_keys = []
-        unresolved_masks = []
-        for line in new_keys:
-            tokens = [t.strip() for t in str(line).replace(',', '\n').split('\n') if t.strip()]
-            for k in tokens:
-                # If key contains '...', user might have preserved a masked key from the status view.
-                # Resolve to the full existing key so real key is never lost!
-                if '...' in k:
-                    parts = k.split('...')
-                    prefix, suffix = parts[0].strip(), parts[-1].strip()
-                    # A mask must carry both ends (6 + 4 chars as produced by the UI); a bare
-                    # "AIza..." must never be accepted as a wildcard that reveals a stored key.
-                    matches = [
-                        ek for ek in existing_keys
-                        if len(prefix) >= 4 and len(suffix) >= 4 and ek.startswith(prefix) and ek.endswith(suffix)
-                    ]
-                    if len(matches) != 1:  # unknown or ambiguous mask -> refuse the whole save
-                        unresolved_masks.append(k)
-                        continue
-                    k = matches[0]
-                if k and k not in cleaned_keys:
-                    cleaned_keys.append(k)
-                
+        # A line may be a full key or the mask of a stored one (resolved so a real key is never lost).
+        cleaned_keys, unresolved_masks = resolve_key_lines(req.keys, existing_keys)
+
         if unresolved_masks:
             # Never "save what we understood": that would silently delete the keys behind the masks.
             raise HTTPException(
@@ -2231,6 +2290,32 @@ def save_keys(req: SaveKeysRequest):
     except Exception as e:
         print(f"[ERROR] Failed to save API keys: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+MAX_KEYS_PER_CHECK = 20
+
+
+@app.post("/api/keys/check")
+def check_keys(req: SaveKeysRequest):
+    """
+    Tests pasted Gemini keys against Google WITHOUT saving them (so a typo or a revoked key is found
+    before a job depends on it). Masked lines resolve to the stored key they name. Only masked keys are
+    returned and nothing is persisted or logged.
+    """
+    stored = cfg.load_config().get("gemini", {}).get("api_keys", [])
+    stored = [k.strip() for k in stored.split(",") if k.strip()] if isinstance(stored, str) else (stored if isinstance(stored, list) else [])
+    keys, unresolved = resolve_key_lines(req.keys, stored)
+    if unresolved:
+        raise HTTPException(status_code=400, detail=f"{len(unresolved)} masked key(s) do not match a stored key. Paste the full key.")
+    if not keys:
+        raise HTTPException(status_code=400, detail="No keys to check.")
+    if len(keys) > MAX_KEYS_PER_CHECK:
+        raise HTTPException(status_code=400, detail=f"Check at most {MAX_KEYS_PER_CHECK} keys at a time.")
+    results = _ping_gemini_keys(keys, 8.0)
+    return {"results": [
+        {"key": mask_key(key), "state": state, "http_code": code, "ok": state == "ONLINE"}
+        for key, (state, code) in zip(keys, results)
+    ]}
 
 
 # =============================================================================

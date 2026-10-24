@@ -6,1230 +6,16 @@
     <title>Pai AI Movie Studio - Enterprise Video AI Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
-    <style>
-        /* Controls whose option the selected engine does not use (see applyEngineRelevance) */
-        .option-na { display: none !important; }
-
-        :root {
-            --primary: #0f172a;
-            --primary-light: #1e293b;
-            --sidebar-bg: #090d16;
-            --sidebar-border: #1e293b;
-            --sidebar-text: #94a3b8;
-            --sidebar-hover: #1e293b;
-            --sidebar-active-bg: rgba(37, 99, 235, 0.16);
-            --sidebar-active-text: #38bdf8;
-            --accent: #2563eb;
-            --accent-hover: #1d4ed8;
-            --accent-light: #eff6ff;
-            --accent-glow: rgba(37, 99, 235, 0.22);
-            --bg: #f8fafc;
-            --surface: #ffffff;
-            --surface2: #f8fafc;
-            --surface3: #f1f5f9;
-            --border: #e2e8f0;
-            --border-strong: #cbd5e1;
-            --text: #0f172a;
-            --text-secondary: #475569;
-            --muted: #64748b;
-            --muted2: #94a3b8;
-            --success: #10b981;
-            --success-light: #ecfdf5;
-            --warn: #f59e0b;
-            --warn-light: #fffbeb;
-            --error: #ef4444;
-            --error-light: #fef2f2;
-            --card-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
-            --card-shadow-hover: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
-            --radius-sm: 8px;
-            --radius-md: 10px;
-            --radius-lg: 14px;
-            --header-height: 64px;
-            --sidebar-width: 270px;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: 'Inter', 'Padauk', 'Pyidaungsu', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            overflow-x: hidden;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-            line-height: 1.55;
-        }
-
-        /* ── APP SHELL LAYOUT ── */
-        .app-shell {
-            display: flex;
-            min-height: 100vh;
-            width: 100%;
-        }
-
-        /* ── ASIDE: LEFT SIDEBAR ── */
-        .app-sidebar {
-            width: var(--sidebar-width);
-            background: var(--sidebar-bg);
-            color: #fff;
-            flex-shrink: 0;
-            display: flex;
-            flex-direction: column;
-            border-right: 1px solid var(--sidebar-border);
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            z-index: 1100;
-            transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-            overflow-y: auto;
-        }
-
-        .sidebar-header {
-            padding: 1.25rem 1.25rem 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.85rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .sidebar-brand-badge {
-            background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
-            color: #fff;
-            font-weight: 800;
-            font-size: 0.82rem;
-            padding: 0.4rem 0.65rem;
-            border-radius: 8px;
-            letter-spacing: 0.8px;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
-        }
-
-        .sidebar-brand-info {
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .sidebar-brand-title {
-            font-size: 0.98rem;
-            font-weight: 800;
-            color: #ffffff;
-            letter-spacing: -0.2px;
-            white-space: nowrap;
-        }
-
-        .sidebar-brand-sub {
-            font-size: 0.68rem;
-            color: #94a3b8;
-            font-weight: 500;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .sidebar-section-label {
-            font-size: 0.66rem;
-            font-weight: 700;
-            letter-spacing: 0.8px;
-            text-transform: uppercase;
-            color: #64748b;
-            padding: 1.25rem 1.25rem 0.5rem;
-        }
-
-        .sidebar-nav {
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            padding: 0 0.85rem;
-        }
-
-        .nav-tab-btn {
-            background: transparent;
-            border: none;
-            outline: none;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.65rem 0.85rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--sidebar-text);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.18s ease;
-            text-align: left;
-            width: 100%;
-        }
-
-        .nav-tab-btn:hover {
-            background: var(--sidebar-hover);
-            color: #f1f5f9;
-        }
-
-        .nav-tab-btn.active {
-            background: var(--sidebar-active-bg);
-            color: var(--sidebar-active-text);
-            box-shadow: inset 3px 0 0 #38bdf8;
-            font-weight: 700;
-        }
-
-        .nav-tab-icon {
-            width: 18px;
-            height: 18px;
-            stroke-width: 2;
-            flex-shrink: 0;
-            stroke: currentColor;
-            fill: none;
-        }
-
-        .sidebar-tools {
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            padding: 0 0.85rem;
-        }
-
-        .btn-sidebar-tool {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            color: #cbd5e1;
-            padding: 0.55rem 0.85rem;
-            border-radius: 8px;
-            font-size: 0.8rem;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            text-align: left;
-            width: 100%;
-        }
-
-        .btn-sidebar-tool:hover {
-            background: rgba(255, 255, 255, 0.07);
-            border-color: rgba(255, 255, 255, 0.12);
-            color: #ffffff;
-        }
-
-        .sidebar-footer {
-            margin-top: auto;
-            padding: 1rem 1.25rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
-            background: rgba(0, 0, 0, 0.2);
-            font-size: 0.72rem;
-            color: #64748b;
-            display: flex;
-            flex-direction: column;
-            gap: 0.4rem;
-        }
-
-        .sidebar-status-tag {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            color: #94a3b8;
-            font-weight: 600;
-        }
-
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(15, 23, 42, 0.6);
-            backdrop-filter: blur(4px);
-            z-index: 1050;
-            opacity: 0;
-            transition: opacity 0.25s ease;
-        }
-
-        /* ── MAIN CONTENT WRAPPER ── */
-        .app-main {
-            flex: 1;
-            margin-left: var(--sidebar-width);
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            min-width: 0;
-        }
-
-        /* ── TOP NAV / HEADER ── */
-        .app-header {
-            position: sticky;
-            top: 0;
-            z-index: 1000;
-            height: var(--header-height);
-            background: rgba(255, 255, 255, 0.96);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--border);
-            padding: 0 1.75rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-        }
-
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .btn-mobile-toggle {
-            display: none;
-            background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.4rem;
-            color: var(--primary);
-            cursor: pointer;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .header-breadcrumb {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.85rem;
-            font-weight: 500;
-            color: var(--muted);
-        }
-
-        .header-breadcrumb .bc-studio {
-            font-weight: 700;
-            color: var(--primary);
-        }
-
-        .header-breadcrumb .bc-sep {
-            color: var(--border-strong);
-        }
-
-        .header-breadcrumb .bc-current {
-            color: var(--accent);
-            font-weight: 600;
-        }
-
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 0.6rem;
-            flex-wrap: wrap;
-        }
-
-        /* ── PILLS & BADGES ── */
-        .badge-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.35rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.76rem;
-            font-weight: 600;
-            border: 1px solid var(--border);
-            background: #fff;
-            color: var(--text-secondary);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-            white-space: nowrap;
-        }
-
-        .badge-pill.success {
-            background: #ecfdf5;
-            border-color: #a7f3d0;
-            color: #065f46;
-        }
-
-        .badge-pill.info {
-            background: #eff6ff;
-            border-color: #bfdbfe;
-            color: #1e40af;
-        }
-
-        .badge-pill.warning {
-            background: #fffbeb;
-            border-color: #fde68a;
-            color: #92400e;
-        }
-
-        .status-indicator-dot {
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            display: inline-block;
-            background: #10b981;
-            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
-            animation: pulse-dot 2s infinite ease-in-out;
-        }
-
-        .status-indicator-dot.info {
-            background: #2563eb;
-            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
-        }
-
-        .status-indicator-dot.warning {
-            background: #f59e0b;
-            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
-        }
-
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.55; transform: scale(0.85); }
-        }
-
-        /* ── CUSTOM SELECT / DROPDOWN ── */
-        select.select-control, .select-control, .lang-select-nav {
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            background-color: #ffffff;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 0.75rem center;
-            background-size: 1rem;
-            padding: 0.55rem 2.2rem 0.55rem 0.85rem;
-            border: 1px solid var(--border-strong);
-            border-radius: var(--radius-sm);
-            font-size: 0.85rem;
-            font-weight: 500;
-            color: var(--text);
-            outline: none;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-            font-family: inherit;
-        }
-
-        select.select-control:hover, .select-control:hover {
-            border-color: var(--accent);
-        }
-
-        select.select-control:focus, .select-control:focus, .lang-select-nav:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px var(--accent-glow);
-        }
-
-        .lang-select-nav {
-            background-color: #f8fafc;
-            border: 1px solid var(--border);
-            font-weight: 600;
-            font-size: 0.8rem;
-            padding: 0.35rem 2rem 0.35rem 0.75rem;
-            border-radius: 8px;
-        }
-
-        /* ── BUTTONS ── */
-        .btn-primary, .btn-secondary, .btn-success, .btn-danger, .btn-nav {
-            font-family: inherit;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.45rem;
-            padding: 0.55rem 1.15rem;
-            border-radius: var(--radius-sm);
-            font-size: 0.85rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            outline: none;
-            text-decoration: none;
-            white-space: nowrap;
-        }
-
-        .btn-primary {
-            background: var(--accent);
-            color: #fff;
-            border: 1px solid transparent;
-            box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
-        }
-
-        .btn-primary:hover {
-            background: var(--accent-hover);
-            box-shadow: 0 3px 8px rgba(37, 99, 235, 0.35);
-        }
-
-        .btn-secondary {
-            background: #fff;
-            color: var(--text-secondary);
-            border: 1px solid var(--border-strong);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-        }
-
-        .btn-secondary:hover {
-            background: var(--surface2);
-            color: var(--text);
-            border-color: var(--muted2);
-        }
-
-        .btn-success {
-            background: var(--success);
-            color: #fff;
-            border: 1px solid transparent;
-            box-shadow: 0 1px 3px rgba(16, 185, 129, 0.25);
-        }
-
-        .btn-success:hover {
-            background: #059669;
-            box-shadow: 0 3px 8px rgba(16, 185, 129, 0.35);
-        }
-
-        .btn-danger {
-            background: var(--error);
-            color: #fff;
-            border: 1px solid transparent;
-        }
-
-        .btn-danger:hover {
-            background: #dc2626;
-        }
-
-        .btn-nav {
-            background: #fff;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-            padding: 0.35rem 0.75rem;
-            border-radius: var(--radius-sm);
-            font-size: 0.78rem;
-            font-weight: 600;
-        }
-
-        .btn-nav:hover {
-            background: var(--surface2);
-            color: var(--text);
-            border-color: var(--muted2);
-        }
-
-        /* ── INPUTS & TEXTAREAS ── */
-        .input-text, .textarea-control {
-            width: 100%;
-            padding: 0.6rem 0.85rem;
-            font-size: 0.85rem;
-            background: #fff;
-            border: 1px solid var(--border-strong);
-            border-radius: var(--radius-sm);
-            color: var(--text);
-            outline: none;
-            transition: all 0.15s ease;
-            font-family: inherit;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-        }
-
-        .input-text:focus, .textarea-control:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px var(--accent-glow);
-        }
-
-        .form-group {
-            margin-bottom: 1.15rem;
-        }
-
-        .form-label {
-            display: block;
-            font-size: 0.82rem;
-            font-weight: 600;
-            color: var(--text);
-            margin-bottom: 0.4rem;
-        }
-
-        /* ── CARDS ── */
-        .card {
-            background: var(--surface);
-            border-radius: var(--radius-lg);
-            border: 1px solid var(--border);
-            box-shadow: var(--card-shadow);
-            padding: 1.6rem;
-            margin-bottom: 1.4rem;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .card:hover {
-            border-color: var(--border-strong);
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.35rem;
-            padding-bottom: 0.95rem;
-            border-bottom: 1px solid var(--surface3);
-            flex-wrap: wrap;
-            gap: 0.85rem;
-        }
-
-        .card-title {
-            font-size: 1.08rem;
-            font-weight: 700;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            letter-spacing: -0.2px;
-        }
-
-        .card-desc {
-            font-size: 0.82rem;
-            color: var(--muted);
-            margin-top: 0.25rem;
-            line-height: 1.5;
-        }
-
-        /* ── STEPPER ── */
-        .stepper-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 1.5rem;
-            background: #fff;
-            padding: 0.9rem 1.4rem;
-            border-radius: var(--radius-lg);
-            border: 1px solid var(--border);
-            box-shadow: var(--card-shadow);
-            overflow-x: auto;
-            gap: 0.5rem;
-            -webkit-overflow-scrolling: touch;
-        }
-
-        .stepper-item {
-            background: transparent;
-            border: 0;
-            font: inherit;
-            text-align: left;
-            display: flex;
-            align-items: center;
-            gap: 0.6rem;
-            cursor: pointer;
-            padding: 0.45rem 0.75rem;
-            border-radius: 8px;
-            transition: all 0.15s ease;
-            white-space: nowrap;
-            color: var(--muted);
-            flex-shrink: 0;
-        }
-
-        .stepper-item:hover {
-            color: var(--text);
-            background: var(--surface2);
-        }
-
-        .stepper-item.active {
-            color: var(--accent);
-            font-weight: 700;
-            background: var(--accent-light);
-        }
-
-        .stepper-num {
-            width: 26px;
-            height: 26px;
-            border-radius: 50%;
-            background: var(--surface3);
-            color: var(--muted);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.8rem;
-            font-weight: 700;
-            transition: all 0.15s ease;
-        }
-
-        .stepper-item.active .stepper-num {
-            background: var(--accent);
-            color: #fff;
-            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
-        }
-
-        .stepper-arrow {
-            color: var(--border-strong);
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-
-        .step-footer {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 1.5rem;
-            padding-top: 1.25rem;
-            border-top: 1px solid var(--surface3);
-            flex-wrap: wrap;
-            gap: 0.75rem;
-        }
-
-        /* ── SWITCH GRIDS ── */
-        .switch-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-            gap: 0.75rem;
-        }
-
-        .switch-card {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: #fff;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.65rem 0.85rem;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            user-select: none;
-        }
-
-        .switch-card:hover {
-            border-color: var(--border-strong);
-            background: var(--surface2);
-        }
-
-        .switch-card.checked {
-            border-color: var(--accent);
-            background: var(--accent-light);
-        }
-
-        .switch-card-text {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--text);
-        }
-
-        .switch-card.checked .switch-card-text {
-            color: var(--accent);
-        }
-
-        .switch-card input[type="checkbox"] {
-            cursor: pointer;
-            accent-color: var(--accent);
-            width: 16px;
-            height: 16px;
-        }
-
-        .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 38px;
-            height: 20px;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: var(--border-strong);
-            transition: .2s;
-            border-radius: 20px;
-        }
-
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 14px;
-            width: 14px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .2s;
-            border-radius: 50%;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-        }
-
-        input:checked + .slider {
-            background-color: var(--accent);
-        }
-
-        input:checked + .slider:before {
-            transform: translateX(18px);
-        }
-
-        /* ── PRESETS ── */
-        .sub-presets-row {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-bottom: 0.85rem;
-        }
-
-        .sub-preset-pill {
-            background: #fff;
-            border: 1px solid var(--border-strong);
-            border-radius: 20px;
-            padding: 0.4rem 0.85rem;
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-            cursor: pointer;
-            transition: all 0.15s ease;
-        }
-
-        .sub-preset-pill:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-        }
-
-        .sub-preset-pill.active {
-            background: var(--accent);
-            border-color: var(--accent);
-            color: #fff;
-            box-shadow: 0 2px 5px rgba(37, 99, 235, 0.3);
-        }
-
-        .subtitle-preview-box {
-            background: #0f172a;
-            border-radius: 8px;
-            padding: 1.25rem;
-            text-align: center;
-            min-height: 55px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        /* ── REVIEW GRID ── */
-        .review-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 1rem;
-            margin-bottom: 1.25rem;
-        }
-
-        .review-box {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-        }
-
-        .review-box-title {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .review-box-content {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: var(--primary);
-        }
-
-        .review-box-sub {
-            font-size: 0.78rem;
-            color: var(--text-secondary);
-        }
-
-        /* ── ACTIVE CONFIG & LIVE TRACKER ── */
-        .active-config-banner {
-            background: #ffffff;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1rem;
-            margin-bottom: 1.25rem;
-            box-shadow: var(--card-shadow);
-        }
-
-        .active-config-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.6rem;
-            font-weight: 700;
-            font-size: 0.88rem;
-            color: var(--primary);
-        }
-
-        .active-config-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.4rem;
-        }
-
-        .progress-bar-container {
-            width: 100%;
-            height: 8px;
-            background: var(--surface3);
-            border-radius: 4px;
-            overflow: hidden;
-            margin-bottom: 1.25rem;
-        }
-
-        .progress-bar-fill {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #2563eb, #38bdf8);
-            border-radius: 4px;
-            transition: width 0.3s ease;
-        }
-
-        .phase-tracker {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-        }
-
-        .phase-step {
-            text-align: center;
-            padding: 0.5rem 0.25rem;
-            border-radius: 8px;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            transition: all 0.2s ease;
-        }
-
-        .phase-step.active {
-            background: var(--accent-light);
-            border-color: var(--accent);
-        }
-
-        .phase-step.done {
-            background: var(--success-light);
-            border-color: rgba(16, 185, 129, 0.3);
-        }
-
-        .phase-circle {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            background: var(--surface3);
-            color: var(--muted);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 0.25rem;
-            font-size: 0.72rem;
-            font-weight: 700;
-        }
-
-        .phase-step.active .phase-circle {
-            background: var(--accent);
-            color: #fff;
-        }
-
-        .phase-step.done .phase-circle {
-            background: var(--success);
-            color: #fff;
-        }
-
-        .phase-text {
-            font-size: 0.72rem;
-            font-weight: 600;
-            color: var(--muted);
-        }
-
-        .phase-step.active .phase-text {
-            color: var(--accent);
-            font-weight: 700;
-        }
-
-        .phase-step.done .phase-text {
-            color: var(--success);
-        }
-
-        .terminal-log-box {
-            background: #090d16;
-            color: #38bdf8;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.8rem;
-            line-height: 1.6;
-            padding: 1rem;
-            border-radius: 8px;
-            height: 220px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-            border: 1px solid #1e293b;
-        }
-
-        /* ── MEDIA GRIDS & CARDS ── */
-        .media-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-            gap: 1rem;
-        }
-
-        .media-card {
-            background: #fff;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            overflow: hidden;
-            transition: all 0.2s ease;
-            display: flex;
-            flex-direction: column;
-            box-shadow: var(--card-shadow);
-        }
-
-        .media-card:hover {
-            box-shadow: var(--card-shadow-hover);
-            border-color: var(--border-strong);
-            transform: translateY(-2px);
-        }
-
-        .media-card-preview {
-            background: #0f172a;
-            height: 140px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            color: #fff;
-            cursor: pointer;
-        }
-
-        .media-card-body {
-            padding: 0.85rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-            flex: 1;
-        }
-
-        .media-card-title {
-            font-size: 0.88rem;
-            font-weight: 700;
-            color: var(--primary);
-            word-break: break-word;
-            line-height: 1.4;
-        }
-
-        .media-card-meta {
-            font-size: 0.72rem;
-            color: var(--muted);
-        }
-
-        .media-card-actions {
-            display: flex;
-            gap: 0.4rem;
-            margin-top: auto;
-            padding-top: 0.6rem;
-            border-top: 1px solid var(--surface3);
-        }
-
-        .empty-state {
-            grid-column: 1 / -1;
-            padding: 2.5rem 1rem;
-            text-align: center;
-            color: var(--muted);
-            font-size: 0.88rem;
-            background: var(--surface2);
-            border-radius: 10px;
-            border: 1px dashed var(--border-strong);
-        }
-
-        /* ── CONTAINER & VIEWS ── */
-        .container {
-            max-width: 1240px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 1.75rem 1.75rem 3rem;
-        }
-
-        .view-section {
-            display: none;
-        }
-
-        .view-section.active {
-            display: block;
-            animation: fadeIn 0.2s ease-in-out;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(4px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* ── MODALS ── */
-        .modal-backdrop {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(15, 23, 42, 0.6);
-            backdrop-filter: blur(4px);
-            z-index: 2000;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem;
-        }
-
-        .modal-backdrop.open {
-            display: flex;
-        }
-
-        .modal-dialog {
-            background: #fff;
-            border-radius: var(--radius-lg);
-            width: 100%;
-            max-width: 520px;
-            padding: 1.5rem;
-            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.1);
-            border: 1px solid var(--border);
-            max-height: 90vh;
-            overflow-y: auto;
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-            padding-bottom: 0.75rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .modal-title {
-            font-size: 1.05rem;
-            font-weight: 700;
-            color: var(--primary);
-        }
-
-        .modal-close {
-            background: transparent;
-            border: none;
-            font-size: 1.15rem;
-            cursor: pointer;
-            color: var(--muted);
-            padding: 0.2rem;
-            line-height: 1;
-        }
-
-        .modal-close:hover {
-            color: var(--primary);
-        }
-
-        .toast-container {
-            position: fixed;
-            bottom: 1.5rem;
-            right: 1.5rem;
-            z-index: 3000;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .toast-item {
-            background: var(--primary);
-            color: #fff;
-            padding: 0.65rem 1rem;
-            border-radius: 8px;
-            font-size: 0.82rem;
-            font-weight: 500;
-            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.15);
-            animation: slideInToast 0.2s ease-out;
-        }
-
-        @keyframes slideInToast {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        /* ── KEYBOARD FOCUS & REDUCED MOTION (accessibility) ── */
-        button:focus-visible,
-        a:focus-visible,
-        select:focus-visible,
-        input:focus-visible,
-        textarea:focus-visible,
-        summary:focus-visible,
-        [tabindex]:focus-visible {
-            outline: 2px solid var(--accent);
-            outline-offset: 2px;
-        }
-
-        .app-sidebar button:focus-visible {
-            outline-color: var(--sidebar-active-text);
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after {
-                animation-duration: 0.01ms;
-                animation-iteration-count: 1;
-                transition-duration: 0.01ms;
-                scroll-behavior: auto;
-            }
-        }
-
-        /* ── RESPONSIVE MEDIA QUERIES ── */
-        @media (max-width: 1024px) {
-            .app-sidebar {
-                transform: translateX(-100%);
-            }
-
-            .app-sidebar.open {
-                transform: translateX(0);
-            }
-
-            .sidebar-backdrop.open {
-                display: block;
-                opacity: 1;
-            }
-
-            .app-main {
-                margin-left: 0;
-            }
-
-            .btn-mobile-toggle {
-                display: inline-flex;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .app-header {
-                padding: 0 1rem;
-            }
-
-            .header-breadcrumb .bc-studio {
-                display: none;
-            }
-
-            .header-breadcrumb .bc-sep {
-                display: none;
-            }
-
-            .container {
-                padding: 1rem 0.85rem 2.5rem;
-            }
-
-            .card {
-                padding: 1.15rem;
-            }
-
-            .review-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .phase-tracker {
-                grid-template-columns: repeat(3, 1fr);
-                gap: 0.4rem;
-            }
-
-            .stepper-header {
-                padding: 0.65rem 0.85rem;
-            }
-
-            .stepper-item {
-                padding: 0.35rem 0.5rem;
-            }
-        }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Myanmar:wght@400;500;600;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+    <script>
+        /* Set the theme before first paint (no flash): the saved choice, else the OS preference. */
+        (function () {
+            var theme = 'light';
+            try { theme = localStorage.getItem('pai_theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (e) { /* storage blocked: follow the default */ }
+            document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+        })();
+    </script>
+    <link rel="stylesheet" href="/static/css/studio.css">
 </head>
 <body>
 
@@ -1238,8 +24,8 @@
     <div class="app-shell">
         
         <!-- ══ ASIDE: LEFT SIDEBAR NAVIGATION ══ -->
-        <aside class="app-sidebar" id="app-sidebar">
-            <div class="sidebar-header" onclick="switchView('welcome')">
+        <aside class="app-sidebar" id="app-sidebar" aria-label="Main navigation">
+            <div class="sidebar-header" onclick="switchView('welcome')" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){switchView('welcome');event.preventDefault();}">
                 <span class="sidebar-brand-badge">PAI AI</span>
                 <div class="sidebar-brand-info">
                     <div class="sidebar-brand-title">Pai AI Movie Studio</div>
@@ -1247,7 +33,7 @@
                 </div>
             </div>
 
-            <div class="sidebar-section-label">STUDIO WORKSPACE</div>
+            <div class="sidebar-section-label" data-st="navWorkspace">STUDIO WORKSPACE</div>
             <nav class="sidebar-nav">
                 <button type="button" class="nav-tab-btn active" id="btn-tab-welcome" onclick="switchView('welcome')">
                     <svg class="nav-tab-icon" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -1257,6 +43,11 @@
                     <svg class="nav-tab-icon" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>
                     <span>Production Studio</span>
                 </button>
+                <button type="button" class="nav-tab-btn" id="btn-tab-projects" onclick="switchView('projects')">
+                    <svg class="nav-tab-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                    <span data-st="navProjects">Projects</span>
+                    <span class="nav-count hidden" id="nav-projects-count" title="Lines that need review">0</span>
+                </button>
                 <button type="button" class="nav-tab-btn" id="btn-tab-outputs" onclick="switchView('outputs')">
                     <svg class="nav-tab-icon" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                     <span>Output Videos</span>
@@ -1265,9 +56,13 @@
                     <svg class="nav-tab-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                     <span>Input Media</span>
                 </button>
+                <button type="button" class="nav-tab-btn" id="btn-tab-brand" onclick="switchView('brand')">
+                    <svg class="nav-tab-icon" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+                    <span data-st="navBrand">Brand Kit</span>
+                </button>
             </nav>
 
-            <div class="sidebar-section-label">SYSTEM &amp; UTILITIES</div>
+            <div class="sidebar-section-label" data-st="navSystem">SYSTEM &amp; UTILITIES</div>
             <div class="sidebar-tools">
                 <button type="button" class="btn-sidebar-tool" id="btn-queue-badge" onclick="openQueueModal()" style="display:none;">
                     <span>Background Queue</span>
@@ -1275,7 +70,7 @@
                 </button>
                 <button type="button" class="btn-sidebar-tool" id="btn-cookies-badge" onclick="openCookiesModal()">
                     <span>YouTube Cookies</span>
-                    <span style="font-size:0.72rem; color:#94a3b8;" id="cookies-nav-status">Checking...</span>
+                    <span style="font-size:0.72rem; opacity:0.75;" id="cookies-nav-status">Checking...</span>
                 </button>
                 <button type="button" class="btn-sidebar-tool" onclick="switchView('inputs'); setTimeout(() => { document.getElementById('downloader-url-input')?.focus(); }, 150);">
                     <span>Video Downloader</span>
@@ -1288,11 +83,20 @@
             </div>
 
             <div class="sidebar-footer">
+                <div class="storage-meter hidden" id="storage-meter">
+                    <div class="storage-meter-row"><span data-st="storageUsed">Disk used</span><span id="storage-total">-</span></div>
+                    <div class="storage-bar" aria-hidden="true">
+                        <span class="seg-outputs" id="storage-seg-outputs" style="width:0%"></span>
+                        <span class="seg-movies" id="storage-seg-movies" style="width:0%"></span>
+                        <span class="seg-temp" id="storage-seg-temp" style="width:0%"></span>
+                    </div>
+                    <div class="storage-meter-row"><span id="storage-legend">-</span></div>
+                </div>
                 <div class="sidebar-status-tag">
                     <span class="status-indicator-dot"></span>
                     <span>Docker &amp; Native Active</span>
                 </div>
-                <div>Pai AI Studio Enterprise v2.5</div>
+                <div>Pai AI Studio Enterprise v2.6</div>
             </div>
         </aside>
 
@@ -1320,81 +124,62 @@
                         <span class="status-indicator-dot"></span>
                         <span id="encoder-badge-text">GPU: Detecting...</span>
                     </div>
-                    <div class="badge-pill info">
+                    <div class="badge-pill info" id="model-display-wrap">
                         <span class="status-indicator-dot info"></span>
                         <span id="model-display">gemini-3.5-flash-lite</span>
                     </div>
-                    
-                    <select class="lang-select-nav" id="lang-selector" onchange="setLanguage(this.value)">
+
+                    <select class="lang-select-nav" id="lang-selector" onchange="setLanguage(this.value)" aria-label="Language">
                         <option value="my">မြန်မာ (Burmese)</option>
                         <option value="th">ไทย (Thai)</option>
                         <option value="en">English (US)</option>
                     </select>
+                    <button type="button" class="btn-icon" id="theme-toggle" aria-label="Switch between light and dark theme" title="Light / dark (T)">
+                        <svg class="theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                        <svg class="theme-icon-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+                    </button>
                 </div>
             </header>
 
             <!-- ══ CONTAINER ══ -->
             <main class="container">
-                <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- ══════════════════════════════════════════════════════════════════ -->
         <!-- VIEW 1: WELCOME SCREEN                                            -->
         <!-- ══════════════════════════════════════════════════════════════════ -->
         <div id="view-welcome" class="view-section active">
-            <div class="card" style="padding: 2.5rem 2rem; text-align: center; border-color: rgba(37, 99, 235, 0.2); background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);">
-                <div style="max-width: 760px; margin: 0 auto;">
-                    <div class="badge-pill info" style="margin-bottom: 1rem; font-weight: 700;" id="welcome-badge-text">
+            <div class="card hero-card">
+                <div style="max-width: 780px; margin: 0 auto;">
+                    <div class="badge-pill info" style="margin-bottom: 1.1rem; font-weight: 700;" id="welcome-badge-text">
                         Next-Generation AI Video Processing
                     </div>
-                    <h1 style="font-size: 2.1rem; font-weight: 800; color: var(--primary); margin-bottom: 0.75rem; letter-spacing: -0.5px;" id="welcome-hero-title">
-                        Pai AI Movie Studio
-                    </h1>
-                    <p style="font-size: 0.95rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 2rem;" id="welcome-hero-desc">
+                    <h1 class="hero-title gold" id="welcome-hero-title">Pai AI Movie Studio</h1>
+                    <p class="hero-desc" id="welcome-hero-desc">
                         Professional movie recap automation, 100% natural dialogue Burmese subtitling, and original audio hardsubbing powered by Gemini Vision AI and Microsoft Neural Voices.
                     </p>
 
-                    <!-- 3 Call-to-action buttons -->
-                    <div style="display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 2.5rem;">
-                        <button class="btn-primary" style="padding: 0.8rem 1.6rem; font-size: 0.95rem;" onclick="switchView('studio'); goToStep(1);">
+                    <div class="hero-actions">
+                        <button class="btn-primary" onclick="switchView('studio'); goToStep(1);">
                             <span id="btn-welcome-start">Start Production</span>
                         </button>
-                        <button class="btn-secondary" style="padding: 0.8rem 1.4rem; font-size: 0.95rem;" onclick="switchView('outputs')">
+                        <button class="btn-secondary" onclick="switchView('projects')">
+                            <span data-st="navProjects">Projects</span>
+                        </button>
+                        <button class="btn-secondary" onclick="switchView('outputs')">
                             <span id="btn-welcome-outputs">Output Videos</span>
                         </button>
-                        <button class="btn-secondary" style="padding: 0.8rem 1.4rem; font-size: 0.95rem;" onclick="switchView('inputs')">
+                        <button class="btn-secondary" onclick="switchView('inputs')">
                             <span id="btn-welcome-inputs">Input Media</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- 3 Engine Architecture Cards -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; text-align: left; margin-top: 1rem;">
-                    <div style="background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem;">
-                        <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); margin-bottom: 0.4rem;" id="card-engine1-title">
-                            Movie Recap Studio
-                        </div>
-                        <div style="font-size: 0.8rem; color: var(--muted); line-height: 1.5;" id="card-engine1-desc">
-                            Automated storytelling scripts, Microsoft Edge Neural voiceover narration, 9:16 vertical reels canvas, and dynamic SFX Foley mixing.
-                        </div>
-                    </div>
-
-                    <div style="background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem;">
-                        <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); margin-bottom: 0.4rem;" id="card-engine2-title">
-                            Burmese Subtitle & Transcript
-                        </div>
-                        <div style="font-size: 0.8rem; color: var(--muted); line-height: 1.5;" id="card-engine2-desc">
-                            Timestamped speech recognition, natural spoken dialogue translations, and multi-format subtitle exports (.srt, .ass, .txt).
-                        </div>
-                    </div>
-
-                    <div style="background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem;">
-                        <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); margin-bottom: 0.4rem;" id="card-engine3-title">
-                            Original Audio & Hardsub Studio
-                        </div>
-                        <div style="font-size: 0.8rem; color: var(--muted); line-height: 1.5;" id="card-engine3-desc">
-                            Retains 100% original actor audio, applies Vision AI smart subtitle blurring, and embeds cinema-grade hardsub subtitles.
-                        </div>
-                    </div>
-                </div>
             </div>
+
+            <!-- Tool hub: one tile per way of working (built by static/js/tools.js) -->
+            <section class="tool-hub" aria-labelledby="tool-hub-title">
+                <h2 class="tool-hub-title" id="tool-hub-title">Choose how you want to work</h2>
+                <div class="tool-grid" id="tool-grid"></div>
+            </section>
         </div>
 
         <!-- ══════════════════════════════════════════════════════════════════ -->
@@ -1485,9 +270,13 @@
                 <div class="form-group" style="background:var(--surface2); padding:0.85rem; border-radius:8px; border:1px solid var(--border);">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
                         <label class="form-label" style="margin:0;" id="label-api-keys">Gemini API Keys (One per line):</label>
-                        <button type="button" class="btn-nav" onclick="saveKeysFromUI()" id="btn-save-keys-text" style="font-size:0.75rem;">Save Keys</button>
+                        <div class="row" style="gap:0.4rem;">
+                            <button type="button" class="btn-nav" onclick="PaiStudio.checkKeys()" id="btn-check-keys" style="font-size:0.75rem;" data-st="keyTest">Test keys</button>
+                            <button type="button" class="btn-nav" onclick="saveKeysFromUI()" id="btn-save-keys-text" style="font-size:0.75rem;">Save Keys</button>
+                        </div>
                     </div>
                     <textarea id="key-editor-textarea" class="textarea-control" style="height:65px; font-family:monospace; font-size:0.78rem;" placeholder="Paste Gemini API Keys here, one per line..."></textarea>
+                    <div class="row hidden" id="key-check-result" style="margin-top:0.55rem;" aria-live="polite"></div>
                 </div>
 
                 <!-- Video Input Source (Single vs Batch Tabs) -->
@@ -1543,6 +332,27 @@
                     </label>
                     <input type="text" id="input-context-hint" class="input-text" placeholder="ဥပမာ - သိုင်းကား၊ မင်းသားနာမည် ကျန်းဖန်၊ မင်းသမီး လျိုရှင်း၊ မာနကြီးသော သခင်လေး..." style="width:100%;">
                 </div>
+                <!-- Recap storyteller: how much is told, and in what voice -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
+                    <div data-option="story_length" class="form-group" style="margin:0;">
+                        <label class="form-label" for="select-story-length" data-st="optStoryLength">Story length (Recap style)</label>
+                        <select id="select-story-length" class="select-control">
+                            <option value="standard" selected data-st="optLenStandard">Standard</option>
+                            <option value="compact" data-st="optLenCompact">Compact - plot-critical only</option>
+                            <option value="detailed" data-st="optLenDetailed">Detailed - actions and small beats</option>
+                            <option value="scene" data-st="optLenScene">Scene by scene - longest</option>
+                        </select>
+                    </div>
+                    <div data-option="narrative_tone" class="form-group" style="margin:0;">
+                        <label class="form-label" for="select-narrative-tone" data-st="optNarrativeTone">Narrative tone (Recap style)</label>
+                        <select id="select-narrative-tone" class="select-control">
+                            <option value="natural" selected data-st="optToneNatural">Natural</option>
+                            <option value="brisk" data-st="optToneBrisk">Brisk - energetic</option>
+                            <option value="calm" data-st="optToneCalm">Calm - reflective</option>
+                            <option value="dramatic" data-st="optToneDramatic">Dramatic - suspenseful</option>
+                        </select>
+                    </div>
+                </div>
                 <div class="step-footer">
                     <div></div>
                     <button type="button" class="btn-primary" onclick="goToStep(2)" id="btn-step1-next">Next: Output & Style ></button>
@@ -1558,8 +368,34 @@
                     </div>
                 </div>
 
+                <!-- Delivery: finished video, CapCut pipeline, or both (core/delivery.py) -->
+                <div data-option="delivery_mode" class="delivery-picker" role="radiogroup" aria-labelledby="label-delivery">
+                    <div class="delivery-title" id="label-delivery" data-st="optDelivery">How should it be delivered?</div>
+                    <div class="delivery-cards">
+                        <label class="delivery-card is-selected">
+                            <input type="radio" name="delivery_mode" value="oneclick" checked onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 9-14 9z"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryOneclick">Oneclick</span>
+                            <span class="delivery-desc" data-st="optDeliveryOneclickDesc"></span>
+                        </label>
+                        <label class="delivery-card">
+                            <input type="radio" name="delivery_mode" value="capcut" onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM8.1 7.9L20 20M8.1 16.1L20 4"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryCapcut">Capcut</span>
+                            <span class="delivery-desc" data-st="optDeliveryCapcutDesc"></span>
+                        </label>
+                        <label class="delivery-card">
+                            <input type="radio" name="delivery_mode" value="both" onchange="handleDeliveryChange()">
+                            <span class="delivery-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h10v10H4zM10 10h10v10H10z"/></svg></span>
+                            <span class="delivery-name" data-st="optDeliveryBoth">Both</span>
+                            <span class="delivery-desc" data-st="optDeliveryBothDesc"></span>
+                        </label>
+                    </div>
+                    <div class="delivery-note" id="delivery-note" aria-live="polite"></div>
+                </div>
+
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
-                    <div data-option="render_video" class="form-group">
+                    <div data-option="render_video" id="wrap-render-video" class="form-group">
                         <label class="form-label" id="label-deliverable-mode">Deliverable Output Mode:</label>
                         <select id="select-render-video" class="select-control">
                             <option value="true" selected>Render Full MP4 Video</option>
@@ -1770,6 +606,16 @@
                             <option value="f5_tts">F5-TTS Voice Cloning (Advanced)</option>
                         </select>
                     </div>
+                    <div data-option="tts_rate" class="form-group" id="wrap-tts-rate">
+                        <label class="form-label" for="select-tts-rate" data-st="optTtsRate">Narration speed</label>
+                        <select id="select-tts-rate" class="select-control">
+                            <option value="" selected data-st="optRateDefault">Default (from config)</option>
+                            <option value="-15" data-st="optRateSlow">Slow (-15%)</option>
+                            <option value="0" data-st="optRateNormal">Normal (0%)</option>
+                            <option value="15" data-st="optRateFast">Fast (+15%)</option>
+                            <option value="30" data-st="optRateVeryFast">Very fast (+30%)</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
@@ -1794,7 +640,7 @@
                 </div>
 
                 <!-- 10 Pipeline Stages Switches -->
-                <div data-option="stage_toggles" style="background:#fff; border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
+                <div data-option="stage_toggles" style="background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:1.1rem; margin-bottom:1rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
                         <div>
                             <span style="font-weight:700; font-size:0.88rem; color:var(--primary);" id="label-pipeline-stages">Pipeline Processing Stages:</span>
@@ -1859,6 +705,7 @@
                         </div>
                         <div class="review-box-content" id="rev-engine">Movie Recap Studio</div>
                         <div class="review-box-sub" id="rev-style">Style: Movie Recap Storyteller</div>
+                        <div class="review-box-sub" id="rev-delivery"></div>
                         <div class="review-box-sub" id="rev-context-hint" style="display:none; color:var(--primary); font-size:0.75rem; margin-top:2px;"></div>
                     </div>
 
@@ -1927,7 +774,7 @@
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
                     <div style="display:flex; align-items:center; gap:0.6rem;">
                         <span class="badge-pill info" id="live-job-status-pill" style="font-weight:700;">Running...</span>
-                        <span class="badge-pill" id="live-elapsed-timer" style="background:#f1f5f9; font-weight:700;">Runtime: 00m:00s</span>
+                        <span class="badge-pill" id="live-elapsed-timer" style="font-weight:700;">Runtime: 00m:00s</span>
                     </div>
                     <div style="font-size:0.95rem; font-weight:800; color:var(--accent);" id="live-progress-pct">0%</div>
                 </div>
@@ -2068,9 +915,161 @@
                 </div>
             </div>
         </div>
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- VIEW 5: PROJECTS (library, quality, history)                      -->
+        <!-- Rendered by static/js/studio.js                                   -->
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <div id="view-projects" class="view-section">
+            <div class="view-head">
+                <div>
+                    <h2 class="view-title" data-st="pjTitle">Projects</h2>
+                    <div class="view-sub" data-st="pjSub">Every finished job: review its quality, fix the script and re-render only what changed.</div>
+                </div>
+                <div class="toolbar">
+                    <div class="seg" role="tablist" aria-label="Projects views">
+                        <button type="button" class="seg-btn active" id="pj-tab-projects" role="tab" onclick="PaiStudio.showProjectsTab('projects')" data-st="pjTabProjects">Projects</button>
+                        <button type="button" class="seg-btn" id="pj-tab-history" role="tab" onclick="PaiStudio.showProjectsTab('history')" data-st="pjTabHistory">Job history</button>
+                    </div>
+                    <button type="button" class="btn-nav" onclick="PaiStudio.refreshProjects()" data-st="refresh">Refresh</button>
+                </div>
+            </div>
+
+            <div class="stat-row" id="pj-stats"></div>
+
+            <div id="pj-panel-projects">
+                <div class="pj-grid" id="pj-grid"><div class="empty-state"><span class="spinner"></span></div></div>
+            </div>
+
+            <div id="pj-panel-history" class="hidden">
+                <div class="card" style="padding:0.4rem;">
+                    <div class="table-wrap" style="border:0;">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th data-st="histJob">Job</th><th data-st="histStatus">Status</th><th data-st="histPhase">Last phase</th><th data-st="histStarted">Started</th>
+                            </tr></thead>
+                            <tbody id="hist-body"><tr><td colspan="4"><div class="empty-state" style="border:0;"><span class="spinner"></span></div></td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- VIEW 6: SCRIPT EDITOR                                             -->
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <div id="view-editor" class="view-section">
+            <div class="view-head">
+                <div>
+                    <h2 class="view-title" id="se-title">Script Editor</h2>
+                    <div class="view-sub" id="se-sub" data-st="seSub">Fix a line, then re-render: only the lines you changed are re-voiced.</div>
+                </div>
+                <div class="toolbar">
+                    <button type="button" class="btn-nav" onclick="switchView('projects')" data-st="back">&larr; Projects</button>
+                </div>
+            </div>
+
+            <div class="se-bar" id="se-bar">
+                <input type="search" class="input-text grow" id="se-search" data-st-placeholder="seSearch" placeholder="Search narration or source..." autocomplete="off">
+                <div class="seg" role="group" aria-label="Filter lines">
+                    <button type="button" class="seg-btn active" data-se-filter="all" data-st="seAll">All</button>
+                    <button type="button" class="seg-btn" data-se-filter="review"><span data-st="seReview">Needs review</span> <span id="se-count-review" class="chip chip-warn">0</span></button>
+                    <button type="button" class="seg-btn" data-se-filter="over"><span data-st="seOver">Too long</span> <span id="se-count-over" class="chip chip-err">0</span></button>
+                    <button type="button" class="seg-btn" data-se-filter="edited" data-st="seEdited">Edited</button>
+                </div>
+                <span class="chip" id="se-dirty" data-st="seNoChanges">No changes</span>
+                <button type="button" class="btn-secondary" id="se-save" onclick="PaiStudio.saveScript(false)" data-st="seSave" disabled>Save</button>
+                <button type="button" class="btn-primary" id="se-save-render" onclick="PaiStudio.saveScript(true)" data-st="seSaveRender">Save &amp; re-render</button>
+            </div>
+
+            <details class="card se-tools" id="se-tools">
+                <summary class="card-title" data-st="stTitle">Story bible &amp; rename</summary>
+                <div id="se-bible" style="margin-top:1rem;"></div>
+                <div class="se-replace">
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="rp-find" data-st="rpFind">Find</label>
+                        <input type="text" class="input-text" id="rp-find" maxlength="80" autocomplete="off">
+                    </div>
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="rp-with" data-st="rpWith">Replace with</label>
+                        <input type="text" class="input-text" id="rp-with" maxlength="200" autocomplete="off">
+                    </div>
+                    <label class="switch-card" style="padding:0.45rem 0.7rem;"><span class="switch-card-text" data-st="rpMatchCase">Match case</span><input type="checkbox" id="rp-case"></label>
+                    <label class="switch-card" style="padding:0.45rem 0.7rem;"><span class="switch-card-text" data-st="rpWholeWord">Whole word (Latin)</span><input type="checkbox" id="rp-word"></label>
+                    <button type="button" class="btn-secondary" onclick="PaiStudio.previewReplace()" data-st="rpPreview">Preview</button>
+                    <button type="button" class="btn-primary" onclick="PaiStudio.applyReplace()" data-st="rpApply">Replace all</button>
+                </div>
+                <div id="rp-result" class="form-hint" style="margin-top:0.7rem;" aria-live="polite"></div>
+            </details>
+
+            <div class="se-list" id="se-list"><div class="empty-state"><span class="spinner"></span></div></div>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- VIEW 7: BRAND KIT (channel profiles)                              -->
+        <!-- ══════════════════════════════════════════════════════════════════ -->
+        <!-- Long to Short / Splitter panels and their results (built by static/js/tools.js) -->
+        <div id="view-tool" class="view-section"></div>
+
+        <div id="view-brand" class="view-section">
+            <div class="view-head">
+                <div>
+                    <h2 class="view-title" data-st="bkTitle">Brand Kit</h2>
+                    <div class="view-sub" data-st="bkSub">Save a channel's look and voice once; apply it to any new production in one click.</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title" data-st="bkSaveTitle">Save the current wizard settings</div>
+                        <div class="card-desc" data-st="bkSaveDesc">Voice, subtitle style, watermark, protection and audio choices are stored. The video, thumbnail title and story hint are per-video and never saved.</div>
+                    </div>
+                </div>
+                <div class="bk-form">
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="bk-name" data-st="bkName">Profile name</label>
+                        <input type="text" class="input-text" id="bk-name" maxlength="60" data-st-placeholder="bkNamePh" placeholder="e.g. My Recap Channel">
+                    </div>
+                    <button type="button" class="btn-primary" onclick="PaiStudio.saveProfileFromWizard()" data-st="bkSaveBtn">Save profile</button>
+                </div>
+            </div>
+
+            <div class="bk-grid" id="bk-grid"><div class="empty-state"><span class="spinner"></span></div></div>
+
+            <div class="card" style="margin-top:1.4rem;">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title" data-st="dictTitle">Pronunciation dictionary</div>
+                        <div class="card-desc" data-st="dictDesc">Fix names and loanwords the voice mispronounces. Only the spoken text changes; the script and subtitles keep the original spelling.</div>
+                    </div>
+                    <span class="chip" id="dict-count">0</span>
+                </div>
+                <label class="form-label" for="dict-text" data-st="dictLabel">One entry per line: original => how it should be read</label>
+                <textarea id="dict-text" class="textarea-control" style="height:150px; font-size:0.9rem; font-variant-ligatures:none;" spellcheck="false" placeholder="John => ဂျွန်း&#10;Spielberg => စပီးလ်ဘတ်&#10;# lines starting with # are notes"></textarea>
+                <div class="row-between mt-1">
+                    <span class="form-hint" data-st="dictHint">Latin words match as whole words, ignoring case. Burmese terms match anywhere in a line.</span>
+                    <button type="button" class="btn-primary" id="dict-save" onclick="PaiStudio.saveDictionary()" data-st="dictSave">Save dictionary</button>
+                </div>
+            </div>
+        </div>
+
             </main><!-- /container -->
         </div><!-- /app-main -->
     </div><!-- /app-shell -->
+
+    <!-- ══ MODAL: PROJECT QUALITY REPORT ══ -->
+    <div id="quality-modal-backdrop" class="modal-backdrop" onclick="if(event.target===this) PaiStudio.closeQuality()">
+        <div class="modal-dialog wide" role="dialog" aria-modal="true" aria-labelledby="quality-modal-title">
+            <div class="modal-header">
+                <div class="modal-title" id="quality-modal-title">Quality report</div>
+                <button class="modal-close" onclick="PaiStudio.closeQuality()" aria-label="Close">✕</button>
+            </div>
+            <div id="quality-modal-body"></div>
+            <div style="margin-top:1.25rem; display:flex; justify-content:flex-end; gap:0.5rem;">
+                <button class="btn-secondary" onclick="PaiStudio.closeQuality()" data-st="close">Close</button>
+            </div>
+        </div>
+    </div>
 
     <!-- ══ MODAL: HEALTH CHECK ══ -->
     <div id="health-modal-backdrop" class="modal-backdrop" onclick="if(event.target===this) closeHealthModal()">
@@ -2132,7 +1131,7 @@
             <div id="queue-modal-body">
                 <div id="queue-active-section" style="margin-bottom:1rem; display:none;">
                     <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:0.35rem;">Currently Active:</div>
-                    <div id="queue-active-card" style="padding:0.75rem; background:var(--accent-light); border-radius:8px; border:1px solid rgba(37,99,235,0.2);">
+                    <div id="queue-active-card" style="padding:0.75rem; background:var(--accent-light); border-radius:8px; border:1px solid var(--accent-glow);">
                         <div id="queue-active-title" style="font-weight:700; font-size:0.85rem;">Job</div>
                         <div id="queue-active-sub" style="font-size:0.75rem; color:var(--muted); margin-top:0.2rem;">Running</div>
                     </div>
@@ -2444,10 +1443,15 @@
             };
 
             setTxt('nav-subtitle-text', d.brandSubtitle);
-            setTxt('btn-tab-welcome', d.tabWelcome);
-            setTxt('btn-tab-studio', d.tabStudio);
-            setTxt('btn-tab-outputs', d.tabOutputs);
-            setTxt('btn-tab-inputs', d.tabInputs);
+            // The nav buttons hold an icon + a label: only the label may be replaced.
+            const setNavTxt = (id, txt) => {
+                const label = document.querySelector('#' + id + ' > span:not(.nav-count)');
+                if (label && txt) label.textContent = txt;
+            };
+            setNavTxt('btn-tab-welcome', d.tabWelcome);
+            setNavTxt('btn-tab-studio', d.tabStudio);
+            setNavTxt('btn-tab-outputs', d.tabOutputs);
+            setNavTxt('btn-tab-inputs', d.tabInputs);
 
             setTxt('welcome-badge-text', d.welcomeBadge);
             setTxt('welcome-hero-title', d.welcomeHeroTitle);
@@ -2531,29 +1535,42 @@
             setTxt('btn-view-outputs-gallery', d.btnViewOutputs);
             setTxt('gallery-outputs-title', d.galleryOutputsTitle);
             setTxt('gallery-inputs-title', d.galleryInputsTitle);
+
+            if (window.PaiStudio) PaiStudio.applyLanguage(lang);   // labels of the studio views (static/js/studio.js)
         }
 
         // ── View Switcher ──
+        // Views the router knows about; "editor" has no nav button of its own (it lives under Projects).
+        const VIEWS = ['welcome', 'studio', 'projects', 'editor', 'outputs', 'inputs', 'brand', 'tool'];
+        const NAV_OF_VIEW = { editor: 'projects', tool: 'welcome' };
+
         function switchView(viewName) {
             const titles = {
                 'welcome': 'Welcome & Overview',
                 'studio': 'Production Studio',
+                'projects': 'Projects',
+                'editor': 'Script Editor',
                 'outputs': 'Output Videos',
-                'inputs': 'Source Media Library'
+                'inputs': 'Source Media Library',
+                'brand': 'Brand Kit',
+                'tool': 'Tools'
             };
             const titleEl = document.getElementById('header-title-text');
-            if (titleEl && titles[viewName]) {
-                titleEl.textContent = titles[viewName];
+            const title = (window.PaiStudio && PaiStudio.viewTitle(viewName)) || titles[viewName];
+            if (titleEl && title) {
+                titleEl.textContent = title;
             }
-            ['welcome', 'studio', 'outputs', 'inputs'].forEach(v => {
+            VIEWS.forEach(v => {
                 const el = document.getElementById(`view-${v}`);
-                const btn = document.getElementById(`btn-tab-${v}`);
+                const btn = document.getElementById(`btn-tab-${NAV_OF_VIEW[v] || v}`);
                 if (el) el.classList.toggle('active', v === viewName);
-                if (btn) btn.classList.toggle('active', v === viewName);
+                if (btn) btn.classList.toggle('active', (NAV_OF_VIEW[v] || v) === (NAV_OF_VIEW[viewName] || viewName));
             });
             closeMobileSidebar();
+            window.scrollTo({ top: 0 });
             if (viewName === 'outputs') loadOutputs();
             if (viewName === 'inputs') loadMovies();
+            if (window.PaiStudio) PaiStudio.onShowView(viewName);
         }
 
         function toggleMobileSidebar() {
@@ -2832,6 +1849,13 @@
             };
             document.getElementById('rev-engine').textContent = engineNames[engine] || engine;
             document.getElementById('rev-style').textContent = `Style: ${styleNames[style] || style}`;
+            const revDelivery = document.getElementById('rev-delivery');
+            if (revDelivery) {
+                const mode = readDeliveryMode();
+                revDelivery.textContent = (typeof PaiStudio !== 'undefined' && PaiStudio.t)
+                    ? PaiStudio.t('revDelivery', { mode: PaiStudio.t('optDelivery' + mode.charAt(0).toUpperCase() + mode.slice(1)) })
+                    : `Delivery: ${mode}`;
+            }
 
             const hintVal = document.getElementById('input-context-hint') ? document.getElementById('input-context-hint').value.trim() : '';
             const revHintEl = document.getElementById('rev-context-hint');
@@ -2885,12 +1909,38 @@
             return null;
         }
 
+        // ── Delivery: finished video / CapCut pipeline / both ──
+        function readDeliveryMode() {
+            const checked = document.querySelector('input[name="delivery_mode"]:checked');
+            return checked ? checked.value : 'oneclick';
+        }
+
+        function handleDeliveryChange() {
+            const mode = readDeliveryMode();
+            document.querySelectorAll('.delivery-card').forEach(card => {
+                const input = card.querySelector('input');
+                card.classList.toggle('is-selected', Boolean(input && input.checked));
+            });
+            // In the CapCut pipeline the final render is skipped whatever the "Deliverable" menu says.
+            const renderWrap = document.getElementById('wrap-render-video');
+            if (renderWrap) renderWrap.classList.toggle('is-overridden', mode === 'capcut');
+            const note = document.getElementById('delivery-note');
+            if (note && typeof PaiStudio !== 'undefined' && PaiStudio.t) {
+                note.textContent = mode === 'capcut' ? PaiStudio.t('optDeliveryNoteCapcut') : (mode === 'both' ? PaiStudio.t('optDeliveryNoteBoth') : '');
+                note.style.display = note.textContent ? 'block' : 'none';
+            }
+        }
+
         const OPTION_READERS = {
             engine_mode:          () => $val('select-engine-mode'),
+            delivery_mode:        readDeliveryMode,
             source_language:      () => $val('select-source-lang'),
             language:             () => $val('select-lang'),
             translation_style:    () => $val('select-translation-style'),
             context_hint:         () => ($el('input-context-hint') ? $val('input-context-hint').trim() : '') || null,
+            story_length:         () => $val('select-story-length'),
+            narrative_tone:       () => $val('select-narrative-tone'),
+            tts_rate:             () => ($val('select-tts-rate') === '' ? null : parseInt($val('select-tts-rate'), 10)),
             resolution:           () => $val('select-resolution'),
             video_format:         () => $val('select-video-format'),
             reels_enabled:        () => ['both', '9:16'].includes($val('select-video-format')),
@@ -2945,7 +1995,8 @@
                 resolution: options.resolution,
                 blurMode: options.blur_mode,
                 thumbTitle: options.custom_thumb_title === 'none' ? 'No Title' : (options.custom_thumb_title || 'Auto AI'),
-                contextHint: options.context_hint
+                contextHint: options.context_hint,
+                deliveryMode: options.delivery_mode
             };
             renderActiveJobConfigBox();
 
@@ -2990,8 +2041,10 @@
             const badge = document.getElementById('active-job-engine-badge');
             if (badge) badge.textContent = currentJobConfig.engine.toUpperCase();
 
-            const tags = [
+            // Jobs started outside the wizard (e.g. a re-render from the Script Editor) bring their own tags.
+            const tags = currentJobConfig.customTags || [
                 `Engine: ${currentJobConfig.engine}`,
+                `Delivery: ${currentJobConfig.deliveryMode || 'oneclick'}`,
                 `Style: ${currentJobConfig.translationStyle}`,
                 `Audio: ${currentJobConfig.audioMode}`,
                 `SFX: ${currentJobConfig.sfxMode} (${Math.round(currentJobConfig.sfxVolume * 100)}%)`,
@@ -3069,9 +2122,14 @@
             const compActions = document.getElementById('completion-actions');
             if (compActions) compActions.style.display = 'flex';
             
-            const zipUrl = (data && data.zip_url) ? data.zip_url : '/api/download/zip?movie=latest';
+            // A job that built a CapCut package (delivery mode capcut / both) hands over that package.
+            const packageUrl = data && data.package_url ? data.package_url : null;
+            const zipUrl = packageUrl || ((data && data.zip_url) ? data.zip_url : '/api/download/zip?movie=latest');
             const zipBtn = document.getElementById('btn-auto-download-zip');
-            if (zipBtn) zipBtn.href = zipUrl;
+            if (zipBtn) {
+                zipBtn.href = zipUrl;
+                if (packageUrl && typeof PaiStudio !== 'undefined' && PaiStudio.t) zipBtn.textContent = PaiStudio.t('dlCapcut');
+            }
             
             const jid = (data && data.job_id) || currentJobId || 'default_job';
             const autoDlChk = document.getElementById('chk-auto-download');
@@ -3079,7 +2137,9 @@
 
             if (shouldDl && !downloadedJobs.has(jid)) {
                 downloadedJobs.add(jid);
-                showToast('🎉 Video Complete! Auto-downloading Output ZIP Bundle...', 'success');
+                showToast(packageUrl && typeof PaiStudio !== 'undefined' && PaiStudio.t
+                    ? PaiStudio.t('capDoneToast')
+                    : '🎉 Video Complete! Auto-downloading Output ZIP Bundle...', 'success');
                 setTimeout(() => {
                     const dlLink = document.createElement('a');
                     dlLink.href = zipUrl;
@@ -3600,7 +2660,8 @@
             const cont = document.getElementById('toast-container');
             if (!cont) return;
             const t = document.createElement('div');
-            t.className = 'toast-item';
+            t.className = 'toast-item ' + (['success', 'error', 'warn', 'warning'].includes(type) ? type : '');
+            t.setAttribute('role', type === 'error' ? 'alert' : 'status');
             t.textContent = msg;
             cont.appendChild(t);
             setTimeout(() => {
@@ -3618,5 +2679,7 @@
         updateStageBadge();
         setInterval(checkQueueStatus, 8000);
     </script>
+    <script src="/static/js/studio.js" defer></script>
+    <script src="/static/js/tools.js" defer></script>
 </body>
 </html>

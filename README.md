@@ -178,6 +178,8 @@ The following real-world benchmark was measured on a full 15-minute movie recap 
 ```text
 claude-Ai-movie/
 ├── hardsub_engine.py          ← Engine 3: 100% Original Audio & Burmese Hardsub Studio
+├── shorts_engine.py           ← Tool: Long to Short (best moments -> vertical Shorts / Reels)
+├── splitter_engine.py         ← Tool: cut a long video into parts
 ├── subtitle_engine.py         ← Engine 2: YouTube to Burmese Subtitle & Transcript Studio
 ├── main.py                    ← CLI: build_parser() + single / batch / download run modes
 ├── web_ui.py                  ← FastAPI app: middleware, REST endpoints, queue dispatcher
@@ -189,6 +191,19 @@ claude-Ai-movie/
 │   ├── subtitle_builder.py    ← ASS & SRT generators, style presets (single source: brain.config)
 │   ├── paths.py               ← Project-name sanitising & "stay inside this folder" path helpers
 │   ├── whisper_settings.py    ← One Whisper model / device / beam policy for all three engines
+│   ├── transcribe.py          ← Shared Faster-Whisper transcription (Engines 2 & 3)
+│   ├── transcript_quality.py  ← Drops Whisper repetition loops / credit artefacts before any API spend
+│   ├── translation_quality.py ← Offline validators: untranslated, English leaks, copies, duplicates, over-long
+│   ├── text_compare.py        ← Script-safe normalisation (keeps Myanmar vowel signs) + trigram similarity
+│   ├── text_render.py         ← Myanmar-safe text rendering via FFmpeg/HarfBuzz (outro card, watermark)
+│   ├── audio_trim.py          ← Trims Edge TTS lead-in / tail silence
+│   ├── delivery.py            ← Delivery mode (one-click / CapCut pipeline / both) and the @delivers decorator
+│   ├── clip_selection.py      ← Long to Short: validates the model's clips, offline scorer, overlap rules
+│   ├── short_ass.py           ← Subtitles + hook title for one Short (clip-relative times)
+│   ├── split_plan.py          ← Splitter: where to cut, snapped to pauses
+│   ├── encoders.py            ← Hardware / CPU encoder arguments shared by the tools
+│   ├── pronunciation.py       ← Pronunciation dictionary: the voice reads the spoken form, subtitles keep the written one
+│   ├── user_files.py          ← Where per-user settings live (next to config.json, or on Drive in Colab)
 │   └── video_blur.py          ← Vision AI bounding box calculation & FFmpeg boxblur filters
 │
 ├── services/                  ← Web UI runtime (no FastAPI code inside)
@@ -197,6 +212,10 @@ claude-Ai-movie/
 │   ├── job_runtime.py         ← stdout capture, single job lifecycle helper, the 5 pipeline workers
 │   ├── process_registry.py    ← Which ffmpeg / demucs processes belong to which job (job-scoped Stop)
 │   ├── schemas.py             ← Pydantic request models
+│   ├── projects.py            ← Script Editor (edit + un-complete render phases), quality report, saved job options
+│   ├── profiles.py            ← Brand Kit: channel profiles validated against the option model
+│   ├── capcut_export.py       ← capcut_package.zip for Recap / Subtitle / Hardsub / Shorts (BOM SRT + guide)
+│   ├── studio_api.py          ← Projects / script / quality / profiles / history / storage endpoints
 │   └── security.py            ← Auth, same-origin, DNS-rebinding and bind-address policy
 │
 ├── agents/                    ← Specialized Agentic Pipeline Modules
@@ -204,7 +223,9 @@ claude-Ai-movie/
 │   ├── downloader_agent.py    ← Multi-platform downloader + shared cookie discovery
 │   ├── video_agent.py         ← Video metadata: FPS, duration, resolution (OpenCV & FFprobe)
 │   ├── audio_agent.py         ← Audio extract + Faster-Whisper STT + Demucs separation
-│   ├── writer_agent.py        ← Dialogue translation: smoothing → keyframes → batch prompts → fallback
+│   ├── writer_agent.py        ← Dialogue translation: smoothing → story memory → flow → script blocks
+│   ├── story_memory.py        ← One-call "translation bible": characters, genders, spellings, terms (+ parser for the viewer)
+│   ├── translation_flow.py    ← Context windows, validated retries, batch split, per-line fallback, outage stop
 │   ├── seo_agent.py           ← Viral Title, Description, Tags, and Hashtags generator
 │   ├── voice_agent.py         ← Multi-Voice TTS, time-stretch, per-clip content manifest
 │   ├── video_merger_agent.py  ← Final-render facade (VideoMergerAgent = mixins from agents/merger/)
@@ -224,9 +245,14 @@ claude-Ai-movie/
 │   └── burmese_utils.py       ← Burmese syllable regex, number-to-words, acronym transliteration
 │
 ├── templates/
-│   └── index.html             ← Modern Glassmorphic Web UI with Theater Cinema Player
+│   └── index.html             ← Dashboard markup + wizard logic (theater cinema player included)
+├── static/
+│   ├── css/studio.css         ← Design system: light / dark themes, gold accent, responsive
+│   └── js/
+│       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
+│       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 304 unit / regression tests (pytest)
+├── tests/                     ← 786 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -309,6 +335,17 @@ Open your browser at: `http://localhost:5000`
 * **Live SSE Streaming Logs & Stopwatch:** Watch real-time terminal output and progress timers.
 * **Theater Cinema View:** Click `🎬 Cinema` on any generated card to preview in full screen.
 * **System Health Check:** Click the diagnostics icon to test FFmpeg encoders, active Gemini keys, Edge-TTS, and disk space.
+* **Projects & quality score:** every finished job gets a 0-100 score; lines the translator could not fix are flagged for review.
+* **Script Editor:** open a recap project, fix a line (or its voice gender) and press *Save & re-render* — only the changed lines are re-voiced and the video is re-rendered. Projects started before this feature need to be run once more (with *Resume* on) so their settings are saved.
+* **Brand Kit:** save the wizard's voice / subtitle / watermark / protection settings as a channel profile and apply it to any new production in one click (`profiles.json`, git-ignored).
+* **Pronunciation dictionary (Brand Kit):** one `written => spoken` pair per line (`dictionary.json`, git-ignored). The voice says the spoken form; subtitles keep the written one, and only the lines an entry touches are re-voiced.
+* **Story bible & rename (Script Editor):** see the characters / places / terms the translator used, and rename a character across the whole script with a live preview before applying.
+* **Story length, tone and speaking speed:** pick how long the recap is (`compact` … `scene by scene`), its tone (`brisk`, `calm`, `dramatic`) and the voice speed (-50…+100 %) in the wizard, or with `--story-length`, `--narrative-tone`, `--tts-rate` on the CLI.
+* **CapCut package:** the *CapCut* button on a finished project of any studio downloads `capcut_package.zip` (Recap: one narration track + Burmese-safe SRT + guide; Subtitle / Hardsub: SRT, original-language SRT, ASS, transcript; Shorts: clean clips + SRT + captions) so the final edit can continue in CapCut.
+* **Delivery mode - One-click or CapCut pipeline:** choose per production (wizard step 2, or `--delivery`) between the *finished video* (everything start to end), the *CapCut pipeline* (no slow final render; you get the package at the end, downloaded automatically) or *both*.
+* **Tools hub:** the home page is a grid of tools. **Long to Short** picks the best moments of a long video with Gemini and renders them as vertical Shorts / Reels (subtitles, hook title, caption and hashtags per clip); **Splitter** cuts a long video into parts at a pause in the speech.
+* **Test your Gemini keys** before saving them (*Test keys*): each key is checked and only masked results are shown.
+* **Light / dark theme** (press `T`), with Burmese, English and Thai labels.
 
 ---
 
@@ -327,6 +364,21 @@ python main.py --batch --format both
 
 # 4. Skip Demucs vocal separation on CPU for ultra-fast processing
 python main.py "movies/sample.mp4" --skip-demucs
+
+# 4b. The CapCut pipeline: no final render, a CapCut package at the end
+python main.py "movies/sample.mp4" --delivery capcut
+
+# 5. A shorter, faster-paced recap with a slightly quicker voice
+python main.py "movies/sample.mp4" --story-length compact --narrative-tone brisk --tts-rate 10
+```
+
+#### ✂️ Tools: Long to Short (`shorts_engine.py`) and Splitter (`splitter_engine.py`)
+```bash
+# Five vertical Shorts (20-60 s) with Burmese subtitles, as a CapCut package of clean clips
+python shorts_engine.py "movies/podcast.mp4" --clips 5 --focus funny --delivery capcut
+
+# Cut a long video into 10-minute parts at a pause in the speech
+python splitter_engine.py "movies/long_film.mp4" --minutes 10
 ```
 
 #### 📝 Engine 2: YouTube Subtitle & Transcript Studio (`subtitle_engine.py`)

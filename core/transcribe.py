@@ -6,6 +6,7 @@ end times never outlive the speech (see ``core.segment_timing``). Engines 2 and 
 two near-identical copies.
 """
 
+import inspect
 import os
 import subprocess
 import time
@@ -13,10 +14,30 @@ from typing import Callable, Dict, List, Optional
 
 from brain.diagnostics import log_suppressed
 from core.segment_timing import tighten_end
+from core.transcript_quality import clean_and_report
 from core.whisper_settings import load_faster_whisper, resolve_beam_size
 
 # A real 16 kHz WAV is far larger; anything below is an empty / header-only extraction.
 _MIN_WAV_BYTES = 100
+
+
+def _supported_kwargs(func: Callable, kwargs: Dict, log: Callable[[str], None]) -> Dict:
+    """
+    ``kwargs`` minus the options this faster-whisper version does not know. requirements.txt only asks for
+    ``faster-whisper>=1.0.0`` and newer options (e.g. ``hallucination_silence_threshold``) are missing from
+    older installs, where passing them would make the whole transcription fail with a TypeError.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    dropped = [k for k in kwargs if k not in params]
+    if dropped:
+        log(f"[*] This faster-whisper version does not support {', '.join(dropped)}; continuing without "
+            "(pip install -U faster-whisper to enable it).")
+    return {k: v for k, v in kwargs.items() if k in params}
 
 
 def transcribe_media(
@@ -62,10 +83,15 @@ def transcribe_media(
             "beam_size": resolve_beam_size(pipeline_cfg),
             "vad_filter": True,
             "word_timestamps": True,
+            # Each segment is decoded on its own: carrying the previous text forward is what lets
+            # Whisper lock into a repeat loop on music/noise. Word timestamps are on, so it can also
+            # skip hallucinated text that appears inside long silences.
+            "condition_on_previous_text": False,
+            "hallucination_silence_threshold": 2.0,
         }
         if vad_parameters:
             kwargs["vad_parameters"] = vad_parameters
-        segments, _info = model.transcribe(audio_target, **kwargs)
+        segments, _info = model.transcribe(audio_target, **_supported_kwargs(model.transcribe, kwargs, log))
 
         results: List[Dict] = []
         for seg in segments:
@@ -75,7 +101,8 @@ def transcribe_media(
             # Whisper segments run on through silence/music; never outlive the speech.
             end = tighten_end(seg.start, seg.end, text, getattr(seg, "words", None))
             results.append({"start": seg.start, "end": end, "text": text})
-        return results
+        # Drop repetition loops / credit artefacts before anything downstream spends API quota.
+        return clean_and_report(results, log)
     finally:
         if extracted and os.path.exists(temp_audio):
             try:

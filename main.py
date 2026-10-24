@@ -291,12 +291,12 @@ _HARDSUB_KEYS = (
     "project_name", "source_language", "force_whisper", "video_format", "resolution",
     "subtitle_style", "blur_mode", "mirror", "color_grading", "blur_height",
     "audio_anti_copyright", "translation_style", "audio_mode", "sfx_mode", "sfx_volume",
-    "render_video", "context_hint",
+    "render_video", "context_hint", "delivery_mode",
 )
 _SUBTITLE_KEYS = (
     "project_name", "source_language", "force_whisper", "translation_style", "audio_mode",
     "sfx_mode", "sfx_volume", "render_video", "video_format", "resolution", "subtitle_style",
-    "blur_mode", "mirror", "color_grading", "blur_height", "audio_anti_copyright", "context_hint",
+    "blur_mode", "mirror", "color_grading", "blur_height", "audio_anti_copyright", "context_hint", "delivery_mode",
 )
 
 
@@ -341,6 +341,10 @@ def recap_common_kwargs(args, opts) -> dict:
         audio_anti_copyright=v["audio_anti_copyright"],
         render_video=v["render_video"],
         context_hint=v["context_hint"],
+        story_length=v["story_length"],
+        narrative_tone=v["narrative_tone"],
+        tts_rate=v["tts_rate"],
+        delivery_mode=v["delivery_mode"],
     )
 
 

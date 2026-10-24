@@ -320,7 +320,10 @@ class TestHardsubEngine(unittest.TestCase):
             {"id": 1, "original": "I understand sir.", "start": 0.0, "end": 2.0},
             {"id": 2, "original": "Thank you.", "start": 2.1, "end": 4.0},
         ]
-        res = self.engine._translate_dialogue(segments)
+        # The QA repair pass (covered in test_engine_base) would now re-translate the English fallback;
+        # this test is about the batch stage, so switch it off.
+        with patch.object(self.engine, "_audit_and_repair_untranslated", side_effect=lambda segs, **kw: segs):
+            res = self.engine._translate_dialogue(segments)
         self.assertEqual(res[0]["burmese"], "ကျနော် သိပါပြီ ခင်ဗျာ")
         self.assertEqual(res[0]["speaker_gender"], "male")
         # Item 2 should have safe fallback to original text instead of dropping item 1

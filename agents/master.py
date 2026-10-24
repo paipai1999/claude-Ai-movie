@@ -1,4 +1,6 @@
 from brain.diagnostics import log_suppressed
+from core import delivery
+from core.translation_quality import block_is_silent
 import os
 import sys
 import io
@@ -122,6 +124,10 @@ class MasterAgent:
         render_video: bool = None,
         stage_toggles: dict = None,
         context_hint: str = None,
+        story_length: str = None,
+        narrative_tone: str = None,
+        tts_rate: int = None,
+        delivery_mode: str = None,
     ):
         self.movie_path = movie_path
         self.resume = bool(resume)
@@ -163,6 +169,9 @@ class MasterAgent:
             self.script_engine = "recap"
 
         self.context_hint = str(context_hint).strip() if context_hint else None
+        self.story_length = str(story_length or "standard").lower().strip()
+        self.narrative_tone = str(narrative_tone or "natural").lower().strip()
+        self.tts_rate = int(tts_rate) if tts_rate not in (None, "") else None
         self.audio_mode = str(audio_mode or os.getenv("AUDIO_MODE") or "ai_voiceover").lower().strip()
         self.sfx_mode = str(sfx_mode or os.getenv("SFX_MODE") or "original_sfx").lower().strip()
         self.sfx_volume = float(sfx_volume if sfx_volume is not None else 0.15)
@@ -186,6 +195,12 @@ class MasterAgent:
             if self.video_format == "both":
                 self.video_format = "16:9"
 
+        # Delivery: the CapCut pipeline skips the final render and builds capcut_package.zip at the end (core/delivery.py).
+        self.delivery_mode = delivery.normalize(delivery_mode)
+        if not delivery.wants_video(self.delivery_mode):
+            self.render_video = False
+        self.package_info = None
+
         self.state = MovieState(movie_name=movie_name)
         self.state.movie_path = movie_path
         self.state.skip_demucs = self.skip_demucs
@@ -197,6 +212,9 @@ class MasterAgent:
         self.state.script_engine = self.script_engine
         self.state.translation_style = self.translation_style
         self.state.context_hint = self.context_hint
+        self.state.story_length = self.story_length
+        self.state.narrative_tone = self.narrative_tone
+        self.state.tts_rate = self.tts_rate
         self.state.audio_mode = self.audio_mode
         self.state.sfx_mode = self.sfx_mode
         self.state.sfx_volume = self.sfx_volume
@@ -281,11 +299,18 @@ class MasterAgent:
             str(self.script_engine),
             str(self.context_hint or "").strip(),
         ]
+        # Added only when chosen, so the signature of every project made before these options existed is unchanged.
+        if self.story_length != "standard":
+            parts.append("length=" + self.story_length)
+        if self.narrative_tone != "natural":
+            parts.append("tone=" + self.narrative_tone)
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _voice_signature(self) -> str:
         """Fingerprint of everything that changes the synthesized voice clips."""
         parts = [str(self.tts_engine).lower(), str(self.tts_voice), str(self.audio_mode)]
+        if self.tts_rate is not None:
+            parts.append("rate=" + str(self.tts_rate))   # a different speed re-voices every line
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _clear_voiceover_clips(self, output_dir: str) -> int:
@@ -382,11 +407,13 @@ class MasterAgent:
             vo_dir = os.path.join(proj_dir, "voiceover")
             if not os.path.exists(vo_dir):
                 return False
-            n_script = len(getattr(self.state, "generated_script", []) or [])
-            if n_script == 0:
+            script = getattr(self.state, "generated_script", []) or []
+            if not script:
                 return False
+            # Lines that were never translated are left silent on purpose: they have no clip to wait for.
+            n_voiced = sum(1 for b in script if not block_is_silent(b))
             mp3s = [f for f in os.listdir(vo_dir) if f.startswith("scene_") and f.endswith(".mp3") and os.path.getsize(os.path.join(vo_dir, f)) > 1000]
-            return len(mp3s) >= n_script
+            return len(mp3s) >= n_voiced
 
         elif phase_id == PHASE_6_MERGE:
             final_mp4 = os.path.join(proj_dir, "final_recap.mp4")
@@ -627,6 +654,7 @@ class MasterAgent:
             voice=self.tts_voice,
             output_dir=output_dir,
             tts_engine=self.tts_engine,
+            rate=self.tts_rate,
         )
         self.video_merger    = VideoMergerAgent(
             output_dir=output_dir,
@@ -893,7 +921,7 @@ class MasterAgent:
                         s_start = float(block.get("start_sec") or 0.0)
                         s_end = float(block.get("end_sec") or (s_start + 3.0))
                         txt = str(block.get("narration") or block.get("text") or "").strip()
-                        if txt:
+                        if txt and not block_is_silent(block):
                             sub_timings.append((s_start, max(s_end - s_start, 0.8), txt))
             if sub_timings:
                 out_p = os.path.join(self.output_dir, self.state.project_dir)
@@ -981,7 +1009,7 @@ class MasterAgent:
         if self._should_run_phase(PHASE_7_QA):
             p7_t0 = time.time()
             qa_cfg = config.load_config().get("qa", {})
-            if qa_cfg.get("enabled", False):
+            if qa_cfg.get("enabled", False) and self.render_video:
                 final_video_path = os.path.join(self.output_dir, self.state.project_dir, "final_recap.mp4")
                 if not os.path.exists(final_video_path):
                     reels_candidate = os.path.join(self.output_dir, self.state.project_dir, "final_reels.mp4")
@@ -1003,6 +1031,9 @@ class MasterAgent:
                     print(f"[!] QA: No output video (recap/reels) found at '{final_video_path}' — skipping QA phase.")
                     self.state.warnings.append("QA pending: Output video was not found")
                     self.state.phase_durations["Phase 7: QA Review"] = 0.0
+            elif qa_cfg.get("enabled", False):
+                print("[*] QA Phase: skipped (no video is rendered in the CapCut pipeline).")
+                self.state.phase_durations["Phase 7: QA Review"] = 0.0
             else:
                 print("[*] QA Phase: Disabled (set qa.enabled=true in config.json to enable)")
                 self.state.phase_durations["Phase 7: QA Review"] = 0.0
@@ -1019,7 +1050,7 @@ class MasterAgent:
 
         # Final status is explicit: a rendered video is not automatically QA-complete.
         self.state.progress = 100
-        qa_enabled = config.load_config().get("qa", {}).get("enabled", False)
+        qa_enabled = config.load_config().get("qa", {}).get("enabled", False) and self.render_video
         qa_complete = isinstance(getattr(self.state, "qa_results", None), dict) and self.state.qa_results.get("status") == "completed"
         if qa_enabled and not qa_complete:
             self.state.pipeline_status = "QA_PENDING"
@@ -1042,7 +1073,7 @@ class MasterAgent:
         print(f"   {'-'*56}")
         print(f"   🌟 TOTAL DURATION                          : {total_elapsed:>7.2f}s ({self.state.total_duration_formatted})")
         print(f"\n📦 OUTPUT DIRECTORY: outputs/{self.state.project_dir}/")
-        if self.video_format in ["16:9", "both"]:
+        if self.render_video and self.video_format in ["16:9", "both"]:
             print("   ├─ final_recap.mp4         (16:9 YouTube Video)")
         if getattr(self.state, "reels_video_path", None) and os.path.exists(self.state.reels_video_path):
             print("   ├─ final_reels.mp4         (9:16 Facebook Reels Canvas Video)")
@@ -1083,6 +1114,10 @@ class MasterAgent:
                     os.startfile(os.path.abspath(output_folder))
                 except Exception as _exc:
                     log_suppressed("agents.master._finish_run", _exc)
+
+        # CapCut pipeline / both: the package is built last, from the saved state and voice clips.
+        self.package_info = delivery.build_package(
+            os.path.join(self.output_dir, self.state.project_dir), self.delivery_mode, self.state.project_dir)
 
     def _is_cancelled(self) -> bool:
         if self.cancel_event and getattr(self.cancel_event, "is_set", lambda: False)():

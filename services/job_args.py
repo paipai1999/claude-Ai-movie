@@ -27,6 +27,16 @@ def worker_option_names(worker: Callable) -> List[str]:
     return [_ALIASES.get(p, p) for p in params if p != "job_id"]
 
 
+def options_from_call(worker: Callable, bound: Mapping[str, Any]) -> dict:
+    """
+    The option snapshot of a worker call (``locals()`` taken at the top of the worker), keyed by option
+    name - the inverse of ``build_worker_args``. Used to save how a project was started so it can be
+    re-run with exactly the same settings.
+    """
+    params = [p for p in inspect.signature(worker).parameters if p != "job_id"]
+    return {_ALIASES.get(p, p): bound[p] for p in params if p in bound}
+
+
 def build_worker_args(worker: Callable, job_id: str, resolved: Mapping[str, Any], **extra: Any) -> tuple:
     """
     ``(job_id, *values)`` in the order of ``worker``'s signature.

@@ -154,6 +154,91 @@ class TestRepairKeepsEngineDifferences(_Tmp):
         self.assertFalse(result[0]["burmese"].endswith("။"))  # trailing punctuation still stripped
 
 
+class TestDamagedLineDetection(_Tmp):
+    """The repair pass must catch lines that were never translated, not only foreign-script leftovers."""
+
+    OK = "ကျနော် သိပါပြီ"
+
+    def damaged(self, *pairs):
+        segs = [{"id": i + 1, "original": o, "burmese": b} for i, (o, b) in enumerate(pairs)]
+        return StudioEngineBase._find_damaged(segs)
+
+    def test_english_fallback_line_is_damaged(self):
+        # A failed batch copies the source text in: it contains no Burmese, so the old CJK-only check missed it.
+        self.assertEqual(self.damaged(("Thank you very much.", "Thank you very much."), ("Hello", self.OK)), [0])
+
+    def test_empty_and_foreign_script_lines_are_still_damaged(self):
+        self.assertEqual(self.damaged(("a b c", ""), ("快跑", "快跑"), ("hi there", self.OK)), [0, 1])
+
+    def test_loose_english_words_inside_a_burmese_line(self):
+        self.assertEqual(self.damaged(("x", self.OK + " Pai Studio Movie")), [0])
+
+    def test_acronyms_and_a_single_brand_word_are_accepted(self):
+        self.assertEqual(self.damaged(("It is on CCTV", self.OK + " CCTV"), ("Use WiFi", self.OK + " iPhone")), [])
+
+    def test_sound_only_lines_are_left_alone(self):
+        self.assertEqual(self.damaged(("♪ ♪", "♪ ♪"), ("...", "..."), ("hi there", self.OK)), [])
+
+    def test_lines_whose_source_is_already_burmese_are_not_repaired(self):
+        self.assertEqual(self.damaged(("မင်္ဂလာပါ", "မင်္ဂလာပါ")), [])
+
+    def test_model_chatter_is_damaged(self):
+        self.assertEqual(self.damaged(("x y z", "Here is the translation: " + self.OK)), [0])
+
+    def test_repair_pass_now_fixes_an_english_fallback(self):
+        segs = [
+            {"id": 1, "original": "Thank you very much.", "burmese": "Thank you very much."},
+            {"id": 2, "original": "Hello", "burmese": self.OK},
+        ]
+        answer = json.dumps([{"id": 1, "burmese": "ကျေးဇူးအများကြီးတင်ပါတယ်"}], ensure_ascii=False)
+        with patch.object(hardsub_engine, "call_gemini", return_value=(answer, "stub")) as call, \
+                patch("time.sleep", lambda s: None), patch.dict(os.environ, {"GEMINI_API_KEYS": "k"}):
+            result = self.hard._audit_and_repair_untranslated(segs)
+        self.assertEqual(self.hard.last_damaged_count, 1)
+        self.assertEqual(self.hard.last_repaired_count, 1)
+        self.assertEqual(result[0]["burmese"], "ကျေးဇူးအများကြီးတင်ပါတယ်")
+        self.assertEqual(result[1]["burmese"], self.OK)
+        self.assertEqual(call.call_count, 1)
+
+
+class TestStoryBlock(_Tmp):
+    LINES = [f"This is a spoken line number {i}, long enough to count." for i in range(30)]
+    BIBLE = json.dumps({"summary": "S", "characters": [{"name": "John", "target_name": "ဂျွန်", "gender": "male"}]})
+
+    def _block(self, engine, module, lines=None, keys="k"):
+        calls = []
+
+        def fake(**kw):
+            calls.append(kw)
+            return self.BIBLE, "stub"
+
+        with patch.object(module, "call_gemini", side_effect=fake), patch.dict(os.environ, {"GEMINI_API_KEYS": keys}):
+            return engine._story_block(lines or self.LINES, "hero is John", "My Film"), calls
+
+    def test_block_is_built_with_the_engines_own_model_binding(self):
+        for engine, module in ((self.hard, hardsub_engine), (self.sub, subtitle_engine)):
+            with self.subTest(engine=type(engine).__name__):
+                block, calls = self._block(engine, module)
+                self.assertTrue(block.startswith("STORY BIBLE"))
+                self.assertTrue(block.endswith("\n\n"))
+                self.assertIn("ဂျွန်", block)
+                self.assertEqual(len(calls), 1)
+                self.assertIn("hero is John", calls[0]["user_prompt"])     # the user's guidance is passed on
+                self.assertEqual(calls[0]["response_mime_type"], "application/json")
+
+    def test_short_clips_and_missing_keys_cost_nothing(self):
+        block, calls = self._block(self.hard, hardsub_engine, lines=self.LINES[:5])
+        self.assertEqual((block, calls), ("", []))
+        self.hard.config_data = {"gemini": {"api_keys": []}}
+        block, calls = self._block(self.hard, hardsub_engine, keys="")
+        self.assertEqual((block, calls), ("", []))
+
+    def test_failure_is_silent(self):
+        with patch.object(hardsub_engine, "call_gemini", side_effect=RuntimeError("quota")), \
+                patch.dict(os.environ, {"GEMINI_API_KEYS": "k"}):
+            self.assertEqual(self.hard._story_block(self.LINES, None, ""), "")
+
+
 class TestSubtitleParse(unittest.TestCase):
     def test_srt_with_markup_and_multiline_text(self):
         cues = parse_subtitle_cues("1\n00:00:01,000 --> 00:00:03,500\nHello <i>there</i>\nsecond\n\n"

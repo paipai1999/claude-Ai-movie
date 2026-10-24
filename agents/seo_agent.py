@@ -144,12 +144,16 @@ class SEOAgent:
                 "hashtags": ["#movierecap", "#filmexplained", "#storyrecap", "#endingexplained", "#cinema"]
             }
 
-    def export_final_outputs(self, state: MovieState):
-        """Exports readable TXT script and JSON metadata into the output directory."""
-        import brain.config as cfg
-        config_data = cfg.load_config()
-        output_base = config_data.get("paths", {}).get("output_dir", "outputs")
-        output_dir = os.path.join(output_base, state.project_dir)
+    def export_final_outputs(self, state: MovieState, output_dir: str = None):
+        """
+        Exports readable TXT script and JSON metadata into the output directory
+        (``outputs/<project>`` unless ``output_dir`` names the project folder explicitly).
+        """
+        if output_dir is None:
+            import brain.config as cfg
+            config_data = cfg.load_config()
+            output_base = config_data.get("paths", {}).get("output_dir", "outputs")
+            output_dir = os.path.join(output_base, state.project_dir)
         os.makedirs(output_dir, exist_ok=True)
 
         # 1. Export human-readable script TXT

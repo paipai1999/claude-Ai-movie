@@ -72,9 +72,14 @@ class MovieState(BaseModel):
     mirror: Optional[bool] = False  # Horizontal mirror for anti-copyright
     audio_anti_copyright: Optional[bool] = False  # Subtle audio tempo perturbation (atempo=1.008)
     context_hint: Optional[str] = None  # Optional user story/character guidance for translation and scriptwriting
+    story_length: Optional[str] = "standard"  # Recap storyteller: "standard" | "compact" | "detailed" | "scene"
+    narrative_tone: Optional[str] = "natural"  # Recap storyteller: "natural" | "brisk" | "calm" | "dramatic"
+    tts_rate: Optional[int] = None  # Narration speed in percent; None = the configured default
     tts_voice: Optional[str] = None  # Effective TTS voice used for the cached voiceover clips
     script_signature: Optional[str] = None  # Fingerprint of the options that shaped generated_script (style/lang/hint)
     voice_signature: Optional[str] = None  # Fingerprint of the options that shaped the voiceover clips (engine/voice)
+    story_context: Optional[str] = None  # Translation bible (characters, genders, terms) shared by every batch prompt
+    story_context_key: Optional[str] = None  # Fingerprint of the transcript the bible was built from
 
     model_config = {"extra": "allow"}
     qa_results: Optional[Dict[str, Any]] = None  # Phase 7: QA Agent review results

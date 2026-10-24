@@ -1,10 +1,12 @@
 from brain.diagnostics import log_suppressed
 import json
-import math
 import os
 import re
 from brain.memory import MovieState
 from brain.gemini_client import call_gemini
+from agents.story_memory import build_story_context, context_key as story_context_key
+from agents.translation_flow import TranslationFlow
+from core.translation_quality import is_unspeakable
 from brain.prompts import (
     FULL_MOVIE_TRANSLATION_SYSTEM_PROMPT,
     MOVIE_RECAP_STORYTELLER_SYSTEM_PROMPT,
@@ -18,6 +20,22 @@ from brain.burmese_utils import (
     transliterate_english_acronyms,
     sanitize_burmese_narration,
 )
+
+
+# Recap-style directives chosen in the wizard. "standard" / "natural" add nothing, so default prompts are unchanged.
+_LENGTH_DIRECTIVES = {
+    "compact": "LENGTH - COMPACT RECAP: tell only the plot-critical events. Skip minor beats and filler, and fold "
+               "what happens in a few seconds into one short line. Use at most about 70% of each `max_chars`.",
+    "detailed": "LENGTH - DETAILED: include the visible actions, emotions and small story beats between the main "
+                "events. Use most of each line's `max_chars` for rich, concrete narration.",
+    "scene": "LENGTH - SCENE BY SCENE: narrate every scene and beat in order, using the keyframe images together "
+             "with the dialogue. Leave nothing out and fill each line's `max_chars`.",
+}
+_TONE_DIRECTIVES = {
+    "brisk": "TONE - BRISK: energetic and fast-paced, punchy sentences with constant momentum.",
+    "calm": "TONE - CALM: a calm, unhurried, reflective storyteller with gentle phrasing.",
+    "dramatic": "TONE - DRAMATIC: suspenseful and theatrical; build tension and use short striking sentences before reveals.",
+}
 
 
 class WriterAgent:
@@ -88,14 +106,27 @@ class WriterAgent:
 
         print(f"[*] WriterAgent: Found {total_count} sentence-level dialogue segments to translate (100% full coverage).")
 
+        if not gemini_key:
+            # Without a key every line used to fall back to its untranslated source text and the job "succeeded"
+            # with a film narrated in the wrong language. Fail early, with the fix.
+            raise RuntimeError(
+                "No Gemini API key is configured, so the dialogue cannot be translated. Add a key in the "
+                "dashboard settings or set GEMINI_API_KEYS. / Gemini API key မရှိသေးပါ - dashboard settings "
+                "ထဲမှာ ထည့်ပါ သို့မဟုတ် GEMINI_API_KEYS environment variable ကို သတ်မှတ်ပါ။"
+            )
+
+        # 2. Story bible: names, genders and terms stay consistent across all batches (best effort, cached)
+        self._story_context(state, raw_segments, gemini_key, model_workhorse)
+
         all_translated = self._translate_batches(raw_segments, state, movie_path, gemini_key, model_workhorse)
 
         # 3. Action Narration Bridge: Bridge silent or long action gaps (> 18s)
-        if gemini_key:
-            all_translated = self._bridge_action_narration(all_translated, state, gemini_key, model_workhorse)
+        all_translated = self._bridge_action_narration(all_translated, state, gemini_key, model_workhorse)
 
         state.generated_script = all_translated
-        print(f"[OK] WriterAgent: 100% Full Movie Dialogue Translation complete! Total {len(all_translated)} dialogue lines dubbed.")
+        flagged = sum(1 for b in all_translated if b.get("needs_review"))
+        print(f"[OK] WriterAgent: Full Movie Dialogue Translation complete! Total {len(all_translated)} dialogue lines dubbed"
+              + (f" ({flagged} flagged for review - see the Script Editor)." if flagged else "."))
         return state
 
     # ─────────────────────────────────────────────────────
@@ -306,14 +337,50 @@ class WriterAgent:
     # ─────────────────────────────────────────────────────
     # Step 3 – batched translation with per-line fallback
     # ─────────────────────────────────────────────────────
-    def _build_batch_prompt(self, batch: list, state: MovieState) -> tuple:
-        """Returns (system_prompt, user_prompt) for one batch according to the active translation style."""
+    def _style_directive(self, state: MovieState) -> str:
+        """Length / tone instructions for the recap storyteller ("" for other modes and for the default choices)."""
+        if self.script_engine != "recap":
+            return ""
+        lines = [
+            _LENGTH_DIRECTIVES.get(str(getattr(state, "story_length", "") or "").lower()),
+            _TONE_DIRECTIVES.get(str(getattr(state, "narrative_tone", "") or "").lower()),
+        ]
+        lines = [ln for ln in lines if ln]
+        return ("NARRATION STYLE (follow strictly):\n" + "\n".join(lines) + "\n\n") if lines else ""
+
+    @staticmethod
+    def _context_block(state: MovieState, context: dict | None) -> str:
+        """Story bible + the neighbouring lines (already translated before, still to come after) for a batch prompt."""
+        parts = []
+        story = (getattr(state, "story_context", None) or "").strip()
+        if story:
+            parts.append(story + "\n\n")
+        context = context or {}
+        if context.get("previous"):
+            parts.append(
+                "PREVIOUS LINES (already translated - context only, DO NOT output them; continue their voice, "
+                "tense and name spellings):\n" + json.dumps(context["previous"], ensure_ascii=False) + "\n\n"
+            )
+        if context.get("next"):
+            parts.append(
+                "UPCOMING SOURCE LINES (context only - DO NOT translate or output them; read them to finish a "
+                "sentence that is cut at a line boundary):\n" + json.dumps(context["next"], ensure_ascii=False) + "\n\n"
+            )
+        if context.get("previous") or context.get("next"):
+            parts.append("Translate ONLY the dialogue lines in the main list below.\n\n")
+        return "".join(parts)
+
+    def _build_batch_prompt(self, batch: list, state: MovieState, context: dict | None = None, feedback: str = "") -> tuple:
+        """
+        Returns (system_prompt, user_prompt) for one batch according to the active translation style.
+        ``context``: ``{"previous": [...], "next": [...]}`` neighbouring lines; ``feedback``: corrections for a retry.
+        """
         active_style = getattr(state, "translation_style", None) or self.script_engine or "recap"
         active_style = str(active_style).lower().strip()
-        hint_str = ""
+        hint_str = self._context_block(state, context) + self._style_directive(state)
         custom_hint = getattr(state, "context_hint", None)
         if custom_hint and str(custom_hint).strip():
-            hint_str = f"USER STORY & CHARACTER GUIDANCE:\n{str(custom_hint).strip()}\n\n"
+            hint_str += f"USER STORY & CHARACTER GUIDANCE:\n{str(custom_hint).strip()}\n\n"
 
         if active_style in ["wuxia", "cultivation", "historical", "costume"]:
             sys_prompt = WUXIA_BURMESE_TRANSLATION_SYSTEM_PROMPT
@@ -384,143 +451,180 @@ class WriterAgent:
                 f"Output a JSON array where each object has: id, narration, start_sec, end_sec, emotion, character, gender (\"male\" or \"female\")."
             )
 
+        if feedback:
+            batch_prompt += (
+                "\n\nCORRECTIONS REQUIRED - your previous answer for these lines was rejected:\n"
+                f"{feedback}\n"
+                "Return the complete, corrected objects for exactly the lines in the list above."
+            )
         return sys_prompt, batch_prompt
+
+    def _is_burmese(self) -> bool:
+        return str(getattr(self, "language", "burmese")).lower() in ("burmese", "mm", "myanmar")
+
+    @staticmethod
+    def _check_cancelled() -> None:
+        """Stop pressed in the dashboard: abort between Gemini calls instead of finishing the whole film."""
+        if os.environ.get("CURRENT_JOB_CANCELLED") == "1":
+            raise InterruptedError("Script writing cancelled by user.")
+
+    def _clean_callbacks(self):
+        """(pre_clean, final_clean) for the translation flow: Burmese digit/acronym/script clean-up."""
+        if not self._is_burmese():
+            return (lambda t: t), (lambda t: t)
+
+        def pre_clean(text: str) -> str:
+            try:
+                return transliterate_english_acronyms(replace_numbers_with_burmese(text))
+            except Exception as exc:
+                log_suppressed("agents.writer_agent.pre_clean", exc)
+                return text
+
+        def final_clean(text: str) -> str:
+            try:
+                return sanitize_burmese_narration(text)
+            except Exception as exc:
+                log_suppressed("agents.writer_agent.final_clean", exc)
+                return text
+
+        return pre_clean, final_clean
+
+    def _story_context(self, state: MovieState, raw_segments: list, gemini_key, model: str) -> str:
+        """The story bible for this film (one extra Gemini call, cached on the state); "" when unavailable."""
+        lines = [s["text"] for s in raw_segments]
+        key = story_context_key(lines, self.language, state.movie_name)
+        cached = getattr(state, "story_context", None)
+        if cached and getattr(state, "story_context_key", None) == key:
+            return cached
+        block = build_story_context(
+            lines,
+            target_language=self.language,
+            movie_name=state.movie_name,
+            api_key=gemini_key,
+            model=model,
+            call=call_gemini,
+            hint=getattr(state, "context_hint", None) or "",
+        )
+        state.story_context = block or None
+        state.story_context_key = key if block else None
+        return block
 
     def _translate_batches(self, raw_segments: list, state: MovieState, movie_path: str,
                            gemini_key, model_workhorse: str) -> list:
-        """Translates every segment (20 per Gemini call); dropped lines get an individual retry."""
-        total_count = len(raw_segments)
+        """
+        Translates every segment through ``TranslationFlow`` (batches of 20 with neighbouring-line context,
+        validated answers, corrective retries, batch splitting, per-line fallback) and returns the script blocks.
+        Lines that could not be translated reliably keep their source text and carry ``needs_review``.
+        """
         vid_path = self._resolve_video_path(state, movie_path)
-        _extract_keyframe_b64 = self._extract_keyframe_b64
+        frames: dict = {}
 
-        # 2. Batch dialogue lines (20 per batch) for fast, reliable Gemini translation
-        BATCH_SIZE = 20
+        def frame_at(t_sec: float):
+            key = round(float(t_sec), 1)
+            if key not in frames:
+                frames[key] = self._extract_keyframe_b64(vid_path, t_sec) if vid_path and os.path.exists(vid_path) else None
+            return frames[key]
+
+        def images_for(lines: list) -> list:
+            """1-2 representative keyframes per request for visual diarization & context."""
+            picks = [len(lines) // 2] if len(lines) <= 5 else [0, len(lines) // 2]
+            out = []
+            for i in picks:
+                shot = frame_at((lines[i]["start_sec"] + lines[i]["end_sec"]) / 2.0)
+                if shot:
+                    out.append(shot)
+            return out
+
+        def ask_batch(lines: list, context: dict, feedback: str):
+            if not gemini_key:
+                return None
+            sys_prompt, prompt = self._build_batch_prompt(lines, state, context, feedback)
+            raw, _model = call_gemini(
+                sys_prompt,
+                prompt,
+                gemini_key,
+                model_workhorse,
+                temperature=0.2 if feedback else 0.3,
+                # Burmese is token-hungry: a fixed 4096 cut 20-line answers off mid-array.
+                max_tokens=min(16384, 3072 + 450 * len(lines)),
+                response_mime_type="application/json",
+                images=images_for(lines) or None,
+            )
+            return self._parse_script(raw)
+
+        def ask_line(seg: dict, context: dict):
+            if not gemini_key:
+                return None
+            lang = self.language.title()
+            if self.script_engine == "recap":
+                fb_sys = f"You are a master movie recap storyteller into natural colloquial {lang} with lively storytelling endings."
+                task = f"Write natural storyteller movie recap narration in {lang} for this scene"
+            else:
+                fb_sys = f"You are a professional movie dubbing translator into natural colloquial {lang}."
+                task = f"Translate this dialogue into natural colloquial {lang}"
+            fb_prompt = (
+                self._context_block(state, context)
+                + self._style_directive(state)
+                + f"{task} (at most about {seg.get('max_chars', 60)} characters):\n'{seg['text']}'\n"
+                "Return ONLY the narration as plain text, without quotes or meta explanation."
+            )
+            line_res, _model = call_gemini(
+                fb_sys, fb_prompt, gemini_key, model_workhorse,
+                temperature=0.3, max_tokens=512, response_mime_type="text/plain",
+            )
+            clean_line = line_res.strip().strip('"').strip("'").strip()
+            if clean_line and not any(bad in clean_line.lower() for bad in ["json", "```", "here is", "here's"]):
+                return clean_line
+            return None
+
+        pre_clean, final_clean = self._clean_callbacks()
+        flow = TranslationFlow(
+            ask_batch,
+            ask_line,
+            pre_clean=pre_clean,
+            final_clean=final_clean,
+            burmese_target=self._is_burmese(),
+            default_gender=lambda seg: seg.get("acoustic_gender") if seg.get("acoustic_gender") in ("male", "female") else "male",
+            log=lambda msg: print(msg.replace("[*] ", "[*] WriterAgent: ", 1) if msg.startswith("[*] ") else msg),
+            check_cancel=self._check_cancelled,
+        )
+        results = flow.run(raw_segments)
+
+        by_id = {s["id"]: s for s in raw_segments}
         all_translated = []
+        for res in results:
+            seg = by_id[res.seg_id]
+            # Record character profile in state for downstream multi-voice & SEO consistency
+            if res.character and res.character not in state.speaker_profiles:
+                state.speaker_profiles[res.character] = {"gender": res.gender, "emotions": [res.emotion]}
+            elif res.character and res.emotion not in state.speaker_profiles[res.character].get("emotions", []):
+                state.speaker_profiles[res.character]["emotions"].append(res.emotion)
 
-        for b_idx in range(0, total_count, BATCH_SIZE):
-            batch = raw_segments[b_idx:b_idx + BATCH_SIZE]
-            batch_num = (b_idx // BATCH_SIZE) + 1
-            total_batches = math.ceil(total_count / BATCH_SIZE)
-            print(f"[*] WriterAgent: Translating Batch {batch_num}/{total_batches} ({len(batch)} dialogues)...")
+            block = {
+                "scene_id": str(res.seg_id),
+                "narration": res.narration,
+                "start_sec": seg["start_sec"],
+                "end_sec": seg["end_sec"],
+                "gender": res.gender,
+                "character": res.character,
+                "emotion": res.emotion,
+                "visual_cue": f"Dialogue ({seg['start_sec']}s - {seg['end_sec']}s): {seg['text'][:40]}...",
+                "source_text": seg["text"],
+            }
+            if res.needs_review:
+                block["needs_review"] = True
+                block["issues"] = list(res.issues)
+            if res.origin == "source" or is_unspeakable(res.issues):
+                block["untranslated"] = True       # never voiced / subtitled in the wrong language (VoiceAgent, merger)
+            all_translated.append(block)
 
-            # Extract 1-2 representative keyframes per batch for visual diarization & context
-            batch_images = []
-            if vid_path and os.path.exists(vid_path):
-                sample_indices = [len(batch) // 2] if len(batch) <= 5 else [0, len(batch) // 2]
-                for s_i in sample_indices:
-                    mid_t = (batch[s_i]["start_sec"] + batch[s_i]["end_sec"]) / 2.0
-                    b64_frame = _extract_keyframe_b64(vid_path, mid_t)
-                    if b64_frame:
-                        batch_images.append(b64_frame)
-
-            sys_prompt, batch_prompt = self._build_batch_prompt(batch, state)
-
-            batch_translated = None
-            if gemini_key:
-                try:
-                    raw_res, used_model = call_gemini(
-                        sys_prompt,
-                        batch_prompt,
-                        gemini_key,
-                        model_workhorse,
-                        temperature=0.3,
-                        max_tokens=4096,
-                        response_mime_type="application/json",
-                        images=batch_images if batch_images else None,
-                    )
-                    batch_translated = self._parse_script(raw_res)
-                except Exception as e:
-                    print(f"[WARN] WriterAgent: Batch {batch_num} Gemini call failed: {e}")
-
-            if not batch_translated:
-                batch_translated = []
-
-            # Map translated items by id
-            trans_map = {}
-            for item in batch_translated:
-                if isinstance(item, dict) and "id" in item:
-                    try:
-                        trans_map[int(item["id"])] = item
-                    except (ValueError, TypeError) as _exc:
-                        log_suppressed("agents.writer_agent._translate_batches", _exc)
-
-            # Ensure EVERY item in the batch is preserved with target language translation
-            for seg in batch:
-                s_id = seg["id"]
-                if s_id in trans_map and (trans_map[s_id].get("narration") or trans_map[s_id].get("burmese") or trans_map[s_id].get("translation")):
-                    item = trans_map[s_id]
-                    narration = str(item.get("narration") or item.get("burmese") or item.get("translation") or "").strip()
-                    emotion = str(item.get("emotion", "normal")).strip()
-                    gender = str(item.get("gender") or item.get("speaker_gender") or "male").strip().lower()
-                    if gender in ["child", "boy"]:
-                        gender = "female" if "သမီး" in narration else "male"
-                    elif gender not in ["male", "female"]:
-                        gender = "male"
-                    character = str(item.get("character", "Narrator")).strip()
-                    if getattr(self, "language", "burmese").lower() in ["burmese", "mm", "myanmar"]:
-                        try:
-                            narration = replace_numbers_with_burmese(narration)
-                            narration = transliterate_english_acronyms(narration)
-                            narration = sanitize_burmese_narration(narration)
-                        except Exception as _exc:
-                            log_suppressed("agents.writer_agent._translate_batches", _exc)
-                else:
-                    # Individual line fallback if dropped by Gemini
-                    narration = seg["text"]
-                    emotion = "normal"
-                    gender = seg.get("acoustic_gender") if seg.get("acoustic_gender") in ("male", "female") else "male"
-                    character = "Narrator"
-                    if gemini_key:
-                        try:
-                            if self.script_engine == "recap":
-                                fb_sys = f"You are a master movie recap storyteller into natural colloquial {self.language.title()} with lively storytelling endings."
-                                fb_prompt = f"Write natural storyteller movie recap narration in {self.language.title()} for this scene:\n'{seg['text']}'\nReturn ONLY the recap narration as plain text, without quotes or meta explanation."
-                            else:
-                                fb_sys = f"You are a professional movie dubbing translator into natural colloquial {self.language.title()}."
-                                fb_prompt = f"Translate this dialogue into natural colloquial {self.language.title()}:\n'{seg['text']}'\nReturn ONLY the translation as plain text, without quotes or meta explanation."
-
-                            line_res, _ = call_gemini(
-                                fb_sys,
-                                fb_prompt,
-                                gemini_key,
-                                model_workhorse,
-                                temperature=0.3,
-                                max_tokens=512,
-                                response_mime_type="text/plain"
-                            )
-                            clean_line = line_res.strip().strip('"').strip("'").strip()
-                            if clean_line and not any(bad in clean_line.lower() for bad in ["json", "```", "here is", "here's"]):
-                                if getattr(self, "language", "burmese").lower() in ["burmese", "mm", "myanmar"]:
-                                    try:
-                                        clean_line = replace_numbers_with_burmese(clean_line)
-                                        clean_line = transliterate_english_acronyms(clean_line)
-                                        clean_line = sanitize_burmese_narration(clean_line)
-                                    except Exception as _exc:
-                                        log_suppressed("agents.writer_agent._translate_batches", _exc)
-                                narration = clean_line
-                        except Exception as _exc:
-                            log_suppressed("agents.writer_agent._translate_batches", _exc)
-
-                # Record character profile in state for downstream multi-voice & SEO consistency
-                if character and character not in state.speaker_profiles:
-                    state.speaker_profiles[character] = {
-                        "gender": gender,
-                        "emotions": [emotion]
-                    }
-                elif character and emotion not in state.speaker_profiles[character].get("emotions", []):
-                    state.speaker_profiles[character]["emotions"].append(emotion)
-
-                all_translated.append({
-                    "scene_id": str(s_id),
-                    "narration": narration,
-                    "start_sec": seg["start_sec"],
-                    "end_sec": seg["end_sec"],
-                    "gender": gender,
-                    "character": character,
-                    "emotion": emotion,
-                    "visual_cue": f"Dialogue ({seg['start_sec']}s - {seg['end_sec']}s): {seg['text'][:40]}..."
-                })
-
+        s = flow.stats
+        flagged = s["flagged"]
+        print(
+            f"[*] WriterAgent: Translation finished - {len(all_translated)} lines, "
+            f"{s['retries']} corrective retries, {s['splits']} batch splits, {s['line_fallbacks']} single-line fallbacks"
+            + (f", {flagged} line(s) flagged for review." if flagged else ", no lines flagged.")
+        )
         return all_translated
 
     def _bridge_action_narration(self, blocks: list, state: MovieState, gemini_key: str, model: str) -> list:
@@ -694,8 +798,14 @@ class WriterAgent:
                     except json.JSONDecodeError:
                         break
 
+        # Strategy 5b: the answer was cut off mid-array (max tokens) - keep every complete object before the cut
+        salvaged = self._salvage_objects(clean)
+        if salvaged:
+            print(f"[*] WriterAgent: Answer was cut off; recovered {len(salvaged)} complete item(s).")
+            return self._normalise(salvaged)
+
         # Strategy 6: Plain paragraphs → blocks (rejecting JSON artifacts or meta chatter)
-        raw_paragraphs = [p.strip() for p in raw.split('\n\n') if len(p.strip()) > 10]
+        raw_paragraphs =[p.strip() for p in raw.split('\n\n') if len(p.strip()) > 10]
         valid_paragraphs = []
         for p in raw_paragraphs:
             p_lower = p.lower()
@@ -715,6 +825,23 @@ class WriterAgent:
 
         return None
 
+    @staticmethod
+    def _salvage_objects(text: str) -> list:
+        """Every complete ``{...}`` object found in ``text`` (a truncated JSON array loses only its last item)."""
+        decoder = json.JSONDecoder()
+        found = []
+        i = text.find('{')
+        while i != -1:
+            try:
+                obj, end = decoder.raw_decode(text, i)
+            except json.JSONDecodeError:
+                i = text.find('{', i + 1)   # a cut-off wrapper/object: look for complete ones inside it
+                continue
+            if isinstance(obj, dict):
+                found.append(obj)
+            i = text.find('{', end)
+        return found
+
     def _normalise(self, data) -> list:
         """Ensure the script is a list of dicts with string values.
         CRITICAL: Preserve start_sec and end_sec so video sync is never broken.
@@ -722,7 +849,10 @@ class WriterAgent:
         if not data:
             return []
         if isinstance(data, dict):
-            data = [data]
+            # Some answers wrap the array: {"translations": [...]}
+            wrapped = next((data[k] for k in ("translations", "items", "lines", "script", "result", "data", "segments")
+                            if isinstance(data.get(k), list)), None)
+            data = wrapped if wrapped is not None else [data]
         elif not isinstance(data, list):
             return []
 
