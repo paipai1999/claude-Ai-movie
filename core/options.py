@@ -93,6 +93,8 @@ SUBTITLE_STYLES = ("box_black", "yellow_pop", "white_stroke", "cyan_cyber", "cri
 STORY_LENGTHS = ("standard", "compact", "detailed", "scene")
 NARRATIVE_TONES = ("natural", "brisk", "calm", "dramatic")
 SPLIT_MODES = ("duration", "parts")
+SPLIT_FORMATS = ("original", "9:16", "1:1", "16:9")     # core.canvas.FORMATS
+SPLIT_FILLS = ("blur", "black", "crop")                 # core.canvas.FILLS
 CLIP_FOCUSES = ("balanced", "funny", "emotional", "informative", "action")
 SHORT_SUBTITLES = ("burmese", "original", "none")
 SHORT_FRAMINGS = ("fit", "fill")
@@ -107,8 +109,8 @@ OPTIONS: Tuple[Option, ...] = (
        help="Custom project / file name."),
     _o("force_whisper", bool, False, STEP_SOURCE, {SUBTITLE, HARDSUB},
        help="Transcribe with Whisper even when captions exist."),
-    _o("resolution", str, "1080p", STEP_SOURCE, ALL, choices=("1080p", "720p"),
-       help="Download / output resolution."),
+    _o("resolution", str, "1080p", STEP_SOURCE, ALL, choices=("1080p", "720p", "480p"),
+       help="Download / output resolution. 480p is the draft quality: about 5x fewer pixels, much faster to render."),
 
     # 2 ─ Language & translation
     _o("source_language", str, "auto", STEP_LANGUAGE, _WITH_SHORTS,
@@ -116,7 +118,8 @@ OPTIONS: Tuple[Option, ...] = (
     # Target language *and* narrator-voice shortcut (burmese_thiha, nilar ...): the dashboard shows
     # it as the voice picker, so it is asked together with the audio options.
     _o("language", str, "burmese", STEP_AUDIO, {RECAP},
-       choices=("burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha"),
+       choices=("burmese", "english", "mm", "en", "burmese_nilar", "burmese_thiha", "nilar", "thiha",
+                "burmese_gemini_male", "burmese_gemini_female"),
        help="Target language / narrator voice shortcut."),
     _o("translation_style", str, None, STEP_LANGUAGE, _WITH_SHORTS, choices=TRANSLATION_STYLES,
        engine_defaults={RECAP: "recap", SUBTITLE: "dialogue", HARDSUB: "persona", SHORTS: "dialogue"},
@@ -172,7 +175,8 @@ OPTIONS: Tuple[Option, ...] = (
     # 5 ─ Audio & pipeline
     _o("tts_engine", str, None, STEP_AUDIO, {RECAP}, choices=("edge_tts", "f5_tts"),
        help="Text-to-speech engine."),
-    _o("tts_voice", str, None, STEP_AUDIO, {RECAP}, help="Narrator voice."),
+    _o("tts_voice", str, None, STEP_AUDIO, {RECAP},
+       help="Narrator voice: an Edge voice (my-MM-ThihaNeural) or a Gemini one (gemini:Kore, gemini:Charon ...)."),
     _o("tts_rate", int, None, STEP_AUDIO, {RECAP},
        help="Narration speed in percent (-50..+100); empty = the configured default."),
     _o("audio_mode", str, None, STEP_AUDIO, choices=("ai_voiceover", "original", "none"),
@@ -197,6 +201,12 @@ OPTIONS: Tuple[Option, ...] = (
        help="Move each cut to the nearest pause so a part does not end mid-sentence."),
     _o("split_reencode", bool, False, STEP_OUTPUT, {SPLITTER}, batch=False,
        help="Re-encode for frame-accurate cuts (slower); the default stream copy cuts on keyframes."),
+    _o("split_format", str, "original", STEP_OUTPUT, {SPLITTER}, choices=SPLIT_FORMATS, batch=False,
+       help="Shape of every part: original, or 9:16 / 1:1 / 16:9 (re-encodes the parts)."),
+    _o("split_fill", str, "blur", STEP_OUTPUT, {SPLITTER}, choices=SPLIT_FILLS, batch=False,
+       help="How the picture fills a canvas of another shape: blur (over a blurred copy), black bars, or crop."),
+    _o("split_label", str, "", STEP_OUTPUT, {SPLITTER}, batch=False,
+       help="Text on every part, for example 'Part {n}/{total}' or 'အပိုင်း {mm}' ({n} 1,2,3 - {mm} ၁,၂,၃ - {total}). Re-encodes the parts."),
 
     # Tool: Long to Short - pick the best moments and render them
     _o("clip_count", int, 5, STEP_OUTPUT, {SHORTS}, batch=False,

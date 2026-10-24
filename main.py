@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 from types import SimpleNamespace
+from agents import gemini_tts
 from agents.master import MasterAgent
 from agents.downloader_agent import DownloaderAgent
 from brain.planner import BatchProcessor
@@ -244,6 +245,10 @@ def resolve_language_and_voice(args):
         clean_lang = "burmese"
         if not chosen_voice:
             chosen_voice = "my-MM-ThihaNeural"
+    elif clean_lang in gemini_tts.SHORTCUTS:
+        if not chosen_voice:
+            chosen_voice = gemini_tts.SHORTCUTS[clean_lang]
+        clean_lang = "burmese"
     elif clean_lang in ["mm", "myanmar"]:
         clean_lang = "burmese"
     elif clean_lang in ["en"]:
@@ -252,7 +257,7 @@ def resolve_language_and_voice(args):
         chosen_voice = "my-MM-NilarNeural"
     elif chosen_voice in ["thiha", "male"]:
         chosen_voice = "my-MM-ThihaNeural"
-    return clean_lang, chosen_voice
+    return clean_lang, gemini_tts.canonical_voice(chosen_voice)
 
 
 def resolve_run_options(args) -> SimpleNamespace:

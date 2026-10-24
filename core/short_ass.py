@@ -23,8 +23,10 @@ _MIN_LINE_SECONDS = 0.3
 GEOMETRY = {
     ("9:16", "1080p"): (1080, 1920, 56, 360, 64, 190, 22),
     ("9:16", "720p"): (720, 1280, 38, 240, 44, 125, 22),
+    ("9:16", "480p"): (480, 854, 25, 160, 29, 84, 22),
     ("16:9", "1080p"): (1920, 1080, 48, 55, 56, 70, 40),
     ("16:9", "720p"): (1280, 720, 34, 40, 40, 50, 40),
+    ("16:9", "480p"): (854, 480, 23, 27, 27, 33, 40),
 }
 
 
@@ -60,6 +62,9 @@ def wrap_text(text: str, max_chars: int, max_lines: int = 3) -> List[str]:
 def _escape(text: str) -> str:
     """ASS treats braces as override tags and a backslash as an escape; neither may come from the text."""
     return text.replace("\\", "").replace("{", "").replace("}", "")
+
+
+escape_text = _escape          # the public name, for the label of a split part (core/part_label.py)
 
 
 def relative_lines(lines: Sequence[Dict[str, Any]], clip_start: float, clip_end: float):

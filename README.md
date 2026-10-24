@@ -197,6 +197,9 @@ claude-Ai-movie/
 │   ├── text_compare.py        ← Script-safe normalisation (keeps Myanmar vowel signs) + trigram similarity
 │   ├── text_render.py         ← Myanmar-safe text rendering via FFmpeg/HarfBuzz (outro card, watermark)
 │   ├── audio_trim.py          ← Trims Edge TTS lead-in / tail silence
+│   ├── resolution.py          ← Quality presets (1080p / 720p / 480p draft): canvas sizes, subtitle metrics
+│   ├── canvas.py              ← A picture on a canvas of another shape (blur / black bars / crop), shared by Splitter and Shorts
+│   ├── part_label.py          ← The "Part 2/5" label of a split part (templates, Myanmar digits, ASS)
 │   ├── delivery.py            ← Delivery mode (one-click / CapCut pipeline / both) and the @delivers decorator
 │   ├── clip_selection.py      ← Long to Short: validates the model's clips, offline scorer, overlap rules
 │   ├── short_ass.py           ← Subtitles + hook title for one Short (clip-relative times)
@@ -228,6 +231,7 @@ claude-Ai-movie/
 │   ├── translation_flow.py    ← Context windows, validated retries, batch split, per-line fallback, outage stop
 │   ├── seo_agent.py           ← Viral Title, Description, Tags, and Hashtags generator
 │   ├── voice_agent.py         ← Multi-Voice TTS, time-stretch, per-clip content manifest
+│   ├── gemini_tts.py          ← Gemini narrator (30 voices): key rotation, model discovery, stand-in for Edge TTS
 │   ├── video_merger_agent.py  ← Final-render facade (VideoMergerAgent = mixins from agents/merger/)
 │   ├── merger/                ← encoder · media_utils · plan · voiceover · background_audio ·
 │   │                            single_pass · subtitles · vision_blur · reels · intro_outro · legacy_moviepy
@@ -252,7 +256,7 @@ claude-Ai-movie/
 │       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
 │       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 786 unit / regression tests (pytest) + tests/ui browser smoke test
+├── tests/                     ← 909 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -370,7 +374,18 @@ python main.py "movies/sample.mp4" --delivery capcut
 
 # 5. A shorter, faster-paced recap with a slightly quicker voice
 python main.py "movies/sample.mp4" --story-length compact --narrative-tone brisk --tts-rate 10
+
+# 6. A Gemini narrator instead of Edge TTS (30 voices: gemini:Kore, gemini:Charon, gemini:Puck ...)
+python main.py "movies/sample.mp4" --tts-voice gemini:Kore
+
+# 7. A fast 480p draft to check the script and the voice before the final 1080p render
+python main.py "movies/sample.mp4" --res 480p
 ```
+
+**Voice safety net.** Microsoft's speech service (Edge TTS) is free but it is a single service: when it refuses the
+connection and a Gemini key is configured, the narration is made with a Gemini voice instead of failing, and the run
+reports it in its warnings. Turn it off with `"voice": {"gemini_tts": {"fallback": false}}` or `PAI_TTS_FALLBACK=off`.
+Check that your keys can speak: `python -m agents.gemini_tts --check`.
 
 #### ✂️ Tools: Long to Short (`shorts_engine.py`) and Splitter (`splitter_engine.py`)
 ```bash
@@ -379,6 +394,9 @@ python shorts_engine.py "movies/podcast.mp4" --clips 5 --focus funny --delivery 
 
 # Cut a long video into 10-minute parts at a pause in the speech
 python splitter_engine.py "movies/long_film.mp4" --minutes 10
+
+# The same, as vertical parts (picture over a blurred copy of itself) that say which part they are
+python splitter_engine.py "movies/long_film.mp4" --minutes 10 --split-format 9:16 --split-label "Part {n}/{total}"
 ```
 
 #### 📝 Engine 2: YouTube Subtitle & Transcript Studio (`subtitle_engine.py`)

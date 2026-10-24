@@ -187,6 +187,12 @@ class ShortsTests(unittest.TestCase):
         self.assertEqual(self.size_of("both", "short_01.mp4")[:2], (720, 1280))
         self.assertEqual(self.size_of("both", "short_01_16x9.mp4")[:2], (1280, 720))
 
+    def test_draft_quality_renders_a_480p_canvas(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        self.run_tool(project="draft", clip_count=1, video_format="both", resolution="480p")
+        self.assertEqual(self.size_of("draft", "short_01.mp4")[:2], (480, 854))
+        self.assertEqual(self.size_of("draft", "short_01_16x9.mp4")[:2], (854, 480))
+
     # ── choosing ───────────────────────────────────────────────────────────
     def test_without_a_key_the_offline_scorer_picks(self):
         self.keys = []

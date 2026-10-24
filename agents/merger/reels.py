@@ -37,7 +37,7 @@ class ReelsMixin:
           - Middle 55%: Uncropped, high-quality 16:9 recap video centered over blurred dynamic video background.
           - Bottom 25%: Facebook Safe Zone for Myanmar ASS subtitles, well above bottom UI controls.
         Hardware-accelerated via NVENC on Colab or QSV/libx264 on PC.
-        Supports 1080p (1080x1920) or 720p (720x1280) presets and hardsub on/off toggle.
+        Supports 1080p (1080x1920), 720p (720x1280) or 480p draft (480x854) presets and hardsub on/off toggle.
         """
         import sys, subprocess, shutil
 
@@ -59,7 +59,12 @@ class ReelsMixin:
         sub_mode = str(subtitle_mode or self.subtitle_mode or "burn").lower()
         res_mode = str(resolution or self.resolution or "1080p").lower()
 
-        if res_mode == "720p":
+        if res_mode == "480p":                      # draft quality: the 720p layout scaled by 2/3
+            w_target, h_target = 480, 854
+            hook_fontsize = 24
+            sub_fontsize = 20
+            safe_margin = 73
+        elif res_mode == "720p":
             w_target = 720
             h_target = 1280
             hook_fontsize = 36

@@ -48,6 +48,12 @@ DEFAULT_CONFIG = {
         "tts_rate_mm": "+18%",
         "tts_rate_en": "+15%",
         "trim_silence": True,                 # cut Edge TTS lead-in/tail silence so lines start on time
+        "gemini_tts": {                       # Gemini narrator: pick it (gemini:Kore) or let it stand in when Edge TTS is down
+            "fallback": True,                 # False = never switch to Gemini on its own
+            "fallback_voice": "",             # "" = Charon for a male Edge voice, Kore for a female one
+            "models": [],                     # [] = the TTS models the account lists (or GEMINI_TTS_MODEL)
+            "style": ""                       # "" = a calm, warm storyteller at the job's pace
+        },
         "f5_tts": {
             "model_type": "F5-TTS",           # "F5-TTS" | "E2-TTS"
             "auto_character_cloning": True,   # Auto-extract reference audio slices for characters from Demucs vocals
@@ -128,7 +134,9 @@ DEFAULT_CONFIG = {
     "audio_ducking": {
         "enabled": True,
         "duck_volume": 0.12,
-        "ambient_volume": 0.35
+        "ambient_volume": 0.35,
+        "normalize_loudness": True,       # bring the finished mix to target_lufs (the narration is quiet and amix halves it)
+        "target_lufs": -16.0
     },
     "thumbnail_intro": {
         "enabled": False,                  # If True, prepends 3-second freeze-frame thumbnail intro

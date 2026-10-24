@@ -10,11 +10,14 @@ Takes a long video (a file or a link), and cuts it into parts of N minutes or in
                    frame-accurate cuts;
     5. report      parts.json + state.json, so the part list shows up under Projects.
 
-Nothing here changes the picture or the sound of the video.
+By default nothing here changes the picture or the sound of the video. Two optional touches re-encode the parts:
+a canvas of another shape (9:16, 1:1, 16:9, with the picture over a blurred copy of itself, between black bars,
+or cropped) and a label on every part ("Part 2/5").
 """
 
 import argparse
 import datetime
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -31,7 +34,7 @@ if PROJECT_ROOT not in sys.path:
 from agents.downloader_agent import DownloaderAgent
 from agents.video_merger_agent import _get_ffmpeg_bin, _get_safe_ascii_id, detect_hardware_encoder
 from brain.diagnostics import log_suppressed
-from core import split_plan
+from core import canvas, part_label, split_plan
 from core.encoders import CPU_VIDEO_ARGS, is_cpu_encoder, video_encoder_args
 from core.engine_base import StudioEngineBase
 from core.paths import resolve_inside, sanitize_project_name
@@ -45,6 +48,14 @@ _SILENCE_FILTER = "silencedetect=noise=-32dB:d=0.5"
 def _clock(seconds: float) -> str:
     total = max(0, int(round(seconds)))
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+@dataclass(frozen=True)
+class PartLook:
+    """What a re-encoded part looks like: the canvas (None = the source's own size), how it is filled, the label template."""
+    size: Optional[Tuple[int, int]] = None
+    fill: str = "blur"
+    label: str = ""
 
 
 class SplitterEngine(StudioEngineBase):
@@ -118,23 +129,55 @@ class SplitterEngine(StudioEngineBase):
             raise RuntimeError(f"FFmpeg could not cut the video: {tail or 'no output'}")
         return [os.path.join(project_dir, n) for n in parts]
 
-    def _cut_reencode(self, video_path: str, spans: List[Tuple[float, float]], project_dir: str, duration: float) -> List[str]:
-        """Frame-accurate cut: every part is encoded on its own (hardware encoder first, CPU as the fallback)."""
+    def _part_graph(self, look: PartLook, meta: Dict[str, Any], number: int, total: int, length: float, work_dir: str) -> Optional[str]:
+        """The filter graph of one part (canvas, then label), output label [vout]; None when the picture is left as it is."""
+        text = part_label.render(look.label, number, total)
+        placed = canvas.graph(meta.get("width"), meta.get("height"), *look.size, look.fill, "[0:v]",
+                              "[canvas]" if text else "[vout]") if look.size else None
+        if not text:
+            return placed
+        out_w, out_h = look.size or (int(meta.get("width") or 1920), int(meta.get("height") or 1080))
+        ass_name = f"label_{number:02d}.ass"
+        os.makedirs(work_dir, exist_ok=True)
+        with open(os.path.join(work_dir, ass_name), "w", encoding="utf-8") as fh:
+            fh.write(part_label.build_label_ass(text, length, out_w, out_h))
+        before, source = (f"{placed};", "[canvas]") if placed else ("", "[0:v]")
+        return f"{before}{source}{canvas.ass_filter(ass_name)}[vout]"
+
+    def _cut_reencode(self, video_path: str, spans: List[Tuple[float, float]], project_dir: str, duration: float,
+                      look: Optional[PartLook] = None, meta: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Encodes the parts (see ``_encode_parts``) and always removes the label files made on the way."""
+        try:
+            return self._encode_parts(video_path, spans, project_dir, duration, look, meta)
+        finally:
+            shutil.rmtree(os.path.join(project_dir, "_work"), ignore_errors=True)
+
+    def _encode_parts(self, video_path: str, spans: List[Tuple[float, float]], project_dir: str, duration: float,
+                      look: Optional[PartLook] = None, meta: Optional[Dict[str, Any]] = None) -> List[str]:
+        """
+        Frame-accurate cut: every part is encoded on its own (hardware encoder first, CPU as the fallback). ``look``
+        (optional) puts the picture on another canvas and/or burns a label into every part.
+        """
         width = 3 if len(spans) > 99 else 2
         encoder = video_encoder_args(detect_hardware_encoder())
+        work_dir = os.path.join(project_dir, "_work")
+        if look:
+            os.makedirs(work_dir, exist_ok=True)           # the label files, and the folder FFmpeg's ass filter reads them from
         outputs: List[str] = []
         for number, (start, end) in enumerate(spans, 1):
             self._check_cancellation()
             target = os.path.join(project_dir, f"part_{number:0{width}d}.mp4")
             print(f"[*] Encoding part {number}/{len(spans)} ({_clock(start)} - {_clock(end)})...")
+            graph = self._part_graph(look, meta or {}, number, len(spans), end - start, work_dir) if look else None
+            picture = ["-filter_complex", graph, "-map", "[vout]"] if graph else ["-map", "0:v:0"]
             attempts = [encoder] if is_cpu_encoder(encoder) else [encoder, CPU_VIDEO_ARGS]
             for attempt, video_args in enumerate(attempts, 1):
                 cmd = [self.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}",
-                       "-i", video_path, "-t", f"{end - start:.3f}", "-map", "0:v:0", "-map", "0:a?",
+                       "-i", os.path.abspath(video_path), "-t", f"{end - start:.3f}", *picture, "-map", "0:a?",
                        *video_args, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-                       "-movflags", "+faststart", target]
-                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                     timeout=max(3600, int((end - start) * 6)))
+                       "-movflags", "+faststart", os.path.abspath(target)]
+                res = subprocess.run(cmd, cwd=work_dir if graph else None, capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace", timeout=max(3600, int((end - start) * 6)))
                 if res.returncode == 0 and os.path.exists(target) and os.path.getsize(target) > 1000:
                     outputs.append(target)
                     break
@@ -155,8 +198,14 @@ class SplitterEngine(StudioEngineBase):
         split_snap: bool = True,
         split_reencode: bool = False,
         resolution: str = "1080p",
+        split_format: str = "original",
+        split_fill: str = "blur",
+        split_label: str = "",
     ) -> Dict[str, Any]:
         started = time.time()
+        split_format = split_format if split_format in canvas.FORMATS else "original"
+        split_fill = split_fill if split_fill in canvas.FILLS else "blur"
+        label = " ".join(str(split_label or "").split())
         safe_id = _get_safe_ascii_id(project_name or input_source, prefix="proj")
         clean_name = sanitize_project_name(project_name, fallback=f"split_{safe_id}")
         project_dir = resolve_inside(self.output_base_dir, clean_name)
@@ -167,6 +216,8 @@ class SplitterEngine(StudioEngineBase):
         print(f"\nSplitterEngine: Initializing '{clean_name}'...")
         print(f"   Mode: {split_mode} | Every: {split_minutes} min | Parts: {split_parts} | "
               f"Snap to pauses: {split_snap} | Frame-accurate: {split_reencode}")
+        if split_format != "original" or label:
+            print(f"   Shape: {split_format} ({split_fill}) | Label: {label or '-'}")
 
         print("\n--- [Phase 1: Ingesting the video] ---", flush=True)
         video_path, title, download_dir = self._ingest(input_source, project_dir, resolution)
@@ -196,8 +247,13 @@ class SplitterEngine(StudioEngineBase):
         self._clear_old_parts(project_dir)
         extension = os.path.splitext(video_path)[1].lower()
         extension = extension if extension in _KEEP_EXTENSIONS else ".mp4"
-        if split_reencode:
-            files = self._cut_reencode(video_path, spans, project_dir, duration)
+        restyled = split_format != "original" or bool(label)       # another canvas or a label: the picture is redrawn
+        if split_reencode or restyled:
+            look = None
+            if restyled:
+                size = None if split_format == "original" else canvas.canvas_for(split_format, resolution, meta.get("width"), meta.get("height"))
+                look = PartLook(size, split_fill, label)
+            files = self._cut_reencode(video_path, spans, project_dir, duration, look, meta)
             extension = ".mp4"
         else:
             files = self._cut_copy(video_path, cuts, project_dir, extension, duration)
@@ -213,6 +269,7 @@ class SplitterEngine(StudioEngineBase):
                 "end": round(cursor + length, 2),
                 "duration": round(length, 2),
                 "size_mb": round(os.path.getsize(path) / 1e6, 1),
+                **({"label": part_label.render(label, number, len(files))} if label else {}),
             })
             cursor += length
         if len(parts) != len(spans):
@@ -221,7 +278,8 @@ class SplitterEngine(StudioEngineBase):
         if download_dir:
             shutil.rmtree(download_dir, ignore_errors=True)
 
-        self._write_reports(project_dir, title, duration, parts, split_mode, split_minutes, split_parts, snapped, split_reencode)
+        self._write_reports(project_dir, title, duration, parts, split_mode, split_minutes, split_parts, snapped,
+                            split_reencode, split_format, split_fill, label)
         elapsed = time.time() - started
         print("\n" + "=" * 65)
         print(f"SplitterEngine COMPLETED in {elapsed:.1f}s: {len(parts)} parts in {project_dir}")
@@ -237,9 +295,12 @@ class SplitterEngine(StudioEngineBase):
 
     # ── 5. report ────────────────────────────────────────────────────────────
     def _write_reports(self, project_dir: str, title: str, duration: float, parts: List[Dict[str, Any]],
-                       mode: str, minutes: float, count: int, snapped: bool, reencoded: bool) -> None:
+                       mode: str, minutes: float, count: int, snapped: bool, reencoded: bool,
+                       shape: str = "original", fill: str = "blur", label: str = "") -> None:
         settings = {"mode": mode, "minutes": minutes, "parts": count, "snapped_to_pauses": snapped,
                     "frame_accurate": reencoded}
+        if shape != "original" or label:
+            settings.update({"format": shape, "fill": fill, "label": label})
         with open(os.path.join(project_dir, "parts.json"), "w", encoding="utf-8") as fh:
             json.dump({"source": title, "duration": round(duration, 2), "settings": settings, "parts": parts},
                       fh, ensure_ascii=False, indent=2)
@@ -286,6 +347,9 @@ def main():
         split_snap=v["split_snap"],
         split_reencode=v["split_reencode"],
         resolution=v["resolution"],
+        split_format=v["split_format"],
+        split_fill=v["split_fill"],
+        split_label=v["split_label"],
     )
     if isinstance(result, dict) and result.get("status") == "failed":
         sys.exit(1)

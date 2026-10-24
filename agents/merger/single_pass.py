@@ -20,6 +20,7 @@ import subprocess
 
 from agents.merger.encoder import _get_ffmpeg_bin, detect_hardware_encoder
 from agents.merger.plan import MergePlan
+from core import resolution as res_presets
 
 
 class SinglePassMixin:
@@ -58,7 +59,7 @@ class SinglePassMixin:
         """Returns (filter_parts, label_of_the_subtitled_stream)."""
         # 30 FPS Cap: Cinema standard is 24-30 FPS. Capping 60 FPS down to 30 FPS cuts frames & encode time by 50%
         fps_cap = "fps=30," if float(plan.video_fps) > 32.0 else ""
-        scale_flt = "scale=-2:720," if self.resolution == "720p" else ""
+        scale_flt = f"scale=-2:{res_presets.short_side(self.resolution)}," if self.resolution in ("720p", "480p") else ""
         flt_parts = [
             f"[0:v]{fps_cap}{scale_flt}crop=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_base]"
         ]
@@ -133,6 +134,20 @@ class SinglePassMixin:
         return flt_parts, r_stream
 
     # ── audio filter chain ───────────────────────────────────────────────────────
+    @staticmethod
+    def _loudness_suffix(plan: MergePlan, state) -> str:
+        """
+        Brings the finished mix to a normal listening level. The narration clips are quiet (about -24 dB) and ``amix``
+        halves every input, so the video came out near -29 LUFS: far below what YouTube / TikTok / Reels play at, and
+        viewers had to turn the volume up. Not applied to 100% original audio (the film's own mix is left alone);
+        ``audio_ducking.normalize_loudness: false`` turns it off, ``audio_ducking.target_lufs`` changes the target.
+        """
+        duck_cfg = plan.config_data.get("audio_ducking", {})
+        if getattr(state, "audio_mode", "ai_voiceover") == "original" or not duck_cfg.get("normalize_loudness", True):
+            return ""
+        target = max(-30.0, min(-9.0, float(duck_cfg.get("target_lufs", -16.0))))
+        return f",loudnorm=I={target:g}:LRA=11:TP=-1.5,aresample=48000"
+
     def _audio_filter_parts(self, plan: MergePlan, state, vo_input_idx, bg_input_idx, bg_extra_idx):
         """Dynamic audio ducking & compositing. Always ends with the [a_master1][a_master2] split."""
         flt_parts = []
@@ -146,6 +161,7 @@ class SinglePassMixin:
         ambient_vol = float(getattr(state, "sfx_volume", None) or default_vol)
         target_dur_str = f"{plan.effective_video_dur:.2f}" if plan.effective_video_dur > 0 else "600.00"
         tempo_flt = ",atempo=1.008" if getattr(state, "audio_anti_copyright", False) else ""
+        loud = self._loudness_suffix(plan, state)
 
         if vo_input_idx is not None and (bg_input_idx is not None or bg_source_type == "orig"):
             if bg_source_type == "both":
@@ -164,14 +180,14 @@ class SinglePassMixin:
                     f"[bg_raw][{vo_input_idx}:a]sidechaincompress=threshold=0.08:ratio=8:attack=100:release=400[ducked_bg]"
                 )
                 flt_parts.append(
-                    f"[ducked_bg][{vo_input_idx}:a]amix=inputs=2:duration=first:dropout_transition=0{tempo_flt},asplit=2[a_master1][a_master2]"
+                    f"[ducked_bg][{vo_input_idx}:a]amix=inputs=2:duration=first:dropout_transition=0{tempo_flt}{loud},asplit=2[a_master1][a_master2]"
                 )
             else:
                 flt_parts.append(
-                    f"[bg_raw][{vo_input_idx}:a]amix=inputs=2:duration=first:dropout_transition=0{tempo_flt},asplit=2[a_master1][a_master2]"
+                    f"[bg_raw][{vo_input_idx}:a]amix=inputs=2:duration=first:dropout_transition=0{tempo_flt}{loud},asplit=2[a_master1][a_master2]"
                 )
         elif vo_input_idx is not None:
-            flt_parts.append(f"[{vo_input_idx}:a]{tempo_flt.lstrip(',') if tempo_flt else 'anull'},asplit=2[a_master1][a_master2]")
+            flt_parts.append(f"[{vo_input_idx}:a]{tempo_flt.lstrip(',') if tempo_flt else 'anull'}{loud},asplit=2[a_master1][a_master2]")
         elif bg_input_idx is not None or bg_source_type == "orig":
             if bg_source_type == "both":
                 flt_parts.append(f"[{bg_input_idx}:a]apad=whole_dur={target_dur_str},atrim=0:{target_dur_str},volume={ambient_vol:.2f}[sfx_pre]")

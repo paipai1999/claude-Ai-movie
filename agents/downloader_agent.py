@@ -94,7 +94,9 @@ class DownloaderAgent:
 
         # Configure video resolution format
         res_key = str(resolution or "1080p").strip().lower()
-        if res_key in ["720p", "720"]:
+        if res_key in ["480p", "480"]:
+            fmt_spec = 'bestvideo[height<=480]+bestaudio/best[height<=480]/best'
+        elif res_key in ["720p", "720"]:
             fmt_spec = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
         elif res_key in ["best", "max", "4k", "2160p", "1440p"]:
             fmt_spec = 'bestvideo+bestaudio/best'

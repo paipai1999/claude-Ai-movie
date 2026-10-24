@@ -3,6 +3,7 @@ import os
 import re
 import json
 import hashlib
+import importlib.util
 import shutil
 import asyncio
 import subprocess
@@ -13,6 +14,7 @@ from agents.f5_tts_engine import F5TTSEngine
 from core.audio_trim import trim_silence
 from core.pronunciation import Pronouncer, load_entries
 from core.translation_quality import block_is_silent
+from agents import gemini_tts
 
 _CACHED_AVAILABLE_VOICES = None
 
@@ -76,6 +78,16 @@ _KNOWN_EDGE_VOICES = {
 }
 
 class VoiceAgent:
+    # Gemini voice / stand-in state. Class-level so that an agent made without __init__ has safe defaults.
+    gemini_cfg = {}
+    gemini_keys = ()
+    requested_voice = None          # what the user asked for; ``voice`` changes when Edge TTS is down
+    fallback_voice = None           # the Gemini narrator that takes over then (None = no stand-in)
+    fallback_used = False
+    explicit_rate = None            # the speed the JOB asked for (Gemini ignores the Edge defaults of config.json)
+    _fallback_cause = ""
+    _gemini = None
+
     def __init__(self, voice: str = None, output_dir: str = "outputs", engine: str = None, tts_engine: str = None,
                  rate: int = None):
         """
@@ -90,10 +102,15 @@ class VoiceAgent:
         self.engine = engine or tts_engine or os.getenv("TTS_ENGINE") or voice_cfg.get("engine", "edge_tts")
         self.tts_engine = self.engine
         self.voice = self._resolve_voice(voice, voice_cfg)
+        self.gemini_cfg = voice_cfg.get("gemini_tts", {}) or {}
+        self.gemini_keys = list(config_data.get("gemini", {}).get("api_keys", []) or [])
+        self.requested_voice = self.voice
+        self.fallback_voice = self._pick_fallback_voice()
         self.rate_mm = os.getenv("EDGE_TTS_RATE_MM") or voice_cfg.get("tts_rate_mm", "+8%")
         self.rate_en = os.getenv("EDGE_TTS_RATE_EN") or voice_cfg.get("tts_rate_en", "+15%")
         if rate is not None:                       # the job's own speed choice beats config.json / the environment
             self.rate_mm = self.rate_en = f"{max(-50, min(100, int(rate))):+d}%"
+            self.explicit_rate = self.rate_mm
         self.output_dir = output_dir
         self.trim_tts_silence = bool(voice_cfg.get("trim_silence", True))   # cut Edge TTS lead-in/tail padding
         self.pronouncer = Pronouncer(load_entries())                         # user's pronunciation dictionary
@@ -138,6 +155,8 @@ class VoiceAgent:
         spoken = self._apply_pronunciation(narration)
         if spoken != narration:
             parts.append("pron:" + spoken)
+        if self._uses_gemini():              # Edge fingerprints stay exactly as they were
+            parts.append("gemini-style:" + str(self.gemini_cfg.get("style") or ""))
         raw = "|".join(parts)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -159,6 +178,16 @@ class VoiceAgent:
         except Exception:
             return {}
 
+    @staticmethod
+    def _fallback_marker(audio_out_dir: str):
+        """The Edge voice whose clips were made by the Gemini stand-in in an earlier run, or None."""
+        try:
+            with open(os.path.join(audio_out_dir, VOICE_MANIFEST_NAME), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("fallback_from") if isinstance(data, dict) else None
+        except Exception:
+            return None
+
     def _save_manifest(self, audio_out_dir: str, script: list) -> None:
         """Records the fingerprint of every clip that exists on disk (atomic write)."""
         clips = {}
@@ -174,7 +203,10 @@ class VoiceAgent:
         tmp = target + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"clips": clips}, f, ensure_ascii=False, indent=1)
+                record = {"clips": clips}
+                if self.fallback_used and self.requested_voice:
+                    record["fallback_from"] = self.requested_voice
+                json.dump(record, f, ensure_ascii=False, indent=1)
             os.replace(tmp, target)
         except OSError as e:
             print(f"[WARN] VoiceAgent: Could not write voice manifest: {e}")
@@ -208,8 +240,68 @@ class VoiceAgent:
         if purged:
             print(f"[*] VoiceAgent: {purged} cached clip(s) no longer match the script/voice -> re-synthesizing them.")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Gemini voice: a narrator the user picks, or the stand-in when Edge TTS is down
+    # ─────────────────────────────────────────────────────────────────────────
+    def _uses_gemini(self) -> bool:
+        return gemini_tts.is_gemini_voice(self.voice)
+
+    def _pick_fallback_voice(self):
+        """The Gemini narrator that takes over when Edge TTS is down; None when that is switched off or there is no key."""
+        if gemini_tts.is_gemini_voice(self.voice) or not self.gemini_keys:
+            return None
+        if str(os.getenv("PAI_TTS_FALLBACK", "")).strip().lower() in ("off", "0", "false", "no"):
+            return None
+        if self.gemini_cfg.get("fallback") is False:
+            return None
+        return gemini_tts.normalize_voice(self.gemini_cfg.get("fallback_voice")) or gemini_tts.fallback_voice_for(self.voice)
+
+    def _switch_to_fallback(self, error: BaseException) -> bool:
+        """Edge TTS failed its preflight: narrate with Gemini instead. False when there is nothing to switch to."""
+        if not self.fallback_voice:
+            return False
+        self._fallback_cause = explain_tts_error(error, str(self.voice))
+        print(f"[WARN] VoiceAgent: {self._fallback_cause}")
+        print(f"[WARN] VoiceAgent: Edge TTS is not working -> the narration is made with Gemini ({self.fallback_voice}) instead.")
+        self.voice, self.fallback_used = self.fallback_voice, True
+        return True
+
+    def _adopt_previous_fallback(self, audio_out_dir: str) -> None:
+        """
+        An earlier run of this project narrated with the Gemini stand-in. Ask Edge TTS again before the clip cache is
+        judged: if it is back, the Gemini clips no longer match the voice and are re-voiced (one narrator all film long);
+        if it is still down, the stand-in is chosen up front so its finished clips are reused instead of spent again.
+        """
+        if self.fallback_used or not self.fallback_voice or self._fallback_marker(audio_out_dir) != self.requested_voice:
+            return
+        self._preflight_tts()
+
+    def _report_fallback(self, state: MovieState) -> None:
+        """A finished run that used the stand-in says so, so nobody is surprised by the voice."""
+        if not self.fallback_used or not hasattr(state, "warnings"):
+            return
+        message = (f"Voice: Edge TTS was not working, so the narration was made with Gemini ({self.voice}) instead of "
+                   f"{self.requested_voice}. Run again when Edge TTS works to get the chosen voice back.")
+        if message not in state.warnings:
+            state.warnings.append(message)
+
+    def _gemini_synthesizer(self):
+        """One synthesizer per run, so a key whose daily quota is gone stays skipped for every later line."""
+        if self._gemini is None:
+            models = gemini_tts.resolve_models(self.gemini_keys, self.gemini_cfg)
+            self._gemini = gemini_tts.GeminiSynthesizer(
+                self.gemini_keys, models, str(self.gemini_cfg.get("style") or "").strip() or None, self._ffmpeg_exe())
+            print(f"[*] VoiceAgent: Gemini TTS models, in order: {', '.join(models)}")
+        return self._gemini
+
     def _resolve_voice(self, preferred_voice: str, voice_cfg: dict) -> str:
         """Prefer a configured voice but gracefully fall back to a known-good Edge TTS voice."""
+        if gemini_tts.is_gemini_voice(preferred_voice):
+            chosen = gemini_tts.normalize_voice(preferred_voice)
+            if chosen:
+                return chosen
+            print(f"[WARN] VoiceAgent: '{preferred_voice}' is not a Gemini voice (names: {', '.join(gemini_tts.VOICES)}). "
+                  "Using the default Edge voice instead.")
         candidates = []
         for candidate in [
             preferred_voice,
@@ -372,6 +464,7 @@ class VoiceAgent:
         os.makedirs(audio_out_dir, exist_ok=True)
 
         # Drop clips that were synthesized from different text / voice, then check completeness.
+        self._adopt_previous_fallback(audio_out_dir)
         self._purge_stale_clips(audio_out_dir, state.generated_script)
         self._tts_failures, self._fallback_clips = [], set()
         needed = [idx for idx in range(len(state.generated_script)) if spoken_narration(state.generated_script[idx])]
@@ -388,6 +481,7 @@ class VoiceAgent:
         if needed and len(valid_clips) >= len(needed):
             print(f"[*] VoiceAgent: Reusing {len(existing_mp3s)} cached voiceover clips from {audio_out_dir}...")
             self._save_manifest(audio_out_dir, state.generated_script)
+            self._report_fallback(state)
             return state
 
         # Granular Checkpoint Resume: Clean up only corrupted/empty mp3 clips (<= 1000 bytes).
@@ -421,13 +515,23 @@ class VoiceAgent:
                 use_f5 = False
 
         if not use_f5:
-            self._preflight_tts()                 # a dead service stops the run now, not after 3 retries for every line
+            voice_before = self.voice
+            self._preflight_tts()                 # a dead service stops the run now (or hands over to Gemini), not after 3 retries per line
+            if self.voice != voice_before:
+                # The stand-in took over: clips made by the Edge voice must not be mixed into its narration.
+                self._purge_stale_clips(audio_out_dir, state.generated_script)
+                valid_clips = [
+                    idx for idx in needed
+                    if os.path.exists(os.path.join(audio_out_dir, self._clip_name(idx)))
+                    and os.path.getsize(os.path.join(audio_out_dir, self._clip_name(idx))) > 1000
+                ]
         if use_f5:
             result_state = self._generate_f5_voiceover(state, audio_out_dir)
         else:
             result_state = self._generate_edge_voiceover(state, audio_out_dir)
         self._check_voice_results(state, audio_out_dir, len(needed) - len(valid_clips))
         self._save_manifest(audio_out_dir, state.generated_script)
+        self._report_fallback(state)
         return result_state
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -435,22 +539,28 @@ class VoiceAgent:
     # ─────────────────────────────────────────────────────────────────────────
     def _preflight_tts(self) -> None:
         """
-        One tiny synthesis with the configured voice before any real work. Raises ``TTSUnavailableError`` with the cause
-        and the fix when the service refuses (HTTP 403 from an outdated edge-tts is the usual one) or is unreachable.
-        ``PAI_SKIP_TTS_PREFLIGHT=1`` skips it (offline set-ups, tests).
+        One tiny synthesis with the configured Edge voice before any real work. When the service refuses (HTTP 403 from an
+        outdated edge-tts is the usual one) or is unreachable, a Gemini narrator takes over if there is a key; otherwise
+        ``TTSUnavailableError`` carries the cause and the fix. A Gemini voice is not probed (that would spend quota): it
+        only needs a key. ``PAI_SKIP_TTS_PREFLIGHT=1`` skips it (offline set-ups, tests).
         """
         voice = str(self.voice)
         if os.environ.get("PAI_SKIP_TTS_PREFLIGHT") == "1":
             return
+        if self._uses_gemini():
+            if not self.gemini_keys:
+                raise TTSUnavailableError(f"The narrator is the Gemini voice {voice} but no Gemini API key is configured. "
+                                          "Add a key in Settings (or set GEMINI_API_KEYS), or choose an Edge voice.")
+            return
         verified = _tts_verified_at.get(voice)
         if verified is not None and time.monotonic() - verified < PREFLIGHT_VALID_SEC:
             return
-        import edge_tts
         probe = tempfile.mkstemp(prefix="pai_tts_probe_", suffix=".mp3")
         os.close(probe[0])
         text = "\u1019\u1004\u103a\u1039\u1002\u101c\u102c\u1015\u102b" if voice.startswith("my-") else "Hello"
 
         async def synthesize():
+            import edge_tts
             await asyncio.wait_for(edge_tts.Communicate(text, voice).save(probe[1]), timeout=PREFLIGHT_TIMEOUT_SEC)
 
         try:
@@ -458,6 +568,8 @@ class VoiceAgent:
             if not os.path.exists(probe[1]) or os.path.getsize(probe[1]) < 500:
                 raise RuntimeError("the service answered with an empty audio file")
         except Exception as exc:
+            if self._switch_to_fallback(exc):
+                return
             raise TTSUnavailableError(explain_tts_error(exc, voice)) from exc
         finally:
             try:
@@ -484,10 +596,13 @@ class VoiceAgent:
                     log_suppressed("agents.voice_agent._check_voice_results", _exc)
             # The clips that did succeed are real: keep them (and vouch for them) so that the next run only voices the rest.
             self._save_manifest(audio_out_dir, state.generated_script)
+            fix = ("check the Gemini keys, their quota and the VPN" if self._uses_gemini()
+                   else "pip install -U edge-tts, check the connection")
+            earlier = f" Edge TTS had failed before that: {self._fallback_cause}" if self.fallback_used and self._fallback_cause else ""
             raise TTSUnavailableError(
                 f"Voice generation failed for {failed} of {total} line(s) (last error: {failures[-1]['error']}). "
-                "The video would be mostly silent, so the run was stopped. Fix the cause (pip install -U edge-tts, "
-                "check the connection) and run again: the transcript and the script are kept, only the voice step repeats.")
+                f"The video would be mostly silent, so the run was stopped. Fix the cause ({fix}) and run again: "
+                f"the transcript and the script are kept, only the voice step repeats.{earlier}")
         scenes = ", ".join(str(f["scene"]) for f in failures[:12]) + (" ..." if failed > 12 else "")
         message = (f"Voice: {failed} of {total} line(s) could not be synthesized and were left silent (scene {scenes}). "
                    "Run again to retry them.")
@@ -589,20 +704,20 @@ class VoiceAgent:
 
     def _generate_edge_voiceover(self, state: MovieState, audio_out_dir: str) -> MovieState:
         """Converts the generated narration script to MP3 audio files using Edge TTS ($0 cost)."""
+        gemini = self._uses_gemini()
         selected_rate = self.rate_mm if str(self.voice).startswith("my-") else self.rate_en
-        print(f"[*] VoiceAgent: Starting Text-to-Speech using Edge TTS (Voice: {self.voice}, Pace: {selected_rate})...")
+        print(f"[*] VoiceAgent: Starting Text-to-Speech using {'Gemini' if gemini else 'Edge'} TTS (Voice: {self.voice}, Pace: {(self.explicit_rate or 'natural') if gemini else selected_rate})...")
 
-        try:
-            import edge_tts
-            del edge_tts
-        except ImportError:
+        if gemini:
+            self._gemini_synthesizer()                 # lists the models once, here, not in the middle of the first line
+        elif importlib.util.find_spec("edge_tts") is None:
             print("[!] VoiceAgent: 'edge-tts' is not installed. Please run: pip install edge-tts")
             return state
 
         audio_files = []
         
         async def _run_all(tasks):
-            sem = asyncio.Semaphore(5)
+            sem = asyncio.Semaphore(2 if gemini else 5)       # Gemini's free per-minute limit is small
             async def _wrap(task):
                 async with sem:
                     return await task
@@ -622,7 +737,9 @@ class VoiceAgent:
             
             is_myanmar = str(self.voice).startswith("my-") or getattr(self, "language", "") == "burmese"
             voice_override = self.voice
-            if is_myanmar:
+            if gemini:
+                pass                                      # one narrator for the whole film
+            elif is_myanmar:
                 if self.voice == "my-MM-NilarNeural":
                     voice_override = "my-MM-NilarNeural"
                 elif gender == "female":
@@ -639,7 +756,10 @@ class VoiceAgent:
                 else:
                     voice_override = "en-US-GuyNeural"
             
-            selected_rate = self.rate_mm if str(voice_override).startswith("my-") else self.rate_en
+            if gemini:
+                selected_rate = self.explicit_rate         # None unless the job chose a speed
+            else:
+                selected_rate = self.rate_mm if str(voice_override).startswith("my-") else self.rate_en
             
             # GET EXACT TIMESTAMPS
             start_sec = float(item.get("start_sec") or 0.0)
@@ -686,9 +806,16 @@ class VoiceAgent:
         except Exception:
             return "ffmpeg"
 
-    async def _speak_with_retry(self, text: str, output_file: str, scene_id, emotion: str = "normal", rate: str = "+15%", target_dur: float = None, voice_override: str = None) -> bool:
-        """Async helper to synthesize a single narration chunk via Edge TTS with retry logic and emotion tuning."""
+    async def _synthesize_once(self, text: str, voice: str, output_file: str, rate: str, pitch: str, volume: str) -> None:
+        """One attempt to voice ``text`` into ``output_file`` with the service the voice belongs to."""
+        if gemini_tts.is_gemini_voice(voice):
+            await asyncio.to_thread(self._gemini_synthesizer().synthesize, text, voice, output_file, rate)
+            return
         import edge_tts
+        await edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume).save(output_file)
+
+    async def _speak_with_retry(self, text: str, output_file: str, scene_id, emotion: str = "normal", rate: str = "+15%", target_dur: float = None, voice_override: str = None) -> bool:
+        """Async helper to synthesize a single narration chunk (Edge or Gemini) with retry logic and emotion tuning."""
         import subprocess
         try:
             from moviepy import AudioFileClip
@@ -709,14 +836,16 @@ class VoiceAgent:
         success = False
         last_error = None
         voice_to_use = voice_override if voice_override else self.voice
+        attempt = 0
         for attempt in range(1, 4):
             try:
-                communicate = edge_tts.Communicate(text, voice_to_use, rate=rate, pitch=pitch, volume=volume)
-                await communicate.save(output_file)
+                await self._synthesize_once(text, voice_to_use, output_file, rate, pitch, volume)
                 success = True
                 break
             except Exception as exc:
                 last_error = exc
+                if getattr(exc, "retryable", True) is False:    # quota, keys, region: asking again cannot help
+                    break
                 print(f"[RETRY] VoiceAgent: Retrying Scene {scene_id} (attempt {attempt}/3)...")
                 await asyncio.sleep(2 ** attempt)
 
@@ -727,7 +856,7 @@ class VoiceAgent:
 
         if not success:
             reason = _short_error(last_error) if last_error is not None else "no details"
-            print(f"[WARN] VoiceAgent: Scene {scene_id} TTS failed after 3 attempts: {reason}")
+            print(f"[WARN] VoiceAgent: Scene {scene_id} TTS failed after {attempt} attempt{'s' if attempt != 1 else ''}: {reason}")
             failures = getattr(self, "_tts_failures", None)
             if failures is not None:
                 # The silent stand-in below only keeps the timeline in step; it is never trusted as a real clip.
@@ -828,8 +957,27 @@ class VoiceAgent:
         pronouncer = getattr(self, "pronouncer", None)
         return pronouncer.apply(text) if pronouncer else text
 
+    def _prepare_gemini_text(self, text: str) -> str:
+        """
+        Gemini reads ordinary text well, so it gets the narration almost as written: the user's pronunciation dictionary,
+        numbers and acronyms spelled out in Burmese, no markdown. The Edge-only phonetic respelling and the short-chunk
+        splitting would only make it sound odd.
+        """
+        text = self._apply_pronunciation(text)
+        burmese = bool(re.search(r"[\u1000-\u109F]", text))
+        if burmese:
+            try:
+                from brain.burmese_utils import replace_numbers_with_burmese, transliterate_english_acronyms
+                text = transliterate_english_acronyms(replace_numbers_with_burmese(text))
+            except Exception as e:
+                print(f"[WARN] VoiceAgent: Failed to normalize text with burmese_utils: {e}")
+        text = re.sub(r"[\*#_~`]", "", str(text)).replace("\u2026", "\u104b" if burmese else "...")
+        return re.sub(r"\s+", " ", text).strip()
+
     def _prepare_tts_text(self, text: str) -> str:
         """Normalize script text so Edge TTS / F5-TTS reads narration naturally."""
+        if self._uses_gemini():
+            return self._prepare_gemini_text(text)
         text = self._apply_pronunciation(text)
         is_burmese = str(self.voice).startswith("my-") or getattr(self, "language", "") == "burmese"
         if is_burmese:
