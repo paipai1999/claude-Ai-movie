@@ -734,7 +734,6 @@ async def system_health_check():
     # 3. Edge-TTS Connectivity
     try:
         import edge_tts
-        import asyncio
         t0 = time.time()
         async def _check_tts():
             voices = await edge_tts.list_voices()

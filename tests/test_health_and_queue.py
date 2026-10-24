@@ -52,6 +52,8 @@ class TestHealthAndQueue(unittest.TestCase):
                 self.assertIn('disk', checks)
                 self.assertIn('installed', checks['ffmpeg'])
                 self.assertIn('healthy', checks['gemini'])
+                # The Gemini probe must actually run, not fall into the exception branch.
+                self.assertNotIn('error', checks['gemini'])
                 self.assertIn('healthy', checks['disk'])
 
     def test_queue_list_and_remove(self):
