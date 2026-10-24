@@ -424,7 +424,7 @@ def quality_report(project_dir: str, name: str = "") -> Dict[str, Any]:
 
     script = state.get("generated_script")
     if isinstance(script, list) and script:
-        report.update(_recap_findings(project_dir, script, report["pipeline"]))
+        report.update(_recap_findings(project_dir, script, report["pipeline"], state))
     else:
         records = _read_json(os.path.join(project_dir, "records_data.json"))
         if isinstance(records, list) and records:
@@ -444,7 +444,8 @@ def quality_report(project_dir: str, name: str = "") -> Dict[str, Any]:
     return report
 
 
-def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Dict[str, Any]) -> Dict[str, Any]:
+def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Dict[str, Any],
+                    state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     views = [_block_view(i, b) for i, b in enumerate(script) if isinstance(b, dict)]
     issue_counts: Dict[str, int] = {}
     for v in views:
@@ -454,10 +455,13 @@ def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Di
     over = [v for v in views if v["over_budget"]]
 
     durations = _clip_durations(project_dir, len(views))
+    # Under Smart Sync a clip is not squeezed into its scene: the picture is re-timed to it, so a clip longer than its
+    # scene is not a problem (a line that needed the picture slowed down far is reported in the run's warnings).
+    smart = (state or {}).get("sync_mode") == "smart" and bool((state or {}).get("sync_plan"))
     overflow = []
     for idx, actual in durations.items():
         slot = views[idx]["slot_sec"]
-        if actual > slot * STRETCH_LIMIT:
+        if not smart and actual > slot * STRETCH_LIMIT:
             overflow.append({"index": idx, "slot_sec": slot, "clip_sec": round(actual, 2)})
     silent = [v for v in views if v["untranslated"]]
     # A silent (untranslated) line has no clip on purpose; it is reported on its own, not as a missing clip.
@@ -484,6 +488,8 @@ def _recap_findings(project_dir: str, script: List[Dict[str, Any]], pipeline: Di
             "overflow": overflow[:30],
         },
     }
+    if smart:
+        section["sync"] = dict(state["sync_plan"].get("summary") or {}, mode="smart")
     unreviewed_silent = sum(1 for v in silent if not v["needs_review"])      # silent lines a human already confirmed still count
     section["score"], section["verdict"] = _score(len(views), len(review) + len(over) + unreviewed_silent, len(overflow), pipeline)
     return section

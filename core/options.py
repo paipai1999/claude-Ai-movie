@@ -92,6 +92,7 @@ SUBTITLE_STYLES = ("box_black", "yellow_pop", "white_stroke", "cyan_cyber", "cri
 # to the prompt, so existing projects, prompts and cached scripts behave exactly as before.
 STORY_LENGTHS = ("standard", "compact", "detailed", "scene")
 NARRATIVE_TONES = ("natural", "brisk", "calm", "dramatic")
+SYNC_MODES = ("audio_fit", "smart")                      # core.smart_sync.MODES
 SPLIT_MODES = ("duration", "parts")
 SPLIT_FORMATS = ("original", "9:16", "1:1", "16:9")     # core.canvas.FORMATS
 SPLIT_FILLS = ("blur", "black", "crop")                 # core.canvas.FILLS
@@ -132,6 +133,9 @@ OPTIONS: Tuple[Option, ...] = (
        help="Recap style: standard, compact (plot-critical only), detailed, or scene-by-scene."),
     _o("narrative_tone", str, "natural", STEP_LANGUAGE, {RECAP}, choices=NARRATIVE_TONES,
        help="Recap style: the storyteller's tone of voice."),
+    _o("sync_mode", str, "audio_fit", STEP_AUDIO, {RECAP}, choices=SYNC_MODES,
+       help="How voice and picture are matched: audio_fit squeezes the voice into each scene (default); smart lets the "
+            "voice speak naturally and re-times the picture of each scene to it (needs the finished video: one-click delivery)."),
 
     # 3 ─ Output & style
     _o("video_format", str, "both", STEP_OUTPUT, _WITH_SHORTS, choices=("16:9", "9:16", "both"),

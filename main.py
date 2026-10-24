@@ -350,6 +350,7 @@ def recap_common_kwargs(args, opts) -> dict:
         narrative_tone=v["narrative_tone"],
         tts_rate=v["tts_rate"],
         delivery_mode=v["delivery_mode"],
+        sync_mode=v["sync_mode"],
     )
 
 

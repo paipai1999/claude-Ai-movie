@@ -15,6 +15,7 @@ from core.audio_trim import trim_silence
 from core.pronunciation import Pronouncer, load_entries
 from core.translation_quality import block_is_silent
 from agents import gemini_tts
+from core import smart_sync
 
 _CACHED_AVAILABLE_VOICES = None
 
@@ -85,11 +86,12 @@ class VoiceAgent:
     fallback_voice = None           # the Gemini narrator that takes over then (None = no stand-in)
     fallback_used = False
     explicit_rate = None            # the speed the JOB asked for (Gemini ignores the Edge defaults of config.json)
+    sync_mode = smart_sync.DEFAULT_MODE   # "smart": clips keep their natural length (the picture is re-timed to them)
     _fallback_cause = ""
     _gemini = None
 
     def __init__(self, voice: str = None, output_dir: str = "outputs", engine: str = None, tts_engine: str = None,
-                 rate: int = None):
+                 rate: int = None, sync_mode: str = None):
         """
         VoiceAgent supports:
           1. Microsoft Edge TTS (100% free cloud TTS - Thiha / Nilar / Guy)
@@ -111,6 +113,7 @@ class VoiceAgent:
         if rate is not None:                       # the job's own speed choice beats config.json / the environment
             self.rate_mm = self.rate_en = f"{max(-50, min(100, int(rate))):+d}%"
             self.explicit_rate = self.rate_mm
+        self.sync_mode = smart_sync.normalize_mode(sync_mode)
         self.output_dir = output_dir
         self.trim_tts_silence = bool(voice_cfg.get("trim_silence", True))   # cut Edge TTS lead-in/tail padding
         self.pronouncer = Pronouncer(load_entries())                         # user's pronunciation dictionary
@@ -157,6 +160,8 @@ class VoiceAgent:
             parts.append("pron:" + spoken)
         if self._uses_gemini():              # Edge fingerprints stay exactly as they were
             parts.append("gemini-style:" + str(self.gemini_cfg.get("style") or ""))
+        if self.sync_mode == "smart":        # a clip spoken at its natural pace is not the clip fitted to its scene
+            parts.append("sync=smart")
         raw = "|".join(parts)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -777,7 +782,8 @@ class VoiceAgent:
 
             print(f"[*] VoiceAgent: Generating audio block {idx+1} (Scene {scene_id}) voice={voice_override} target_dur={target_dur:.1f}s...")
             
-            tasks.append(self._speak_with_retry(clean_narration, out_file, scene_id, emotion, rate=selected_rate, target_dur=target_dur, voice_override=voice_override))
+            tasks.append(self._speak_with_retry(clean_narration, out_file, scene_id, emotion, rate=selected_rate, target_dur=target_dur, voice_override=voice_override,
+                                                fit=self.sync_mode != "smart"))
             output_files.append(out_file)
 
         if tasks:
@@ -814,7 +820,8 @@ class VoiceAgent:
         import edge_tts
         await edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume).save(output_file)
 
-    async def _speak_with_retry(self, text: str, output_file: str, scene_id, emotion: str = "normal", rate: str = "+15%", target_dur: float = None, voice_override: str = None) -> bool:
+    async def _speak_with_retry(self, text: str, output_file: str, scene_id, emotion: str = "normal", rate: str = "+15%", target_dur: float = None, voice_override: str = None,
+                                fit: bool = True) -> bool:
         """Async helper to synthesize a single narration chunk (Edge or Gemini) with retry logic and emotion tuning."""
         import subprocess
         try:
@@ -895,8 +902,8 @@ class VoiceAgent:
                 print(f"[ERROR] VoiceAgent: Fallback silent audio failed: {e}")
                 return False
 
-        # --- EXACT SYNC: Pitch-Preserving FFmpeg atempo Stretch ---
-        if target_dur is not None and os.path.exists(output_file):
+        # --- EXACT SYNC: Pitch-Preserving FFmpeg atempo Stretch (not under Smart Sync: there the picture follows the voice) ---
+        if fit and target_dur is not None and os.path.exists(output_file):
             try:
                 raw_dur = 0.0
                 try:

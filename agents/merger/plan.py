@@ -41,6 +41,10 @@ class MergePlan:
     video_h: int = 1080
     video_fps: float = 24.0
 
+    # ── Smart Sync (the picture follows the voice) ───────────────────────────
+    movie_path: str = ""            # the film to merge: the source, or its re-timed copy
+    sync_plan: Any = None           # a core.smart_sync.SyncPlan when the film was re-timed
+
     # ── voiceover clips & timing ─────────────────────────────────────────────
     script_blocks: List[Any] = field(default_factory=list)
     audio_items: List[Tuple[int, str, float, Any]] = field(default_factory=list)

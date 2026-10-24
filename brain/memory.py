@@ -76,6 +76,8 @@ class MovieState(BaseModel):
     story_length: Optional[str] = "standard"  # Recap storyteller: "standard" | "compact" | "detailed" | "scene"
     narrative_tone: Optional[str] = "natural"  # Recap storyteller: "natural" | "brisk" | "calm" | "dramatic"
     tts_rate: Optional[int] = None  # Narration speed in percent; None = the configured default
+    sync_mode: Optional[str] = "audio_fit"  # "audio_fit" (voice squeezed into each scene) | "smart" (the picture follows the voice)
+    sync_plan: Optional[Dict[str, Any]] = None  # Smart Sync only: how every scene was re-timed (core.smart_sync.SyncPlan.to_dict)
     tts_voice: Optional[str] = None  # Effective TTS voice used for the cached voiceover clips
     script_signature: Optional[str] = None  # Fingerprint of the options that shaped generated_script (style/lang/hint)
     voice_signature: Optional[str] = None  # Fingerprint of the options that shaped the voiceover clips (engine/voice)

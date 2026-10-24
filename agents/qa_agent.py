@@ -3,6 +3,7 @@ import os
 import json
 import re
 from brain.memory import MovieState
+from core import smart_sync
 from brain.prompts import QA_SYNC_SYSTEM_PROMPT, QA_LANGUAGE_SYSTEM_PROMPT, OUTPUT_VIDEO_EXTRACT_SYSTEM_PROMPT
 from brain.gemini_client import upload_video_file, ask_gemini_with_video, delete_video_file, call_gemini
 from brain.burmese_utils import (
@@ -394,10 +395,14 @@ class QAAgent:
         try:
             script_blocks = state.generated_script or []
             script_summary = ""
+            # Smart Sync re-timed the picture: the schedule must use the times of the film the reviewer watches.
+            sync = smart_sync.SyncPlan.from_dict(state.sync_plan) if getattr(state, "sync_plan", None) else None
             for i, block in enumerate(script_blocks):
                 if isinstance(block, dict):
                     start = block.get("start_sec", "?")
                     end = block.get("end_sec", "?")
+                    if sync is not None and isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                        start, end = round(sync.to_output(start), 1), round(sync.to_output(end), 1)
                     narration = block.get("narration", "")[:80]
                     script_summary += f"  Block {i+1}: [{start}s-{end}s] {narration}\n"
 

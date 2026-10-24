@@ -1,5 +1,5 @@
 from brain.diagnostics import log_suppressed
-from core import delivery, resolution as res_presets
+from core import delivery, resolution as res_presets, smart_sync
 from core.translation_quality import block_is_silent
 import os
 import sys
@@ -128,6 +128,7 @@ class MasterAgent:
         narrative_tone: str = None,
         tts_rate: int = None,
         delivery_mode: str = None,
+        sync_mode: str = None,
     ):
         self.movie_path = movie_path
         self.resume = bool(resume)
@@ -201,6 +202,16 @@ class MasterAgent:
             self.render_video = False
         self.package_info = None
 
+        # Smart Sync re-times the picture, so it only makes sense for the finished one-click video: the CapCut package would
+        # no longer match the original footage the creator imports.
+        self.sync_mode = smart_sync.normalize_mode(sync_mode)
+        self.sync_notes = []
+        if self.sync_mode == "smart" and (self.delivery_mode != delivery.ONE_CLICK or not self.render_video):
+            self.sync_mode = smart_sync.DEFAULT_MODE
+            self.sync_notes.append("Smart Sync was switched off: it re-times the picture, so it needs the finished video "
+                                   "(delivery mode 'oneclick' with rendering on). The voice was fitted to each scene instead.")
+            print(f"[WARN] MasterAgent: {self.sync_notes[-1]}")
+
         self.state = MovieState(movie_name=movie_name)
         self.state.movie_path = movie_path
         self.state.skip_demucs = self.skip_demucs
@@ -216,6 +227,8 @@ class MasterAgent:
         self.state.story_length = self.story_length
         self.state.narrative_tone = self.narrative_tone
         self.state.tts_rate = self.tts_rate
+        self.state.sync_mode = self.sync_mode
+        self.state.warnings.extend(self.sync_notes)
         self.state.audio_mode = self.audio_mode
         self.state.sfx_mode = self.sfx_mode
         self.state.sfx_volume = self.sfx_volume
@@ -312,6 +325,8 @@ class MasterAgent:
         parts = [str(self.tts_engine).lower(), str(self.tts_voice), str(self.audio_mode)]
         if self.tts_rate is not None:
             parts.append("rate=" + str(self.tts_rate))   # a different speed re-voices every line
+        if self.sync_mode == "smart":
+            parts.append("sync=smart")                   # smart clips are spoken at their natural pace, not fitted to a scene
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _clear_voiceover_clips(self, output_dir: str) -> int:
@@ -547,6 +562,7 @@ class MasterAgent:
                 self.state.phase_checkpoints = getattr(prev_state, "phase_checkpoints", {}) or {}
                 self.state.speaker_profiles = getattr(prev_state, "speaker_profiles", {}) or {}
                 self.state.subtitle_detection = prev_state.subtitle_detection
+                self.state.sync_plan = getattr(prev_state, "sync_plan", None) if self.sync_mode == "smart" else None
 
                 if getattr(prev_state, "duration_sec", 0) > 0:
                     self.state.duration_sec = prev_state.duration_sec
@@ -660,6 +676,7 @@ class MasterAgent:
             output_dir=output_dir,
             tts_engine=self.tts_engine,
             rate=self.tts_rate,
+            sync_mode=self.sync_mode,
         )
         self.video_merger    = VideoMergerAgent(
             output_dir=output_dir,
