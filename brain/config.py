@@ -138,6 +138,13 @@ DEFAULT_CONFIG = {
         "normalize_loudness": True,       # bring the finished mix to target_lufs (the narration is quiet and amix halves it)
         "target_lufs": -16.0
     },
+    "sync": {                              # Smart Sync (--sync-mode smart): the picture follows the voice
+        "smart": {
+            "max_slowdown": 1.25,              # a scene's picture may last up to 1.25x its original length
+            "max_speedup": 1.25,               # ... or be played up to 1.25x faster
+            "max_voice_speedup": 1.15          # a clip that still does not fit is sped up by at most this
+        }
+    },
     "thumbnail_intro": {
         "enabled": False,                  # If True, prepends 3-second freeze-frame thumbnail intro
         "duration_sec": 3.0

@@ -199,6 +199,7 @@ claude-Ai-movie/
 │   ├── audio_trim.py          ← Trims Edge TTS lead-in / tail silence
 │   ├── resolution.py          ← Quality presets (1080p / 720p / 480p draft): canvas sizes, subtitle metrics
 │   ├── canvas.py              ← A picture on a canvas of another shape (blur / black bars / crop), shared by Splitter and Shorts
+│   ├── smart_sync.py          ← Smart Sync arithmetic: which scene lasts how long so the picture follows the voice
 │   ├── part_label.py          ← The "Part 2/5" label of a split part (templates, Myanmar digits, ASS)
 │   ├── delivery.py            ← Delivery mode (one-click / CapCut pipeline / both) and the @delivers decorator
 │   ├── clip_selection.py      ← Long to Short: validates the model's clips, offline scorer, overlap rules
@@ -256,7 +257,7 @@ claude-Ai-movie/
 │       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
 │       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 909 unit / regression tests (pytest) + tests/ui browser smoke test
+├── tests/                     ← 985 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -380,6 +381,9 @@ python main.py "movies/sample.mp4" --tts-voice gemini:Kore
 
 # 7. A fast 480p draft to check the script and the voice before the final 1080p render
 python main.py "movies/sample.mp4" --res 480p
+
+# 8. Smart Sync: the voice speaks naturally and the picture of each scene follows it (finished video only)
+python main.py "movies/sample.mp4" --sync-mode smart
 ```
 
 **Voice safety net.** Microsoft's speech service (Edge TTS) is free but it is a single service: when it refuses the

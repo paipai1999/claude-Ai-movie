@@ -35,7 +35,7 @@ LEGACY_BATCH_FIELDS = (LEGACY_START_FIELDS - {"input", "project_name", "trim_end
 
 # Recap options added after the option model (they are appended to the END of the pipeline / batch workers,
 # so jobs queued before they existed - stored positionally - still load).
-ADDED_RECAP_DEFAULTS = {"story_length": "standard", "narrative_tone": "natural", "tts_rate": None}
+ADDED_RECAP_DEFAULTS = {"story_length": "standard", "narrative_tone": "natural", "tts_rate": None, "sync_mode": "audio_fit"}
 # The Splitter / Long to Short tools have their own options. They are in the start schema (the dashboard posts to
 # /api/start for every tool) but no studio engine reads them and the batch endpoint does not take them.
 TOOL_FIELDS = {
@@ -66,7 +66,7 @@ LEGACY_DEFAULTS = {
 def _added(d):
     """The options added later, as the pipeline / batch workers receive them (appended last)."""
     return (d.get("story_length") or "standard", d.get("narrative_tone") or "natural", d.get("tts_rate"),
-            d.get("delivery_mode") or "oneclick")
+            d.get("delivery_mode") or "oneclick", d.get("sync_mode") or "audio_fit")
 
 
 # ── The OLD handler logic, copied verbatim from web_ui.py (before the refactor) ──────────────
@@ -199,7 +199,7 @@ def _variants():
         "audio_anti_copyright": True, "translation_style": "wuxia", "audio_mode": "original",
         "sfx_mode": "mute", "sfx_volume": 0.4, "render_video": False,
         "stage_toggles": {"qa": False}, "context_hint": "hint",
-        "story_length": "compact", "narrative_tone": "dramatic", "tts_rate": 15, "delivery_mode": "capcut",
+        "story_length": "compact", "narrative_tone": "dramatic", "tts_rate": 15, "delivery_mode": "capcut", "sync_mode": "smart",
     }
     for key, value in nondefault.items():
         yield dict(base, **{key: value})

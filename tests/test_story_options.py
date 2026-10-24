@@ -223,8 +223,11 @@ class WorkerTests(unittest.TestCase):
         """Queued jobs are stored positionally; the new parameters are last, so an old argument list is still valid."""
         from services import job_runtime as jr
         from services.job_args import worker_option_names
-        # Newer options are appended after these (delivery_mode came last); the relative order must never change.
-        self.assertEqual(worker_option_names(jr.pipeline_worker)[-4:], ["story_length", "narrative_tone", "tts_rate", "delivery_mode"])
+        # Newer options are appended after these (sync_mode came last); the relative order must never change.
+        names = worker_option_names(jr.pipeline_worker)
+        self.assertEqual(names[names.index("story_length"):names.index("delivery_mode") + 1],
+                         ["story_length", "narrative_tone", "tts_rate", "delivery_mode"])
+        self.assertEqual(names[-1], "sync_mode")
         kw = self._run("movies/a.mp4")                                      # an old queue entry: leading parameters only
         self.assertEqual((kw["story_length"], kw["narrative_tone"], kw["tts_rate"], kw["delivery_mode"]),
                          ("standard", "natural", None, "oneclick"))

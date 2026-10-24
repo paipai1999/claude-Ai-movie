@@ -14,6 +14,7 @@ Public entry point of the final render phase. The implementation lives in the
   plan.py           MergePlan dataclass carrying every render decision
   voiceover.py      clip discovery, scene-anchored timeline, voiceover track
   background_audio.py  original / Demucs / BGM bed selection
+  smart_sync.py     Smart Sync: the re-timed film (the picture follows the voice)
   single_pass.py    filtergraph + one-pass ffmpeg render + intro/outro
 
 Existing imports such as `from agents.video_merger_agent import detect_hardware_encoder`
@@ -53,6 +54,7 @@ from agents.merger.reels import ReelsMixin  # noqa: E402
 from agents.merger.voiceover import VoiceoverLayoutMixin  # noqa: E402
 from agents.merger.background_audio import BackgroundAudioMixin  # noqa: E402
 from agents.merger.single_pass import SinglePassMixin  # noqa: E402
+from agents.merger.smart_sync import SmartSyncMixin  # noqa: E402
 from agents.merger.plan import MergePlan  # noqa: E402
 
 __all__ = [
@@ -71,6 +73,7 @@ __all__ = [
 
 class VideoMergerAgent(
     VoiceoverLayoutMixin,
+    SmartSyncMixin,
     BackgroundAudioMixin,
     SinglePassMixin,
     IntroOutroMixin,
@@ -124,6 +127,8 @@ class VideoMergerAgent(
 
         # ── 2 - 3b. Voiceover clips, scene-anchored timeline, output length ──
         self._collect_voiceover_clips(plan, state)
+        plan.movie_path = movie_path
+        movie_path = self._apply_smart_sync(plan, state, movie_path)        # "smart": the picture follows the voice
         self._layout_voiceover_clips(plan, state)
         self._resolve_render_duration(plan, state)
 
@@ -140,6 +145,7 @@ class VideoMergerAgent(
 
         # ── 5 - 8. Background audio, subtitles, watermark, intro, blur ───────
         self._select_background_audio(plan, state, movie_path)
+        self._retime_background(plan)
         self._prepare_subtitles(plan, state)
         self._prepare_watermark(plan, state)
         self._plan_thumbnail_intro(plan, state)
@@ -155,11 +161,18 @@ class VideoMergerAgent(
         FFmpeg single-pass မအောင်မြင်ပါက MoviePy fallback ကို သုံးပြီး၊ ဗီဒီယိုမထွက်ပါက error ပေးသည်။
         """
         plan = self._build_merge_plan(state, movie_path)
+        movie_path = plan.movie_path or movie_path                          # the re-timed copy under Smart Sync
 
         # ── 9. Pure FFmpeg Single-Pass Video & Audio Compositing ──────────────
         if self._render_single_pass(plan, state, movie_path):
             self._apply_intro_outro(plan, state)
             return state
+
+        if plan.sync_plan is not None:
+            # The MoviePy compositor works from the script's own times, which belong to the ORIGINAL film.
+            raise RuntimeError(
+                "The FFmpeg render failed on the Smart Sync film and the slower MoviePy fallback cannot follow the "
+                "re-timed picture. Check the FFmpeg log above, or run again with the sync mode 'audio_fit' (--sync-mode audio_fit).")
 
         # ── 10. Fallback Legacy Path (Only if Single-Pass failed) ──
         print("[WARN] VideoMerger: Single-pass FFmpeg render produced no video. Falling back to the legacy MoviePy compositor...")

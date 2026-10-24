@@ -59,6 +59,7 @@ FLAGS: Dict[str, Flag] = {
     "context_hint": F(("--context-hint", "--hint")),
     "story_length": F(("--story-length",), programs=(MAIN,)),
     "narrative_tone": F(("--narrative-tone", "--tone"), programs=(MAIN,)),
+    "sync_mode": F(("--sync-mode",), programs=(MAIN,)),
 
     "video_format": F(("--format", "--aspect-ratio"), legacy={MAIN: ("--video-size",)}),
     "reels_enabled": F(("--reels",), off=("--no-reels",), programs=(MAIN,)),

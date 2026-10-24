@@ -355,6 +355,7 @@ def pipeline_worker(
     narrative_tone="natural",
     tts_rate=None,
     delivery_mode="oneclick",
+    sync_mode="audio_fit",
 ):
     """
     Executes the Complete Movie Recap Pipeline via MasterAgent.
@@ -421,6 +422,7 @@ def pipeline_worker(
             narrative_tone=narrative_tone,
             tts_rate=tts_rate,
             delivery_mode=delivery_mode,
+            sync_mode=sync_mode,
         )
         project_path = os.path.join(master.output_dir, master.state.project_dir)
         project_store.save_job_options(project_path, started_with)
@@ -600,6 +602,7 @@ def batch_worker(
     narrative_tone="natural",
     tts_rate=None,
     delivery_mode="oneclick",
+    sync_mode="audio_fit",
 ):
     """
     Executes Multi-Video Batch Processing across any of the 3 production engines.
@@ -728,6 +731,7 @@ def batch_worker(
                 tts_rate=tts_rate,
                 on_project=remember_project,
                 delivery_mode=delivery_mode,
+                sync_mode=sync_mode,
             )
             print(f"[*] Batch Mode: Starting batch run for {len(inputs_list)} item(s)...")
             processor.process_all(url_list=urls, local_paths=local_paths)

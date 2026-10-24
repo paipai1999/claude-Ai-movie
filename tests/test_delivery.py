@@ -275,7 +275,10 @@ class WorkerPlumbingTests(unittest.TestCase):
         from services import job_runtime as jr
         for worker in (jr.pipeline_worker, jr.subtitle_worker, jr.hardsub_worker, jr.batch_worker, jr.shorts_worker):
             params = list(inspect.signature(worker).parameters)
-            self.assertEqual(params[-1], "delivery_mode", worker.__name__)          # appended LAST: queued jobs are positional
+            # Appended after everything that existed (queued jobs are positional); only options added LATER may follow it.
+            later = ["sync_mode"] if worker in (jr.pipeline_worker, jr.batch_worker) else []
+            self.assertEqual(params[params.index("delivery_mode") + 1:], later, worker.__name__)
+            self.assertEqual(params[-1 - len(later)], "delivery_mode", worker.__name__)
             self.assertEqual(inspect.signature(worker).parameters["delivery_mode"].default, "oneclick")
         for worker in (jr.downloader_worker, jr.splitter_worker):
             self.assertNotIn("delivery_mode", inspect.signature(worker).parameters)
@@ -286,15 +289,16 @@ class WorkerPlumbingTests(unittest.TestCase):
         from services.job_args import build_worker_args
         for engine, worker in (("recap", jr.pipeline_worker), ("hardsub", jr.hardsub_worker), ("subtitle", jr.subtitle_worker),
                                ("shorts", jr.shorts_worker)):
+            at = list(inspect.signature(worker).parameters).index("delivery_mode")      # the args tuple has the same order (job_id first)
             resolved = O.resolve(engine, {"input": "x.mp4", "delivery_mode": "capcut"})
-            self.assertEqual(build_worker_args(worker, "J", resolved)[-1], "capcut", engine)
-            self.assertEqual(build_worker_args(worker, "J", O.resolve(engine, {"input": "x.mp4"}))[-1], "oneclick", engine)
+            self.assertEqual(build_worker_args(worker, "J", resolved)[at], "capcut", engine)
+            self.assertEqual(build_worker_args(worker, "J", O.resolve(engine, {"input": "x.mp4"}))[at], "oneclick", engine)
 
     def test_the_batch_processor_hands_the_mode_to_every_project(self):
         from brain.planner import BatchProcessor
         self.assertEqual(BatchProcessor(delivery_mode="capcut").delivery_mode, "capcut")
         params = list(inspect.signature(BatchProcessor.__init__).parameters)
-        self.assertEqual(params[-1], "delivery_mode")
+        self.assertEqual(params[params.index("delivery_mode") + 1:], ["sync_mode"])      # only later options follow it
 
 
 class JobStatusTests(unittest.TestCase):

@@ -619,6 +619,13 @@
                             <option value="30" data-st="optRateVeryFast">Very fast (+30%)</option>
                         </select>
                     </div>
+                    <div data-option="sync_mode" class="form-group" id="wrap-sync-mode">
+                        <label class="form-label" for="select-sync-mode" data-st="optSyncMode">Voice and picture</label>
+                        <select id="select-sync-mode" class="select-control">
+                            <option value="audio_fit" selected data-st="optSyncFit">Fit the voice to each scene (default)</option>
+                            <option value="smart" data-st="optSyncSmart">Smart Sync - the picture follows the voice (finished video only)</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:1rem; margin-bottom:1rem;">
@@ -1945,6 +1952,7 @@
             story_length:         () => $val('select-story-length'),
             narrative_tone:       () => $val('select-narrative-tone'),
             tts_rate:             () => ($val('select-tts-rate') === '' ? null : parseInt($val('select-tts-rate'), 10)),
+            sync_mode:            () => $val('select-sync-mode'),
             resolution:           () => $val('select-resolution'),
             video_format:         () => $val('select-video-format'),
             reels_enabled:        () => ['both', '9:16'].includes($val('select-video-format')),
