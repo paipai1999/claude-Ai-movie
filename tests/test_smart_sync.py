@@ -229,5 +229,44 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(ss.SyncPlan.from_dict(None).segments, [])
 
 
+class VerifyTests(unittest.TestCase):
+    """The check at the end of the re-timing: the rendered film against the plan."""
+
+    def setUp(self):
+        self.sync = ss.plan([(10, 20, 14.0)], 100.0, fps=25.0)          # 100 s -> 102.5 s
+
+    def test_a_film_as_long_as_planned_with_the_narration_inside_it_is_ok(self):
+        check = ss.verify(self.sync, self.sync.out_duration + 0.04, 95.0)
+        self.assertTrue(check["ok"])
+        self.assertAlmostEqual(check["drift_seconds"], 0.04, places=3)
+        self.assertEqual(check["plan_seconds"], round(self.sync.out_duration, 3))
+
+    def test_a_picture_that_drifted_from_the_plan_is_reported(self):
+        check = ss.verify(self.sync, self.sync.out_duration + 2.0, 95.0)
+        self.assertFalse(check["ok"])
+        self.assertAlmostEqual(check["drift_seconds"], 2.0, places=3)
+
+    def test_a_shorter_picture_is_reported_too(self):
+        self.assertFalse(ss.verify(self.sync, self.sync.out_duration - 1.0, 95.0)["ok"])
+
+    def test_a_narration_that_would_be_cut_off_by_the_end_of_the_film_is_reported(self):
+        picture = self.sync.out_duration
+        self.assertTrue(ss.verify(self.sync, picture, picture + 0.4)["ok"])         # half a second of tail is fine
+        self.assertFalse(ss.verify(self.sync, picture, picture + 3.0)["ok"])
+
+    def test_the_tolerance_grows_a_little_with_the_length_of_the_film(self):
+        short = ss.verify(ss.plan([], 60.0), 60.0, 0.0)["tolerance"]
+        long = ss.verify(ss.plan([], 7200.0), 7200.0, 0.0)["tolerance"]
+        self.assertGreater(long, short)
+        self.assertLess(long, 10.0)
+
+    def test_the_check_survives_json_with_the_plan(self):
+        import json
+        self.sync.check = ss.verify(self.sync, self.sync.out_duration, 90.0)
+        again = ss.SyncPlan.from_dict(json.loads(json.dumps(self.sync.to_dict())))
+        self.assertEqual(again.check, self.sync.check)
+        self.assertEqual(ss.SyncPlan().to_dict()["check"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

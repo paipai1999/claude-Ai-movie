@@ -2516,7 +2516,10 @@
                 const checks = data.checks || {};
                 if (checks.ffmpeg) document.getElementById('health-ffmpeg-desc').textContent = `${checks.ffmpeg.encoder} [${checks.ffmpeg.codec}]`;
                 if (checks.gemini) document.getElementById('health-gemini-desc').textContent = `${checks.gemini.valid_keys}/${checks.gemini.total_keys} Active Keys`;
-                if (checks.edge_tts) document.getElementById('health-tts-desc').textContent = checks.edge_tts.healthy ? 'Online' : 'Offline';
+                if (checks.edge_tts) {
+                    const standIn = checks.voice && checks.voice.gemini_fallback_ready;
+                    document.getElementById('health-tts-desc').textContent = checks.edge_tts.healthy ? 'Online' : ('Offline' + (standIn ? ' (a Gemini voice stands in)' : ''));
+                }
                 if (checks.disk) document.getElementById('health-disk-desc').textContent = `${checks.disk.free_gb} GB Free of ${checks.disk.total_gb || checks.disk.free_gb} GB`;
                 const overall = document.getElementById('health-overall-badge');
                 if (overall) {

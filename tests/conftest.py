@@ -29,3 +29,15 @@ def _no_tts_network(monkeypatch):
     monkeypatch.setenv("PAI_TTS_FALLBACK", "off")
     monkeypatch.setenv("GEMINI_TTS_MODEL", "test-tts-model")
     yield
+
+@pytest.fixture(autouse=True)
+def _no_usage_statistics(monkeypatch):
+    """
+    Every Gemini call records which key / model answered in the project's own ``outputs/movie_metadata.db`` (the
+    dashboard's key-usage view). Tests use made-up keys ("k1", "secret-key") and must never write to the real file:
+    they showed up there as keys of the user. Tests of the tracker itself use their own database.
+    """
+    import brain.gemini_client as gemini_client
+
+    monkeypatch.setattr(gemini_client, "_record_api_usage", lambda *args, **kwargs: None)
+    yield

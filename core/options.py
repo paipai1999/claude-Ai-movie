@@ -168,8 +168,8 @@ OPTIONS: Tuple[Option, ...] = (
     _o("watermark_opacity", float, None, STEP_OUTPUT, {RECAP}, help="Watermark opacity 0-1."),
 
     # 4 ─ Protection
-    _o("blur_mode", str, "auto", STEP_PROTECTION, choices=("auto", "yes", "no"),
-       help="Blur the source's burnt-in subtitles."),
+    _o("blur_mode", str, "auto", STEP_PROTECTION, _WITH_SHORTS, choices=("auto", "yes", "no"),
+       help="Blur the source's burnt-in subtitles (Long to Short: so the Burmese ones laid over them stay readable)."),
     _o("blur_height", float, None, STEP_PROTECTION, help="Blur band height (0.05-0.40)."),
     _o("mirror", bool, False, STEP_PROTECTION, help="Mirror the video horizontally."),
     _o("color_grading", bool, True, STEP_PROTECTION, {SUBTITLE, HARDSUB},

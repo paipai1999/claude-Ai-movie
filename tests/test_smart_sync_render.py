@@ -67,7 +67,9 @@ def dominant_frequency(path, start=0.5, length=1.0):
 SCENES = [(2.0, 6.0, 5.0), (10.0, 14.0, 2.0), (16.0, 18.0, 3.5)]
 
 
-class SmartSyncRenderTests(unittest.TestCase):
+class RenderFixture(unittest.TestCase):
+    """The generated film, the voice clips and the shared re-timed film; the tests are in the classes that use it."""
+
     @classmethod
     def setUpClass(cls):
         cls.base = tempfile.mkdtemp(prefix="pai_smartsync_")
@@ -116,6 +118,8 @@ class SmartSyncRenderTests(unittest.TestCase):
     def make_plan(self, scenes=SCENES, with_times=True):
         return self.build_plan(self.work, scenes, with_times)
 
+
+class SmartSyncRenderTests(RenderFixture):
     # ── the re-timed film ─────────────────────────────────────────────────────
     def test_the_film_is_retimed_to_the_plan(self):
         plan, result = self.shared_plan, self.shared_result
@@ -255,6 +259,181 @@ class SmartSyncRenderTests(unittest.TestCase):
         plan.bg_source_type, plan.bg_audio_file = "demucs", "x.wav"
         self.agent._retime_background(plan)
         self.assertEqual(plan.bg_audio_file, "x.wav")
+
+
+class WorkFolderAndCheckTests(RenderFixture):
+    """The re-timed film is as big as the film: it must have its own folder, be checked, and be gone when the merge is."""
+
+    def test_the_rendered_film_passed_the_run_end_check(self):
+        check = self.shared_plan.sync_plan.check
+        self.assertTrue(check["ok"], check)
+        self.assertLess(abs(check["drift_seconds"]), 0.2)
+        self.assertGreater(check["narration_end"], 10.0)
+        self.assertEqual(self.shared_state.sync_plan["check"], check)
+        self.assertEqual(self.shared_state.warnings and [w for w in self.shared_state.warnings if "out of step" in w], [])
+
+    def test_the_work_folder_belongs_to_one_film(self):
+        self.assertTrue(self.shared_plan.sync_work_dir.endswith("smartsync_t"))
+        other = self.make_plan([(2.0, 6.0, 5.0)])
+        other.safe_id = "u"
+        self.agent._apply_smart_sync(other, self.state, self.film)
+        self.assertTrue(other.sync_work_dir.endswith("smartsync_u"))
+        self.assertTrue(os.path.exists(os.path.join(self.shared_plan.sync_work_dir, "retimed.mkv")),
+                        "starting another film's re-timing must not touch this film's folder")
+        self.agent._cleanup_smart_sync(other)
+
+    def test_the_work_folder_is_removed_after_the_merge_unless_the_config_keeps_it(self):
+        plan = self.make_plan([(2.0, 6.0, 5.0)])
+        self.agent._apply_smart_sync(plan, self.state, self.film)
+        self.assertTrue(os.path.isdir(plan.sync_work_dir))
+        plan.config_data = {"paths": {"clean_temp_after_merge": False}}
+        self.agent._cleanup_smart_sync(plan)
+        self.assertTrue(os.path.isdir(plan.sync_work_dir))                   # asked to keep temporary files
+        plan.config_data = {}
+        self.agent._cleanup_smart_sync(plan)
+        self.assertFalse(os.path.exists(plan.sync_work_dir))
+
+    def test_a_failed_re_timing_leaves_nothing_behind(self):
+        plan = self.make_plan()
+        broken = os.path.join(self.work, "broken.mp4")
+        open(broken, "wb").write(b"not a video")
+        with self.assertRaises(RuntimeError):
+            self.agent._apply_smart_sync(plan, self.state, broken)
+        self.assertFalse(os.path.exists(plan.sync_work_dir))
+
+    def test_a_cancelled_re_timing_leaves_nothing_behind(self):
+        plan = self.make_plan()
+        with mock.patch.dict(os.environ, {"CURRENT_JOB_CANCELLED": "1"}):
+            with self.assertRaises(InterruptedError):
+                self.agent._apply_smart_sync(plan, self.state, self.film)
+        self.assertFalse(os.path.exists(plan.sync_work_dir))
+
+    def test_merge_video_clears_the_folder_after_a_success_and_after_a_failure(self):
+        for outcome in (True, RuntimeError("render failed")):
+            folder = os.path.join(self.work, f"smartsync_x_{outcome is True}")
+            os.makedirs(folder)
+            plan = MergePlan(movie_path="retimed.mkv", sync_plan=smart_sync.SyncPlan(), sync_work_dir=folder)
+            side_effect = outcome if isinstance(outcome, Exception) else None
+            with mock.patch.object(self.agent, "_build_merge_plan", return_value=plan), \
+                    mock.patch.object(self.agent, "_render_single_pass", return_value=outcome is True, side_effect=side_effect), \
+                    mock.patch.object(self.agent, "_apply_intro_outro"):
+                if isinstance(outcome, Exception):
+                    with self.assertRaises(RuntimeError):
+                        self.agent.merge_video(SimpleNamespace(), "movie.mp4")
+                else:
+                    self.agent.merge_video(SimpleNamespace(), "movie.mp4")
+            self.assertFalse(os.path.exists(folder), outcome)
+
+    def test_a_failure_while_the_plan_is_finished_also_clears_the_folder(self):
+        folder = os.path.join(self.work, "smartsync_y")
+        os.makedirs(folder)
+        plan = MergePlan(sync_work_dir=folder, output_dir=self.work, temp_dir=self.work)
+
+        def apply(this_plan, state, movie):
+            this_plan.sync_work_dir = folder
+            return movie
+
+        with mock.patch.object(self.agent, "_collect_voiceover_clips"), \
+                mock.patch.object(self.agent, "_apply_smart_sync", side_effect=apply), \
+                mock.patch.object(self.agent, "_finish_merge_plan", side_effect=RuntimeError("boom")), \
+                mock.patch("agents.video_merger_agent.MergePlan", return_value=plan), \
+                mock.patch("agents.video_merger_agent._get_video_info", return_value={"duration": 10.0}):
+            with self.assertRaises(RuntimeError):
+                self.agent._build_merge_plan(SimpleNamespace(project_dir="p"), self.film)
+        self.assertFalse(os.path.exists(folder))
+
+    def test_the_safe_id_comes_from_the_original_film_not_from_the_re_timed_copy(self):
+        seen = {}
+        plan = MergePlan(output_dir=self.work)
+
+        def apply(this_plan, state, movie):
+            seen["safe_id_before_retiming"] = this_plan.safe_id
+            return "C:/somewhere/retimed.mkv"
+
+        with mock.patch.object(self.agent, "_collect_voiceover_clips"), mock.patch.object(self.agent, "_apply_smart_sync", side_effect=apply), \
+                mock.patch.object(self.agent, "_finish_merge_plan", return_value=plan), \
+                mock.patch("agents.video_merger_agent.MergePlan", return_value=plan), \
+                mock.patch("agents.video_merger_agent._get_video_info", return_value={"duration": 10.0}):
+            self.agent._build_merge_plan(SimpleNamespace(project_dir="p"), self.film)
+        from agents.video_merger_agent import _get_safe_ascii_id
+        self.assertEqual(seen["safe_id_before_retiming"], _get_safe_ascii_id(self.film))
+        self.assertNotEqual(seen["safe_id_before_retiming"], "")
+
+
+class ParallelRenderTests(RenderFixture):
+    """The segments are a few seconds each, so several are encoded at once; the result must not depend on how many."""
+
+    def test_the_number_of_workers_comes_from_the_config_within_sane_bounds(self):
+        plan = MergePlan(config_data={"sync": {"smart": {"workers": 5}}})
+        self.assertEqual(self.agent._worker_count(plan), 5)
+        self.assertEqual(self.agent._worker_count(MergePlan(config_data={"sync": {"smart": {"workers": 99}}})), 8)
+        for config in ({}, {"sync": {"smart": {"workers": 0}}}, {"sync": {"smart": {"workers": None}}}):
+            self.assertTrue(1 <= self.agent._worker_count(MergePlan(config_data=config)) <= 3, config)
+
+    def test_the_same_film_comes_out_with_one_worker_and_with_several(self):
+        sync = self.shared_plan.sync_plan
+        films = {}
+        for workers in (1, 3):
+            folder = os.path.join(self.work, f"w{workers}")
+            os.makedirs(folder)
+            films[workers] = os.path.join(folder, "retimed.mkv")
+            self.agent._render_retimed_film(self.film, sync, 25.0, films[workers], folder, workers)
+        self.assertAlmostEqual(_get_video_info(films[1])["duration"], _get_video_info(films[3])["duration"], delta=0.05)
+        for out_time in (1.0, 4.5, 8.0, 12.6, 15.0, 18.5, 20.5):
+            self.assertAlmostEqual(luma(films[1], out_time), luma(films[3], out_time), delta=6.0, msg=f"{out_time}s")
+        for folder in (os.path.join(self.work, "w1"), os.path.join(self.work, "w3")):
+            self.assertEqual([n for n in os.listdir(folder) if n.startswith("seg_")], [], "the pieces are removed once joined")
+
+    def test_one_failing_segment_stops_the_run_with_its_number(self):
+        sync = self.shared_plan.sync_plan
+        calls = []
+
+        def fake(this, movie, segment, fps, has_audio, encoders, target):
+            calls.append(target)
+            return not target.endswith("seg_00003.mkv")
+
+        folder = os.path.join(self.work, "fail")
+        os.makedirs(folder)
+        with mock.patch.object(merger_sync.SmartSyncMixin, "_render_segment", fake):
+            with self.assertRaises(RuntimeError) as caught:
+                self.agent._render_retimed_film(self.film, sync, 25.0, os.path.join(folder, "r.mkv"), folder, 3)
+        self.assertIn("segment 3/", str(caught.exception))
+        self.assertIn("audio_fit", str(caught.exception))
+
+    def test_the_stop_button_stops_parallel_work_too(self):
+        sync = self.shared_plan.sync_plan
+        folder = os.path.join(self.work, "stop")
+        os.makedirs(folder)
+        with mock.patch.dict(os.environ, {"CURRENT_JOB_CANCELLED": "1"}):
+            with self.assertRaises(InterruptedError):
+                self.agent._render_retimed_film(self.film, sync, 25.0, os.path.join(folder, "r.mkv"), folder, 3)
+
+
+class CheckReportTests(unittest.TestCase):
+    def plan_with_lines(self, narration_end):
+        plan = MergePlan(audio_items=[(0, "a.mp3", 3.0, {"end_sec": narration_end})])
+        return plan, smart_sync.plan([(2.0, 6.0, 5.0)], 20.0, fps=25.0)
+
+    def test_a_drifting_film_is_reported_in_the_log_and_to_the_user(self):
+        state = SimpleNamespace(warnings=[])
+        plan, sync = self.plan_with_lines(10.0)
+        buffer = __import__("io").StringIO()
+        with mock.patch("sys.stdout", buffer):
+            merger_sync.SmartSyncMixin._check_retimed_film(plan, state, sync, sync.out_duration + 3.0)
+        self.assertIn("SYNC DRIFT", buffer.getvalue())
+        self.assertFalse(sync.check["ok"])
+        self.assertEqual(len(state.warnings), 1)
+        self.assertIn("audio_fit", state.warnings[0])
+
+    def test_a_good_film_says_sync_ok_and_adds_no_warning(self):
+        state = SimpleNamespace(warnings=[])
+        plan, sync = self.plan_with_lines(10.0)
+        buffer = __import__("io").StringIO()
+        with mock.patch("sys.stdout", buffer):
+            merger_sync.SmartSyncMixin._check_retimed_film(plan, state, sync, sync.out_duration)
+        self.assertIn("SYNC OK: picture=", buffer.getvalue())
+        self.assertTrue(sync.check["ok"])
+        self.assertEqual(state.warnings, [])
 
 
 class MergeIntegrationTests(unittest.TestCase):

@@ -61,7 +61,7 @@ class SinglePassMixin:
         fps_cap = "fps=30," if float(plan.video_fps) > 32.0 else ""
         scale_flt = f"scale=-2:{res_presets.short_side(self.resolution)}," if self.resolution in ("720p", "480p") else ""
         flt_parts = [
-            f"[0:v]{fps_cap}{scale_flt}crop=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_base]"
+            f"[0:v]{fps_cap}{scale_flt}crop=w='trunc(iw/2)*2':h='trunc(ih/2)*2',setsar=1[v_base]"
         ]
         last_v = "[v_base]"
 
@@ -332,8 +332,18 @@ class SinglePassMixin:
                 except Exception as _exc:
                     log_suppressed("agents.merger.single_pass._apply_intro_outro", _exc)
             state.thumbnail_intro_applied = bool(ok1 or ok2)
+            state.thumbnail_intro_seconds = plan.thumb_duration if state.thumbnail_intro_applied else 0.0
+            if state.thumbnail_intro_applied and plan.subtitle_timings:
+                # Everything in the finished video now starts the length of the intro later. myanmar_subs.srt stays timed for the
+                # film without it (the CapCut package and the burnt-in captions are built from that), so the SRT to upload
+                # with this video is a second file.
+                shifted = [(start + plan.thumb_duration, duration, text) for start, duration, text in plan.subtitle_timings]
+                self._export_standalone_srt(shifted, plan.output_dir, base_name="myanmar_subs_final_video", write_ass=False)
+                print(f"[*] VideoMerger: the video starts with a {plan.thumb_duration:.1f}s intro: upload myanmar_subs_final_video.srt "
+                      "with it (myanmar_subs.srt is timed for the film without the intro).")
         else:
             state.thumbnail_intro_applied = False
+            state.thumbnail_intro_seconds = 0.0
 
         if plan.has_outro_card:
             print("[*] VideoMerger: Appending 3.0s 'Pai AI Movie Studio' branded Outro Card...")

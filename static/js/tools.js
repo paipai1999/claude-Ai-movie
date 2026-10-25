@@ -52,6 +52,7 @@
             opt_clip_focus: 'Look for', opt_short_subtitles: 'Subtitles', opt_short_hook_title: 'Show the title over the first seconds',
             hint_short_hook_title: 'A short, bold hook line at the top: it is what makes people keep watching.',
             opt_short_framing: 'Vertical framing',
+            opt_blur_mode: 'Source subtitles already in the picture', hint_blur_mode: 'Blurs the subtitles the video already has, so the Burmese ones laid over them stay readable.', ch_blur_mode_auto: 'Detect and blur them (recommended)', ch_blur_mode_yes: 'Always blur the bottom band', ch_blur_mode_no: 'Leave them as they are',
             ch_split_mode_duration: 'Every N minutes', ch_split_mode_parts: 'N equal parts',
             opt_split_format: 'Shape of every part', hint_split_format: 'Original keeps the picture as it is (instant cuts). Vertical, square or wide re-encodes every part.',
             opt_split_fill: 'When the shape differs', opt_split_label: 'Label on every part',
@@ -102,6 +103,7 @@
             opt_clip_focus: 'ရှာမယ့် အမျိုးအစား', opt_short_subtitles: 'စာတန်း', opt_short_hook_title: 'ပထမစက္ကန့်တွေမှာ ခေါင်းစဉ် ပြမယ်',
             hint_short_hook_title: 'အပေါ်ဆုံးမှာ စာတိုပြချက် - လူတွေ ဆက်ကြည့်စေတဲ့ အရာပါ။',
             opt_short_framing: 'ဒေါင်လိုက် framing',
+            opt_blur_mode: 'ဗီဒီယိုထဲမှာ ပါပြီးသား စာတန်း', hint_blur_mode: 'ဗီဒီယိုမှာ ပါပြီးသား စာတန်းကို ဝါးပေးတယ်၊ ဒါမှ အပေါ်က မြန်မာစာတန်း ရှင်းရှင်းဖတ်ရမယ်။', ch_blur_mode_auto: 'ရှာပြီး ဝါးမယ် (အကြံပြု)', ch_blur_mode_yes: 'အောက်ခြေကို အမြဲဝါးမယ်', ch_blur_mode_no: 'မထိဘဲ ထားမယ်',
             ch_split_mode_duration: 'N မိနစ်တိုင်း', ch_split_mode_parts: 'ညီတူ N ပိုင်း',
             opt_split_format: 'အပိုင်းတိုင်းရဲ့ ပုံသဏ္ဍာန်', hint_split_format: 'Original = ပုံကို မပြောင်း (ချက်ချင်းဖြတ်)။ ဒေါင်လိုက် / လေးထောင့်ကွက် / ကျယ် ရွေးရင် အပိုင်းတိုင်းကို ပြန် encode လုပ်မယ်။',
             opt_split_fill: 'ပုံသဏ္ဍာန် မတူရင်', opt_split_label: 'အပိုင်းတိုင်းမှာ ပေါ်မယ့် စာ',
@@ -152,6 +154,7 @@
             opt_clip_focus: 'มองหา', opt_short_subtitles: 'คำบรรยาย', opt_short_hook_title: 'แสดงชื่อในไม่กี่วินาทีแรก',
             hint_short_hook_title: 'ข้อความสั้นเด่นที่ด้านบน ช่วยให้คนดูต่อ',
             opt_short_framing: 'การจัดเฟรมแนวตั้ง',
+            opt_blur_mode: 'คำบรรยายที่มีอยู่ในภาพ', hint_blur_mode: 'เบลอคำบรรยายที่วิดีโอมีอยู่แล้ว เพื่อให้คำบรรยายภาษาพม่าที่วางทับอ่านชัด', ch_blur_mode_auto: 'ตรวจหาและเบลอ (แนะนำ)', ch_blur_mode_yes: 'เบลอแถบด้านล่างเสมอ', ch_blur_mode_no: 'ปล่อยไว้ตามเดิม',
             ch_split_mode_duration: 'ทุก N นาที', ch_split_mode_parts: 'N ส่วนเท่า ๆ กัน',
             opt_split_format: 'รูปทรงของแต่ละส่วน', hint_split_format: 'ต้นฉบับ = ไม่แก้ภาพ (ตัดทันที) แนวตั้ง / จัตุรัส / กว้าง = เข้ารหัสใหม่ทุกส่วน',
             opt_split_fill: 'เมื่อรูปทรงต่างกัน', opt_split_label: 'ข้อความบนทุกส่วน',
@@ -190,7 +193,7 @@
             engine: 'shorts',
             icon: 'M8 5v14l11-7z',
             basic: ['clip_count', 'clip_focus', 'short_subtitles', 'delivery_mode', 'video_format', 'short_hook_title'],
-            advanced: ['clip_min_sec', 'clip_max_sec', 'short_framing', 'subtitle_style', 'source_language', 'context_hint', 'resolution', 'project_name']
+            advanced: ['clip_min_sec', 'clip_max_sec', 'short_framing', 'blur_mode', 'subtitle_style', 'source_language', 'context_hint', 'resolution', 'project_name']
         },
         splitter: {
             engine: 'splitter',

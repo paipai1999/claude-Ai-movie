@@ -276,7 +276,7 @@ class WorkerPlumbingTests(unittest.TestCase):
         for worker in (jr.pipeline_worker, jr.subtitle_worker, jr.hardsub_worker, jr.batch_worker, jr.shorts_worker):
             params = list(inspect.signature(worker).parameters)
             # Appended after everything that existed (queued jobs are positional); only options added LATER may follow it.
-            later = ["sync_mode"] if worker in (jr.pipeline_worker, jr.batch_worker) else []
+            later = {jr.pipeline_worker: ["sync_mode"], jr.batch_worker: ["sync_mode"], jr.shorts_worker: ["blur_mode"]}.get(worker, [])
             self.assertEqual(params[params.index("delivery_mode") + 1:], later, worker.__name__)
             self.assertEqual(params[-1 - len(later)], "delivery_mode", worker.__name__)
             self.assertEqual(inspect.signature(worker).parameters["delivery_mode"].default, "oneclick")

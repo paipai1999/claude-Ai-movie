@@ -252,7 +252,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"crop={bg_w}:{bg_h},boxblur=12:3,"
             f"scale={w_target}:{h_target}[bg];"
             f"[0:v]{reels_fps_cap}{pre_crop}scale={w_target}:-2[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,"
             f"{ass_flt}[out]"
         )
 
@@ -295,7 +295,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     f"crop={bg_w}:{bg_h},boxblur=12:3,"
                     f"scale={w_target}:{h_target}[bg];"
                     f"[0:v]{pre_crop}scale={w_target}:-2[fg];"
-                    f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
+                    f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[out]"
                 )
                 cmd_fallback = [
                     ffmpeg_bin, "-y",

@@ -142,6 +142,58 @@ class PictureTests(unittest.TestCase):
         self.assertGreater(picture[-30:].mean(), 30)
 
 
+class BlurBandTests(unittest.TestCase):
+    """Blurring the band where the source's own subtitles sit (core.canvas.blur_band)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import imageio_ffmpeg
+        cls.ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        cls.tmp = tempfile.mkdtemp(prefix="pai_band_")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_the_fragment_crops_blurs_and_lays_the_band_back(self):
+        graph = canvas.blur_band(0.8, 0.2)
+        self.assertTrue(graph.startswith("[0:v]split=2[cv_band_src][cv_band_crop];"))
+        self.assertIn("boxblur=luma_radius=18", graph)
+        self.assertIn("overlay=0:'trunc(H*0.800/2)*2'", graph)
+        self.assertTrue(graph.endswith("[cv_clean]"))
+
+    def test_the_labels_can_be_chosen(self):
+        graph = canvas.blur_band(0.7, 0.2, source="[in]", label="[out]")
+        self.assertTrue(graph.startswith("[in]split=2"))
+        self.assertTrue(graph.endswith("[out]"))
+
+    def test_silly_numbers_stay_inside_the_picture(self):
+        self.assertIn("0.950", canvas.blur_band(1.5, 0.3))                            # the band cannot start below the picture
+        self.assertIn("crop=iw:'trunc(ih*0.050/2)*2'", canvas.blur_band(0.95, 0.5))   # nor reach past its bottom
+        self.assertIn("crop=iw:'trunc(ih*0.020/2)*2'", canvas.blur_band(0.5, 0.0))    # nor be nothing
+
+    def frame(self, graph):
+        import numpy as np
+        from PIL import Image
+        png = os.path.join(self.tmp, f"band_{abs(hash(graph))}.png")
+        cmd = [self.ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=5:duration=1",
+               "-filter_complex", graph, "-map", "[cv_clean]", "-frames:v", "1", png]
+        done = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr[-300:])
+        return np.asarray(Image.open(png).convert("L"), dtype="float32")
+
+    def test_only_the_band_is_blurred(self):
+        import numpy as np
+        blurred = self.frame(canvas.blur_band(0.8, 0.2))
+        untouched = self.frame("[0:v]null[cv_clean]")
+        self.assertEqual(blurred.shape, untouched.shape)
+        top = slice(0, int(240 * 0.78))
+        band = slice(int(240 * 0.82), 240)
+        self.assertLess(float(np.abs(blurred[top] - untouched[top]).mean()), 1.0)         # the rest of the picture is the same
+        self.assertGreater(float(np.abs(blurred[band] - untouched[band]).mean()), 3.0)     # the band is not
+        self.assertLess(float(blurred[band].std()), float(untouched[band].std()))          # and has lost its detail
+
+
 class LabelTextTests(unittest.TestCase):
     def test_the_places_are_filled_in(self):
         self.assertEqual(part_label.render("Part {n}/{total}", 2, 5), "Part 2/5")

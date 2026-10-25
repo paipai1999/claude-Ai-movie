@@ -751,6 +751,26 @@ async def system_health_check():
         results["checks"]["edge_tts"] = {"status": "error", "healthy": False, "error": str(e)[:80], "details": str(e)[:80]}
         results["status"] = "warning"
 
+    # 3b. The voice safety net: a dead Edge TTS is survivable when a working Gemini key can stand in for it
+    # (agents/voice_agent.py). Reported from what the checks above already learned: no request is made (no quota spent).
+    edge_ok = bool(results["checks"].get("edge_tts", {}).get("healthy"))
+    try:
+        import brain.config as _cfg
+        fallback_on = (os.getenv("PAI_TTS_FALLBACK", "").strip().lower() not in ("off", "0", "false", "no")
+                       and _cfg.load_config().get("voice", {}).get("gemini_tts", {}).get("fallback") is not False)
+    except Exception:
+        fallback_on = True
+    stand_in = fallback_on and bool(results["checks"].get("gemini", {}).get("healthy"))
+    results["checks"]["voice"] = {
+        "status": "ok" if edge_ok else ("degraded" if stand_in else "error"),
+        "healthy": edge_ok or stand_in,
+        "edge_tts": edge_ok,
+        "gemini_fallback_ready": stand_in,
+        "details": ("Edge TTS online" if edge_ok else
+                    "Edge TTS offline - a Gemini voice would narrate instead" if stand_in else
+                    "Edge TTS offline and no Gemini stand-in (add a working key, or update edge-tts)"),
+    }
+
     # 4. Disk Space Check
     try:
         du = shutil.disk_usage(".")

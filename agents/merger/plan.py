@@ -44,6 +44,7 @@ class MergePlan:
     # ── Smart Sync (the picture follows the voice) ───────────────────────────
     movie_path: str = ""            # the film to merge: the source, or its re-timed copy
     sync_plan: Any = None           # a core.smart_sync.SyncPlan when the film was re-timed
+    sync_work_dir: str = ""         # where the re-timed film and its segments are made (removed after the merge)
 
     # ── voiceover clips & timing ─────────────────────────────────────────────
     script_blocks: List[Any] = field(default_factory=list)

@@ -127,15 +127,23 @@ class VideoMergerAgent(
 
         # ── 2 - 3b. Voiceover clips, scene-anchored timeline, output length ──
         self._collect_voiceover_clips(plan, state)
+        plan.temp_dir = os.path.abspath("temp")
+        os.makedirs(plan.temp_dir, exist_ok=True)
+        plan.safe_id = _get_safe_ascii_id(movie_path)          # of the ORIGINAL film: a re-timed copy would be named the same everywhere
         plan.movie_path = movie_path
         movie_path = self._apply_smart_sync(plan, state, movie_path)        # "smart": the picture follows the voice
+        try:
+            return self._finish_merge_plan(plan, state, movie_path)
+        except BaseException:
+            self._cleanup_smart_sync(plan)                       # a failed merge leaves no re-timed film behind
+            raise
+
+    def _finish_merge_plan(self, plan: MergePlan, state, movie_path: str) -> MergePlan:
+        """Steps 3 - 8: the lines on the (possibly re-timed) film, the voiceover track, background audio, subtitles ..."""
         self._layout_voiceover_clips(plan, state)
         self._resolve_render_duration(plan, state)
 
         # ── 4. Linear PCM voiceover track ─────────────────────────────────────
-        plan.temp_dir = os.path.abspath("temp")
-        os.makedirs(plan.temp_dir, exist_ok=True)
-        plan.safe_id = _get_safe_ascii_id(movie_path)
         plan.persistent_clean_path = os.path.join(
             plan.output_dir, f"{os.path.splitext(os.path.basename(plan.final_output))[0]}_clean.mp4"
         )
@@ -161,29 +169,32 @@ class VideoMergerAgent(
         FFmpeg single-pass မအောင်မြင်ပါက MoviePy fallback ကို သုံးပြီး၊ ဗီဒီယိုမထွက်ပါက error ပေးသည်။
         """
         plan = self._build_merge_plan(state, movie_path)
-        movie_path = plan.movie_path or movie_path                          # the re-timed copy under Smart Sync
+        try:
+            movie_path = plan.movie_path or movie_path                          # the re-timed copy under Smart Sync
 
-        # ── 9. Pure FFmpeg Single-Pass Video & Audio Compositing ──────────────
-        if self._render_single_pass(plan, state, movie_path):
-            self._apply_intro_outro(plan, state)
-            return state
+            # ── 9. Pure FFmpeg Single-Pass Video & Audio Compositing ──────────────
+            if self._render_single_pass(plan, state, movie_path):
+                self._apply_intro_outro(plan, state)
+                return state
 
-        if plan.sync_plan is not None:
-            # The MoviePy compositor works from the script's own times, which belong to the ORIGINAL film.
-            raise RuntimeError(
-                "The FFmpeg render failed on the Smart Sync film and the slower MoviePy fallback cannot follow the "
-                "re-timed picture. Check the FFmpeg log above, or run again with the sync mode 'audio_fit' (--sync-mode audio_fit).")
+            if plan.sync_plan is not None:
+                # The MoviePy compositor works from the script's own times, which belong to the ORIGINAL film.
+                raise RuntimeError(
+                    "The FFmpeg render failed on the Smart Sync film and the slower MoviePy fallback cannot follow the "
+                    "re-timed picture. Check the FFmpeg log above, or run again with the sync mode 'audio_fit' (--sync-mode audio_fit).")
 
-        # ── 10. Fallback Legacy Path (Only if Single-Pass failed) ──
-        print("[WARN] VideoMerger: Single-pass FFmpeg render produced no video. Falling back to the legacy MoviePy compositor...")
-        merged_state = self._legacy_moviepy_merge(
-            state, movie_path, plan.output_dir, plan.final_output, plan.persistent_clean_path, plan.clean_video_path,
-            plan.config_data, plan.burn_subs, plan.target_ass_path, plan.subtitle_timings
-        )
-        if not (os.path.exists(plan.final_output) and os.path.getsize(plan.final_output) > 1000):
-            raise RuntimeError(
-                "Video rendering failed: neither the FFmpeg single-pass nor the MoviePy fallback produced "
-                f"'{os.path.basename(plan.final_output)}'. Check the FFmpeg log above. "
-                "ဗီဒီယို render မအောင်မြင်ပါ - အထက်ပါ FFmpeg log ကိုစစ်ပါ။"
+            # ── 10. Fallback Legacy Path (Only if Single-Pass failed) ──
+            print("[WARN] VideoMerger: Single-pass FFmpeg render produced no video. Falling back to the legacy MoviePy compositor...")
+            merged_state = self._legacy_moviepy_merge(
+                state, movie_path, plan.output_dir, plan.final_output, plan.persistent_clean_path, plan.clean_video_path,
+                plan.config_data, plan.burn_subs, plan.target_ass_path, plan.subtitle_timings
             )
-        return merged_state
+            if not (os.path.exists(plan.final_output) and os.path.getsize(plan.final_output) > 1000):
+                raise RuntimeError(
+                    "Video rendering failed: neither the FFmpeg single-pass nor the MoviePy fallback produced "
+                    f"'{os.path.basename(plan.final_output)}'. Check the FFmpeg log above. "
+                    "ဗီဒီယို render မအောင်မြင်ပါ - အထက်ပါ FFmpeg log ကိုစစ်ပါ။"
+                )
+            return merged_state
+        finally:
+            self._cleanup_smart_sync(plan)
