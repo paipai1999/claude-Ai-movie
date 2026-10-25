@@ -93,6 +93,7 @@ class SyncPlan:
     voice_tempo: Dict[int, float] = field(default_factory=dict)       # block -> atempo for its clip (1.0 = natural)
     warnings: List[str] = field(default_factory=list)
     dropped: List[int] = field(default_factory=list)                  # blocks that start after the film ended
+    check: Dict[str, Any] = field(default_factory=dict)               # the run-end check of the rendered film (see ``verify``)
 
     @property
     def out_duration(self) -> float:
@@ -160,6 +161,7 @@ class SyncPlan:
             "segments": [[round(s.src_start, 3), round(s.src_end, 3), round(s.out_start, 3), round(s.out_end, 3), s.block]
                          for s in self.segments],
             "voice_tempo": {str(k): round(v, 4) for k, v in self.voice_tempo.items() if abs(v - 1.0) > 1e-3},
+            "check": dict(self.check),
         }
 
     @classmethod
@@ -167,7 +169,7 @@ class SyncPlan:
         segments = [Segment(float(a), float(b), float(c), float(d), None if e is None else int(e))
                     for a, b, c, d, e in (data or {}).get("segments", [])]
         tempo = {int(k): float(v) for k, v in ((data or {}).get("voice_tempo") or {}).items()}
-        return cls(segments, tempo, list((data or {}).get("warnings") or []))
+        return cls(segments, tempo, list((data or {}).get("warnings") or []), check=dict((data or {}).get("check") or {}))
 
 
 def _frame_quantized(seconds: float, fps: float) -> float:
@@ -249,6 +251,25 @@ def plan(blocks: Sequence[Tuple[float, float, float]], video_duration: float, li
     if duration and duration - cursor_src >= (0.5 / fps if fps > 0 else 1e-3):   # the tail of the film
         add(cursor_src, duration, _frame_quantized(duration - cursor_src, fps), None)
     return result
+
+
+def verify(sync: SyncPlan, picture_seconds: float, narration_end: float) -> Dict[str, Any]:
+    """
+    The check at the end of the re-timing: the film that was rendered must be as long as the plan said (every segment
+    a whole number of frames, so it is within a frame or two), and the last line of the narration must end inside it.
+    ``ok`` is False when the picture drifted from the plan or the voice would be cut off by the end of the film.
+    """
+    plan_seconds = sync.out_duration
+    tolerance = 0.3 + 0.001 * plan_seconds
+    drift = float(picture_seconds) - plan_seconds
+    return {
+        "ok": abs(drift) <= tolerance and float(narration_end) <= float(picture_seconds) + 0.5,
+        "picture_seconds": round(float(picture_seconds), 3),
+        "plan_seconds": round(plan_seconds, 3),
+        "drift_seconds": round(drift, 3),
+        "narration_end": round(float(narration_end), 3),
+        "tolerance": round(tolerance, 3),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

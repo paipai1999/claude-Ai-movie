@@ -289,12 +289,12 @@ class SubtitleOverlayMixin:
         fonts_dir = os.path.abspath("assets/fonts").replace("\\", "/").replace("'", r"\'").replace(":", r"\:")
         return f"ass=filename='{ass_fname}':shaping=1:fontsdir='{fonts_dir}'"
 
-    def _export_standalone_srt(self, timings: list, output_dir: str):
+    def _export_standalone_srt(self, timings: list, output_dir: str, base_name: str = "myanmar_subs", write_ass: bool = True):
         """Exports standalone .srt and .ass subtitle files for YouTube caption upload / VLC player."""
         if not timings:
             return
-        srt_path = os.path.join(output_dir, "myanmar_subs.srt")
-        ass_path = os.path.join(output_dir, "myanmar_subs.ass")
+        srt_path = os.path.join(output_dir, f"{base_name}.srt")
+        ass_path = os.path.join(output_dir, f"{base_name}.ass")
 
         def _sec_to_srt_ts(sec: float) -> str:
             total_ms = int(round(max(0.0, float(sec)) * 1000))
@@ -329,6 +329,8 @@ class SubtitleOverlayMixin:
             print(f"[OK] VideoMerger: Standalone SRT subtitles exported -> {srt_path}")
 
         # Also write clean ASS file
+        if not write_ass:
+            return
         try:
             import sys
             font_name = "Myanmar Text" if sys.platform == "win32" else "Padauk"

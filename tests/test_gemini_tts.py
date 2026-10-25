@@ -236,8 +236,16 @@ class SynthesizerTests(NoSleep):
         self.assertEqual([key for key, _m in calls].count("k1"), 1, "k1 is tried once, then left alone")
         self.assertEqual([key for key, _m in calls].count("k2"), 4)
 
-    def test_a_per_minute_limit_waits_and_tries_again(self):
+    def fake_time(self, synth):
+        """A clock the (patched) sleep advances, so the waits can be checked without waiting."""
+        clock = {"now": 1000.0, "slept": []}
+        synth._clock = lambda: clock["now"]
+        self.sleep.side_effect = lambda seconds: (clock["slept"].append(seconds), clock.update(now=clock["now"] + seconds))
+        return clock
+
+    def test_a_per_minute_limit_is_waited_out_exactly_and_then_the_line_goes_on(self):
         synth = self.make(keys=("k1",), models=("tts-a",))
+        clock = self.fake_time(synth)
         state = {"n": 0}
 
         def behaviour(key, model):
@@ -248,8 +256,104 @@ class SynthesizerTests(NoSleep):
 
         self.script(synth, behaviour)
         self.assertEqual(synth.synthesize("hello", "gemini:Kore", self.out), "tts-a")
-        self.sleep.assert_called_once()
-        self.assertEqual(self.sleep.call_args[0][0], 20)
+        self.assertEqual(clock["slept"], [gt.RATE_COOLDOWN_SEC])            # one wait, as long as the cooldown, not a guess
+        self.assertEqual(state["n"], 2)                                      # and no request while the key was cooling down
+
+    def test_a_key_that_is_cooling_down_is_left_alone_while_another_one_works(self):
+        synth = self.make(keys=("k1", "k2"), models=("tts-a",))
+        clock = self.fake_time(synth)
+
+        def behaviour(key, model):
+            if key == "k1":
+                raise http_error(429, "rate limit per minute", "RESOURCE_EXHAUSTED")
+            return reply()
+
+        calls = self.script(synth, behaviour)
+        for _ in range(4):
+            synth.synthesize("hello", "gemini:Kore", self.out)
+        self.assertEqual([k for k, _m in calls].count("k1"), 1, "k1 is asked once, then left alone for the cooldown")
+        self.assertEqual(clock["slept"], [])                                 # nobody had to wait
+
+    def test_a_key_that_cooled_down_is_used_again(self):
+        synth = self.make(keys=("k1", "k2"), models=("tts-a",))
+        clock = self.fake_time(synth)
+        limited = {"k1": True}
+
+        def behaviour(key, model):
+            if key == "k1" and limited["k1"]:
+                raise http_error(429, "rate limit per minute", "RESOURCE_EXHAUSTED")
+            return reply()
+
+        calls = self.script(synth, behaviour)
+        synth.synthesize("a", "gemini:Kore", self.out)
+        synth.synthesize("b", "gemini:Kore", self.out)
+        limited["k1"] = False
+        clock["now"] += gt.RATE_COOLDOWN_SEC + 1
+        for _ in range(3):
+            synth.synthesize("c", "gemini:Kore", self.out)
+        self.assertIn("k1", [k for k, _m in calls[-3:]])
+
+    def test_when_every_key_stays_limited_the_line_gives_up_after_a_few_waits(self):
+        synth = self.make(keys=("k1",), models=("tts-a",))
+        clock = self.fake_time(synth)
+        self.script(synth, lambda key, model: (_ for _ in ()).throw(http_error(429, "rate limit per minute", "RESOURCE_EXHAUSTED")))
+        with self.assertRaises(gt.GeminiTTSError) as caught:
+            synth.synthesize("hello", "gemini:Kore", self.out)
+        self.assertTrue(caught.exception.retryable)
+        self.assertLessEqual(len(clock["slept"]), gt.MAX_WAITS)
+
+    def test_a_model_that_times_out_is_not_asked_again_with_the_other_keys_and_is_tried_last_afterwards(self):
+        synth = self.make(keys=("k1", "k2", "k3"), models=("slow-tts", "fast-tts"))
+        said = []
+        synth._log = said.append
+
+        def behaviour(key, model):
+            if model == "slow-tts":
+                raise TimeoutError("timed out")
+            return reply()
+
+        calls = self.script(synth, behaviour)
+        self.assertEqual(synth.synthesize("hello", "gemini:Kore", self.out), "fast-tts")
+        self.assertEqual([m for _k, m in calls].count("slow-tts"), 1, "one 90 s wait, not one per key")
+        calls.clear()
+        self.assertEqual(synth.synthesize("hello again", "gemini:Kore", self.out), "fast-tts")
+        self.assertEqual([m for _k, m in calls], ["fast-tts"], "the slow model is tried last from now on")
+        self.assertEqual(sum("did not answer in time" in line for line in said), 1, "said once, not for every line")
+
+    def test_the_log_says_what_happened_once(self):
+        synth = self.make(keys=("k1", "k2"), models=("gone-tts", "tts-b"))
+        said = []
+        synth._log = said.append
+
+        def behaviour(key, model):
+            if model == "gone-tts":
+                raise http_error(404, "models/gone-tts is not found", "NOT_FOUND")
+            if key == "k1":
+                raise http_error(400, "API key not valid. Please pass a valid API key.", "INVALID_ARGUMENT")
+            return reply()
+
+        self.script(synth, behaviour)
+        for _ in range(3):
+            synth.synthesize("hello", "gemini:Kore", self.out)
+        self.assertEqual(sum("not available to these keys" in line for line in said), 1)
+        self.assertEqual(sum("key #1 is refused" in line for line in said), 1)
+        self.assertTrue(all("k1" not in line and "k2" not in line.replace("key #2", "") for line in said))     # never a key
+
+    def test_a_daily_quota_is_said_with_the_key_number_not_the_key(self):
+        synth = self.make(keys=("secret-one", "secret-two"), models=("tts-a",))
+        said = []
+        synth._log = said.append
+
+        def behaviour(key, model):
+            if key == "secret-one":
+                raise http_error(429, "quota exceeded: per day", "RESOURCE_EXHAUSTED")
+            return reply()
+
+        self.script(synth, behaviour)
+        synth.synthesize("hello", "gemini:Kore", self.out)
+        self.assertEqual(len(said), 1)
+        self.assertIn("key #1", said[0])
+        self.assertNotIn("secret", said[0])
 
     def test_a_model_the_service_does_not_know_is_skipped(self):
         synth = self.make(models=("gone-tts", "tts-b"))

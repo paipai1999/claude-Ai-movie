@@ -193,6 +193,63 @@ class ShortsTests(unittest.TestCase):
         self.assertEqual(self.size_of("draft", "short_01.mp4")[:2], (480, 854))
         self.assertEqual(self.size_of("draft", "short_01_16x9.mp4")[:2], (854, 480))
 
+    # ── the source's own burnt-in subtitles ──────────────────────────────────
+    def detect(self, found, band=(0.8, 0.2)):
+        return mock.patch.object(shorts_engine.ShortsEngine, "_detect_subtitle_blur_region", return_value=(band[0], band[1], found))
+
+    def test_the_sources_own_subtitle_band_is_blurred_when_it_is_detected(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        with self.detect(True):
+            self.run_tool(project="blurred", clip_count=1, resolution="480p")
+        with self.detect(False):
+            self.run_tool(project="plain", clip_count=1, resolution="480p")
+        blurred, plain = (os.path.join(self.folder(name), "short_01.mp4") for name in ("blurred", "plain"))
+        # the 4:3 test film fills a 480x854 canvas from row 247 to 607: its bottom fifth is rows 0.63 - 0.71 of the Short
+        self.assertGreater(frame_difference(blurred, plain, at=1.5, rows=(0.63, 0.70)), 4.0)
+        self.assertLess(frame_difference(blurred, plain, at=1.5, rows=(0.33, 0.55)), 2.0)         # the rest of the picture is untouched
+
+    def test_the_detector_is_asked_with_the_mode_and_the_moments_the_subtitles_are_on_screen(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        with self.detect(False) as detect:
+            self.run_tool(project="asked", clip_count=1, blur_mode="yes")
+        args = detect.call_args[0]
+        self.assertEqual(args[1], "yes")
+        self.assertTrue(args[3] and all(isinstance(moment, float) for moment in args[3]))
+        self.assertTrue(all(10.0 <= moment <= 40.0 for moment in args[3]), "only the moments inside the chosen clip")
+
+    def test_an_unknown_blur_mode_is_auto(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        with self.detect(False) as detect:
+            self.run_tool(project="odd", clip_count=1, blur_mode="sideways")
+        self.assertEqual(detect.call_args[0][1], "auto")
+
+    def test_no_subtitles_of_our_own_means_the_source_is_left_alone_and_nobody_is_asked(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        with self.detect(True) as detect:
+            self.run_tool(project="none", clip_count=1, short_subtitles="none")
+        detect.assert_not_called()
+        with self.detect(True) as detect:
+            self.run_tool(project="forced", clip_count=1, short_subtitles="none", blur_mode="yes")
+        detect.assert_called_once()
+
+    def test_the_capcut_pipeline_renders_nothing_burnt_in_so_nothing_is_detected(self):
+        self.answer = json.dumps(json.loads(MODEL_PICKS)[:1])
+        with self.detect(True) as detect:
+            self.run_tool(project="capcut_only", clip_count=1, delivery_mode="capcut")
+        detect.assert_not_called()
+
+    def test_the_filter_graph_blurs_before_it_places_the_picture(self):
+        engine = shorts_engine.ShortsEngine(output_base_dir=self.out)
+        meta = {"width": 320, "height": 240}
+        plain = engine._filter_graph("9:16", 480, 854, "fit", meta, "a.ass")
+        blurred = engine._filter_graph("9:16", 480, 854, "fit", meta, "a.ass", (0.8, 0.2, True))
+        self.assertNotIn("cv_band", plain)
+        self.assertTrue(blurred.startswith("[0:v]split=2[cv_band_src][cv_band_crop];"))
+        self.assertIn("[cv_clean]split=2[cv_bg_src][cv_fg_src]", blurred)             # the canvas is made from the cleaned picture
+        filled = engine._filter_graph("9:16", 480, 854, "fill", meta, "a.ass", (0.8, 0.2, True))
+        self.assertIn("[cv_clean]crop=", filled)
+        self.assertEqual(engine._filter_graph("9:16", 480, 854, "fit", meta, "a.ass", (0.8, 0.2, False)), plain)
+
     # ── choosing ───────────────────────────────────────────────────────────
     def test_without_a_key_the_offline_scorer_picks(self):
         self.keys = []
@@ -408,9 +465,10 @@ class CommandLineTests(unittest.TestCase):
                          (8, "funny", "fill", False))
         self.assertEqual((values["video_format"], values["translation_style"], values["short_subtitles"]), ("9:16", "dialogue", "burmese"))
         help_text = parser.format_help()
-        for flag in ("--clip-min", "--clip-max", "--short-subtitles", "--sub-style", "--source-lang"):
+        for flag in ("--clip-min", "--clip-max", "--short-subtitles", "--sub-style", "--source-lang", "--blur-mode"):
             self.assertIn(flag, help_text)
-        for other in ("--split-mode", "--mirror", "--blur-mode", "--audio-shield", "--tts-rate"):
+        self.assertEqual(values["blur_mode"], "auto")
+        for other in ("--split-mode", "--mirror", "--audio-shield", "--tts-rate"):
             self.assertNotIn(other, help_text)
 
 

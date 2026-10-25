@@ -49,6 +49,12 @@
       "default_ref_text": "",
       "speed": 1.0,
       "device": "auto"
+    },
+    "gemini_tts": {
+      "fallback": true,
+      "fallback_voice": "",
+      "models": [],
+      "style": ""
     }
   },
   "batch": {"movies_folder": "movies", "max_parallel_jobs": 1, "skip_completed": true},
@@ -105,7 +111,12 @@
   "audio_ducking": {
     "enabled": true,
     "duck_volume": 0.12,
-    "ambient_volume": 0.35
+    "ambient_volume": 0.35,
+    "normalize_loudness": true,
+    "target_lufs": -16.0
+  },
+  "sync": {
+    "smart": {"max_slowdown": 1.25, "max_speedup": 1.25, "max_voice_speedup": 1.15}
   },
   "qa": {
     "enabled": true,

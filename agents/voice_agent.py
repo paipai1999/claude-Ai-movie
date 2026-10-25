@@ -722,7 +722,8 @@ class VoiceAgent:
         audio_files = []
         
         async def _run_all(tasks):
-            sem = asyncio.Semaphore(2 if gemini else 5)       # Gemini's free per-minute limit is small
+            # Gemini's free per-minute limit is small and per key: one line per key at a time (2 - 4), spread by the synthesizer.
+            sem = asyncio.Semaphore(min(4, max(2, len(self.gemini_keys))) if gemini else 5)
             async def _wrap(task):
                 async with sem:
                     return await task

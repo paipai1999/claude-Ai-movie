@@ -55,6 +55,20 @@ def canvas_for(video_format: str, resolution, src_w: int, src_h: int) -> Tuple[i
     return res_presets.canvas(video_format, resolution)
 
 
+def blur_band(start_y: float, height: float, source: str = "[0:v]", label: str = "[cv_clean]", radius: int = 18) -> str:
+    """
+    The filter-graph fragment that blurs a horizontal band of ``source`` (``start_y`` and ``height`` as fractions of the
+    picture, like the Vision AI reports them) - the burnt-in subtitles of the source, so that the Burmese ones laid
+    over them stay readable. Output label ``label``.
+    """
+    start_y = max(0.0, min(0.95, float(start_y)))
+    height = max(0.02, min(1.0 - start_y, float(height)))
+    return (f"{source}split=2[cv_band_src][cv_band_crop];"
+            f"[cv_band_crop]crop=iw:'trunc(ih*{height:.3f}/2)*2':0:'trunc(ih*{start_y:.3f}/2)*2',"
+            f"boxblur=luma_radius={radius}:luma_power=2:chroma_radius={max(1, radius // 2)}:chroma_power=2[cv_band_blur];"
+            f"[cv_band_src][cv_band_blur]overlay=0:'trunc(H*{start_y:.3f}/2)*2'{label}")
+
+
 def graph(src_w, src_h, out_w: int, out_h: int, fill: str = "blur", source: str = "[0:v]", label: str = "[canvas]") -> str:
     """
     The filter-graph fragment that turns ``source`` into an ``out_w`` x ``out_h`` picture with output label ``label``.

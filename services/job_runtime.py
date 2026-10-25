@@ -814,6 +814,7 @@ def shorts_worker(
     resolution="1080p",
     context_hint=None,
     delivery_mode="oneclick",
+    blur_mode="auto",
 ):
     """
     Executes the Long to Short tool: picks the best moments of a long video and renders them as Shorts.
@@ -841,6 +842,7 @@ def shorts_worker(
             resolution=resolution,
             context_hint=context_hint,
             delivery_mode=delivery_mode,
+            blur_mode=blur_mode,
         )
 
     _run_job(job_id, input_source, "Starting Shorts...", work)

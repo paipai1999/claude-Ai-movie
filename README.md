@@ -82,6 +82,18 @@ python web_ui.py
 
 * Rotate any keys that were previously placed in public templates or shared notebooks.
 
+**Running it day to day**
+
+| Topic | What to know |
+| :--- | :--- |
+| **Health check** | The dashboard's health check (and `GET /api/system/health-check`) reports FFmpeg and the encoder, every Gemini key, Edge TTS, the voice safety net and free disk space. *Edge TTS offline (a Gemini voice stands in)* means narration still works. |
+| **Voice safety net** | If Microsoft's speech service refuses the connection and a Gemini key works, the narration is made with a Gemini voice and the run says so in its warnings. `PAI_TTS_FALLBACK=off` turns it off. `python -m agents.gemini_tts --check` tests your keys. |
+| **Gemini quota** | A used-up daily quota never fails a film silently: the run stops with the reason, keeps what is finished, and a re-run only voices the rest. Free text-to-speech quotas are small; add keys to spread the load. |
+| **Smart Sync** | `--sync-mode smart` re-times the picture to the voice. It needs the finished video (one-click delivery), makes a temporary copy of the film while it renders (removed afterwards; `paths.clean_temp_after_merge: false` keeps it) and checks its own result (`SYNC OK` / `SYNC DRIFT` in the log). |
+| **Sources with their own subtitles** | The Recap, Subtitle and Hardsub studios and Long to Short blur the source's burnt-in subtitles (`--blur-mode auto` detects them with Vision AI) so the Burmese ones stay readable. |
+| **Disk** | Finished videos live in `outputs/<project>/`, temporary files in `temp/` (cleaned after each merge). Keep a few GB free: the health check warns below 5 GB. |
+| **Quality** | Recap audio is normalised to -16 LUFS (`audio_ducking.target_lufs`). `--res 480p` renders a fast draft to check the script and the voice first. |
+
 ---
 
 ## 🐳 Docker Deployment (Any OS / Windows / Linux / macOS)
@@ -257,7 +269,7 @@ claude-Ai-movie/
 │       ├── studio.js          ← Projects, Script Editor, Brand Kit, job history, theme (my / en / th)
 │       └── tools.js           ← Tools hub, Long to Short / Splitter panels, run monitor, result viewer
 │
-├── tests/                     ← 985 unit / regression tests (pytest) + tests/ui browser smoke test
+├── tests/                     ← 1045 unit / regression tests (pytest) + tests/ui browser smoke test
 ├── .github/workflows/tests.yml← CI: pyflakes + pytest on Windows & Linux (lightweight dependency set)
 │
 ├── AI_Movie_Translate_Colab.ipynb  ← Official Google Colab One-Click Dedicated GPU Notebook
@@ -395,6 +407,9 @@ Check that your keys can speak: `python -m agents.gemini_tts --check`.
 ```bash
 # Five vertical Shorts (20-60 s) with Burmese subtitles, as a CapCut package of clean clips
 python shorts_engine.py "movies/podcast.mp4" --clips 5 --focus funny --delivery capcut
+
+# A source that carries its own subtitles: they are blurred (auto) so the Burmese ones laid over them stay readable
+python shorts_engine.py "movies/drama_episode.mp4" --clips 3 --blur-mode auto
 
 # Cut a long video into 10-minute parts at a pause in the speech
 python splitter_engine.py "movies/long_film.mp4" --minutes 10

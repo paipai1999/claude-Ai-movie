@@ -11,6 +11,9 @@ Design notes
   * Plain REST through ``urllib`` like ``brain/gemini_client.py`` - no extra dependency.
   * Keys rotate (round-robin, so the free per-minute limit is spread over all of them); a key whose daily
     quota is used up is skipped for the rest of the run; a model that does not exist is skipped.
+  * A (key, model) that hit its per-minute limit cools down for 45 s and the line waits exactly until one is ready,
+    instead of knocking again; a model that times out is not asked again with the other keys (that took minutes per
+    line), it is tried last from then on. Every such decision is said once in the log.
   * The narration is sent as plain text. A spoken-style prefix such as "Say in a calm voice: ..." is READ ALOUD by
     the current models (measured on the real service), so a style is sent only when the user configures one, in
     the documented director's-notes layout. The speed the job asked for is applied afterwards with ffmpeg ``atempo``
@@ -28,9 +31,10 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 from brain.diagnostics import log_suppressed
 
@@ -60,7 +64,9 @@ DEFAULT_MODELS = ("gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts")
 SAMPLE_RATE = 24000                    # the service speaks 24 kHz mono 16-bit PCM
 REQUEST_TIMEOUT_SEC = 90
 MAX_ROUNDS = 3                         # passes over every key x model before giving up on transient trouble
-_WAIT_SEC = {"rate": 20, "overloaded": 10, "network": 3}
+MAX_WAITS = 4                          # times one line waits for a per-minute limit to lift before giving up
+RATE_COOLDOWN_SEC = 45                 # a (key, model) that hit its per-minute limit is left alone this long
+_WAIT_SEC = {"overloaded": 10, "network": 3}
 
 
 class GeminiTTSError(RuntimeError):
@@ -249,29 +255,58 @@ class GeminiSynthesizer:
     """Voices one line at a time with key rotation and model fallback. Safe to call from several threads."""
 
     def __init__(self, api_keys: Iterable[str], models: Optional[Sequence[str]] = None, style: Optional[str] = None,
-                 ffmpeg: str = "ffmpeg", timeout: float = REQUEST_TIMEOUT_SEC):
+                 ffmpeg: str = "ffmpeg", timeout: float = REQUEST_TIMEOUT_SEC, log: Optional[Callable[[str], None]] = None):
         from brain.gemini_client import _normalize_keys
         self.keys = _normalize_keys(list(api_keys or []))
         self.models = list(models or DEFAULT_MODELS)
         self.style = style
         self.ffmpeg = ffmpeg
         self.timeout = timeout
+        self._log = log or print
+        self._clock = time.monotonic
         self._lock = threading.Lock()
         self._cursor = 0
         self._used_up = set()          # (key index, model): daily quota gone
         self._bad_keys = set()         # key indexes the service refuses
         self._dead_models = set()      # models the service does not know
+        self._slow_models = set()      # models that timed out: tried last
+        self._cooldown = {}            # (key index, model) -> when its per-minute limit should be over
+        self._said = set()
 
     # -- bookkeeping ----------------------------------------------------------
-    def _candidates(self) -> List[Tuple[int, str]]:
-        """Every (key index, model) still worth trying, starting at the next key so load spreads over all keys."""
+    def _say(self, once_key, message: str) -> None:
+        """Tells the user something once per run (the lines of a film would repeat it a hundred times)."""
+        with self._lock:
+            if once_key in self._said:
+                return
+            self._said.add(once_key)
+        self._log(message)
+
+    def _candidates(self) -> Tuple[List[Tuple[int, str]], Optional[float]]:
+        """
+        ``(ready, wait)``: every (key index, model) worth trying now, starting at the next key so the load spreads over
+        all keys, models that timed out last; and, when nothing is ready only because of per-minute limits, how many
+        seconds until the first one is (None when there is no such case).
+        """
         with self._lock:
             start = self._cursor
             self._cursor += 1
-        order = [(i, m) for m in self.models if m not in self._dead_models
-                 for i in sorted(range(len(self.keys)), key=lambda k: (k - start) % max(len(self.keys), 1))]
-        with self._lock:
-            return [(i, m) for i, m in order if i not in self._bad_keys and (i, m) not in self._used_up]
+            now = self._clock()
+            models = ([m for m in self.models if m not in self._slow_models] + [m for m in self.models if m in self._slow_models])
+            count = max(len(self.keys), 1)
+            ready, cooling = [], []
+            for model in models:
+                if model in self._dead_models:
+                    continue
+                for index in sorted(range(len(self.keys)), key=lambda k: (k - start) % count):
+                    if index in self._bad_keys or (index, model) in self._used_up:
+                        continue
+                    until = self._cooldown.get((index, model), 0.0)
+                    if until > now:
+                        cooling.append(until - now)
+                    else:
+                        ready.append((index, model))
+        return ready, (min(cooling) if cooling and not ready else None)
 
     def _mark(self, kind: str, index: int, model: str) -> None:
         with self._lock:
@@ -281,6 +316,18 @@ class GeminiSynthesizer:
                 self._bad_keys.add(index)
             elif kind == "model":
                 self._dead_models.add(model)
+            elif kind == "rate":
+                self._cooldown[(index, model)] = self._clock() + RATE_COOLDOWN_SEC
+            elif kind == "network":
+                self._slow_models.add(model)
+        if kind == "quota":
+            self._say(("quota", index, model), f"[WARN] Gemini TTS: key #{index + 1} has no daily quota left for {model}.")
+        elif kind == "key":
+            self._say(("key", index), f"[WARN] Gemini TTS: key #{index + 1} is refused by the service; it is not used again.")
+        elif kind == "model":
+            self._say(("model", model), f"[WARN] Gemini TTS: the model {model} is not available to these keys; skipped.")
+        elif kind == "network":
+            self._say(("slow", model), f"[WARN] Gemini TTS: {model} did not answer in time; it is tried last from now on.")
 
     @staticmethod
     def _record(key: str, model: str, status: str) -> None:
@@ -307,13 +354,29 @@ class GeminiSynthesizer:
                                  kind="key", retryable=False)
         payload = build_request(build_prompt(text, self.style), voice)
         tempo = tempo_for(rate)
-        seen = set()
         last = ""
-        for _round in range(MAX_ROUNDS):
-            transient = None
-            for index, model in self._candidates():
-                if model in self._dead_models or index in self._bad_keys or (index, model) in self._used_up:
+        passes = waits = 0
+        while passes < MAX_ROUNDS:
+            ready, wait = self._candidates()
+            if not ready and wait is not None:                      # every usable key is cooling down after its per-minute limit
+                if waits >= MAX_WAITS:
+                    break
+                waits += 1
+                pause = max(1.0, wait)
+                self._say(("wait", waits, int(self._clock() // 30)),
+                          f"[*] Gemini TTS: every key hit its per-minute limit; waiting {pause:.0f}s for one to be free...")
+                _interruptible_sleep(pause)
+                continue
+            if not ready:
+                break
+            passes += 1
+            transient, limited = None, False
+            timed_out = set()                                       # a model that timed out is not asked again with another key
+            for index, model in ready:
+                if model in timed_out or model in self._dead_models or index in self._bad_keys or (index, model) in self._used_up:
                     continue                                       # found out a moment ago, by another key or another line
+                if self._cooldown.get((index, model), 0.0) > self._clock():
+                    continue
                 key = self.keys[index]
                 try:
                     audio, sample_rate, mime = audio_from_response(self._request(key, model, payload))
@@ -322,7 +385,6 @@ class GeminiSynthesizer:
                     return model
                 except GeminiTTSError as exc:                      # answered, but without usable audio
                     last = str(exc)
-                    seen.add("no_audio")
                     self._record(key, model, "error")
                     continue
                 except urllib.error.HTTPError as exc:
@@ -336,17 +398,20 @@ class GeminiSynthesizer:
                 except (TimeoutError, urllib.error.URLError, OSError) as exc:
                     kind, last = "network", f"{type(exc).__name__}: {exc}"
                     self._record(key, model, "timeout")
-                seen.add(kind)
+                    timed_out.add(model)
                 self._mark(kind, index, model)
                 if kind == "region":
                     raise GeminiTTSError("Gemini does not serve this location. Use a VPN (or a network in a supported "
                                          f"country) and try again. ({last})", kind="region", retryable=False)
-                if kind in _WAIT_SEC and transient is None:
+                if kind == "rate":
+                    limited = True
+                elif kind in _WAIT_SEC and transient is None:
                     transient = kind
-            if transient is None:
-                break
-            _interruptible_sleep(_WAIT_SEC[transient])
-        raise self._final_error(seen, last)
+            if transient is not None:
+                _interruptible_sleep(_WAIT_SEC[transient])
+            elif not limited:
+                break                                              # nothing transient happened: asking again cannot help
+        raise self._final_error(set(), last)
 
     def _final_error(self, seen: set, last: str) -> GeminiTTSError:
         with self._lock:

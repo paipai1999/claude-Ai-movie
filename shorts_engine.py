@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -220,24 +220,32 @@ class ShortsEngine(HardsubEngine):
             clip["lines"] = text_lines_for_clip(needed, clip["start"], clip["end"], field="burmese")
 
     # ── 5. rendering ─────────────────────────────────────────────────────────
-    def _filter_graph(self, fmt: str, out_w: int, out_h: int, framing: str, meta: Dict[str, Any], ass_name: str) -> str:
-        """The video filter graph: canvas for the format, then the subtitles. Output label ``[vout]``."""
+    def _filter_graph(self, fmt: str, out_w: int, out_h: int, framing: str, meta: Dict[str, Any], ass_name: str,
+                      blur: Optional[Tuple[float, float, bool]] = None) -> str:
+        """
+        The video filter graph: the source's own burnt-in subtitles blurred (when ``blur`` says so), the canvas for the
+        format, then the subtitles. Output label ``[vout]``.
+        """
         ass = canvas.ass_filter(ass_name)
+        before, source = "", "[0:v]"
+        if blur and blur[2]:
+            before, source = canvas.blur_band(blur[0], blur[1]) + ";", "[cv_clean]"
         if fmt == "9:16" and framing == "fill":
             # Fill the whole screen from the middle of the picture (good for one person talking to the camera).
-            return (f"[0:v]crop='trunc(min(iw,ih*9/16)/2)*2':ih,scale={out_w}:{out_h}:flags=lanczos,setsar=1,{ass}[vout]")
+            return (f"{before}{source}crop='trunc(min(iw,ih*9/16)/2)*2':ih,scale={out_w}:{out_h}:flags=lanczos,setsar=1,{ass}[vout]")
         # Otherwise the whole picture, fitted inside the canvas over a blurred copy of itself (nothing is cropped away).
-        return f"{canvas.graph(meta.get('width'), meta.get('height'), out_w, out_h, 'blur')};[canvas]{ass}[vout]"
+        return f"{before}{canvas.graph(meta.get('width'), meta.get('height'), out_w, out_h, 'blur', source=source)};[canvas]{ass}[vout]"
 
     def _render_clip(self, video_file: str, clip: Dict[str, Any], fmt: str, target: str, work_dir: str, meta: Dict[str, Any],
-                     resolution: str, preset: str, framing: str, hook: bool, has_audio: bool) -> bool:
+                     resolution: str, preset: str, framing: str, hook: bool, has_audio: bool,
+                     blur: Optional[Tuple[float, float, bool]] = None) -> bool:
         out_w, out_h = geometry(fmt, resolution)[:2]
         length = clip["end"] - clip["start"]
         ass_name = f"short_{clip['index']:02d}_{fmt.replace(':', 'x')}.ass"
         with open(os.path.join(work_dir, ass_name), "w", encoding="utf-8") as fh:
             fh.write(build_short_ass(clip.get("lines", []), clip["start"], clip["end"], fmt, resolution, preset,
                                      title=(clip.get("hook") or clip.get("title")) if hook else None))
-        graph = self._filter_graph(fmt, out_w, out_h, framing, meta, ass_name)
+        graph = self._filter_graph(fmt, out_w, out_h, framing, meta, ass_name, blur)
         audio: List[str] = []
         if has_audio:
             fade_out = max(0.0, length - 0.25)
@@ -318,6 +326,7 @@ class ShortsEngine(HardsubEngine):
         resolution: str = "1080p",
         context_hint: Optional[str] = None,
         delivery_mode: str = "oneclick",
+        blur_mode: str = "auto",
     ) -> Dict[str, Any]:
         started = time.time()
         mode = delivery.normalize(delivery_mode)
@@ -370,6 +379,14 @@ class ShortsEngine(HardsubEngine):
                   f"[{clip['source']}]  {clip.get('title') or ''}")
         print("[PROGRESS] 55", flush=True)
 
+        # Sources that carry their own subtitles (drama apps, most of them) would show them under ours: blur that band
+        # first, the way the Recap does. Looked for only when the Shorts are burnt in with subtitles of their own.
+        blur: Tuple[float, float, bool] = (0.0, 0.0, False)
+        blur_mode = blur_mode if blur_mode in ("auto", "yes", "no") else "auto"
+        if make_finished and (short_subtitles != "none" or blur_mode == "yes"):
+            moments = [float(line.get("start", clip["start"])) for clip in clips for line in clip.get("lines", [])]
+            blur = self._detect_subtitle_blur_region(video_file, blur_mode, None, moments or None)
+
         formats = ["16:9", "9:16"] if video_format == "both" else [video_format]
         work_dir = os.path.join(project_dir, _WORK_DIR)
         os.makedirs(work_dir, exist_ok=True)
@@ -389,7 +406,7 @@ class ShortsEngine(HardsubEngine):
                     print(f"\n--- [Phase 5: Rendering Short {clip['index']}/{len(clips)} ({fmt})] ---", flush=True)
                     name = f"short_{clip['index']:02d}" + ("" if fmt == "9:16" else "_16x9") + ".mp4"
                     if self._render_clip(video_file, clip, fmt, os.path.join(project_dir, name), work_dir, meta,
-                                         resolution, subtitle_style, short_framing, short_hook_title, has_audio):
+                                         resolution, subtitle_style, short_framing, short_hook_title, has_audio, blur):
                         files[fmt] = name
                         rendered[f"{clip['index']:02d} {fmt}"] = os.path.join(project_dir, name)
                     done_jobs += 1
@@ -517,6 +534,7 @@ def main():
         resolution=v["resolution"],
         context_hint=v["context_hint"],
         delivery_mode=v["delivery_mode"],
+        blur_mode=v["blur_mode"],
     )
     if isinstance(result, dict) and result.get("status") == "failed":
         sys.exit(1)

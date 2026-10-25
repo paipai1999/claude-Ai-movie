@@ -11,7 +11,48 @@ import shutil
 import subprocess
 
 from agents.merger.encoder import _get_ffmpeg_bin, detect_hardware_encoder
+from agents.merger.media_utils import _has_audio_stream
 from core.text_render import draw_text, render_lines
+
+_CPU_ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+
+
+def join_clips(ffmpeg_bin: str, first: str, second: str, target: str, timeout: int):
+    """
+    Joins two clips of the same picture size (the film and its intro or outro card) into ``target``.
+    Returns ``(ok, message)``; the message is FFmpeg's own words when it failed.
+
+    The concat filter refuses clips whose pixel aspect ratio or audio format differ, and a film made from a source with
+    a slightly non-square pixel (SAR 26100:26057) never matched the card (SAR 1:1): the intro silently never appeared.
+    Both clips are normalised first. The hardware encoder is tried first, the CPU encoder after it.
+    """
+    audio = _has_audio_stream(first) and _has_audio_stream(second)
+    video = "[0:v]setsar=1,format=yuv420p[v0];[1:v]setsar=1,format=yuv420p[v1];"
+    if audio:
+        graph = (video + "[0:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"
+                 "[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"
+                 "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]")
+        maps = ["-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+    else:
+        graph = video + "[v0][v1]concat=n=2:v=1:a=0[v]"            # a film without sound: the card's sound is dropped
+        maps = ["-map", "[v]", "-an"]
+    info = detect_hardware_encoder()
+    hardware = ["-c:v", info.get("codec", "libx264"), "-preset", info.get("preset", "veryfast"),
+                *(["-b:v", "6M", "-maxrate", "9M", "-bufsize", "12M"] if info.get("type") == "gpu" else ["-crf", "20"])]
+    attempts = [hardware] if "libx264" in hardware else [hardware, _CPU_ENCODE]
+    message = ""
+    for number, encoder in enumerate(attempts, 1):
+        cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error", "-i", os.path.abspath(first), "-i", os.path.abspath(second),
+               "-filter_complex", graph, *maps, *encoder, "-movflags", "+faststart", target]
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        if result.returncode == 0 and os.path.exists(target) and os.path.getsize(target) > 1000:
+            return True, ""
+        message = (result.stderr or "")[-400:]
+        if os.path.exists(target):
+            os.remove(target)
+        if number < len(attempts):
+            print("[WARN] VideoMerger: the hardware encoder failed to join the clips; retrying on the CPU.")
+    return False, message
 
 
 class IntroOutroMixin:
@@ -60,31 +101,12 @@ class IntroOutroMixin:
                 print(f"[WARN] Failed to generate FFmpeg thumbnail intro: {err}")
                 return False
 
-            enc_info = detect_hardware_encoder()
-            codec = enc_info.get("codec", "libx264")
-            preset = enc_info.get("preset", "veryfast")
-            quality_args = ["-b:v", "6M", "-maxrate", "9M", "-bufsize", "12M"] if enc_info.get("type") == "gpu" else ["-crf", "20"]
-
-            concat_cmd = [
-                ffmpeg_bin, "-y",
-                "-i", intro_ts,
-                "-i", os.path.abspath(video_path),
-                "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-                "-map", "[v]", "-map", "[a]",
-                "-c:v", codec, "-preset", preset, *quality_args,
-                "-c:a", "aac", "-b:a", "192k",
-                "-movflags", "+faststart",
-                concat_out
-            ]
-            concat_timeout = max(1800, int(vid_duration * 3.0))
-            res2 = subprocess.run(concat_cmd, capture_output=True, timeout=concat_timeout)
-            if res2.returncode == 0 and os.path.exists(concat_out) and os.path.getsize(concat_out) > 1000:
+            joined, err2 = join_clips(ffmpeg_bin, intro_ts, video_path, concat_out, max(1800, int(vid_duration * 3.0)))
+            if joined:
                 shutil.move(concat_out, video_path)
                 print(f"🎉 [OK] VideoMerger: Prepended {thumb_duration:.1f}s thumbnail intro with Pure FFmpeg!")
                 return True
-            else:
-                err2 = (res2.stderr.decode("utf-8", errors="replace") if isinstance(res2.stderr, bytes) else str(res2.stderr or ""))[-400:]
-                print(f"[WARN] VideoMerger: FFmpeg thumbnail intro concat failed (code={res2.returncode}): {err2}")
+            print(f"[WARN] VideoMerger: FFmpeg thumbnail intro concat failed: {err2}")
         except Exception as te:
             print(f"[WARN] VideoMerger: FFmpeg thumbnail intro prepend failed: {te}")
         finally:
@@ -192,31 +214,12 @@ class IntroOutroMixin:
                 print(f"[WARN] Failed to generate FFmpeg outro card: {err}")
                 return False
 
-            enc_info = detect_hardware_encoder()
-            codec = enc_info.get("codec", "libx264")
-            preset = enc_info.get("preset", "veryfast")
-            quality_args = ["-b:v", "6M", "-maxrate", "9M", "-bufsize", "12M"] if enc_info.get("type") == "gpu" else ["-crf", "20"]
-
-            concat_cmd = [
-                ffmpeg_bin, "-y",
-                "-i", os.path.abspath(video_path),
-                "-i", outro_ts,
-                "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-                "-map", "[v]", "-map", "[a]",
-                "-c:v", codec, "-preset", preset, *quality_args,
-                "-c:a", "aac", "-b:a", "192k",
-                "-movflags", "+faststart",
-                concat_out
-            ]
-            concat_timeout = max(1800, int(vid_duration * 3.0))
-            res2 = subprocess.run(concat_cmd, capture_output=True, timeout=concat_timeout)
-            if res2.returncode == 0 and os.path.exists(concat_out) and os.path.getsize(concat_out) > 1000:
+            joined, err2 = join_clips(ffmpeg_bin, video_path, outro_ts, concat_out, max(1800, int(vid_duration * 3.0)))
+            if joined:
                 shutil.move(concat_out, video_path)
                 print(f"🎉 [OK] VideoMerger: Appended {outro_duration:.1f}s 'Pai AI Movie Studio' Outro Card!")
                 return True
-            else:
-                err2 = (res2.stderr.decode("utf-8", errors="replace") if isinstance(res2.stderr, bytes) else str(res2.stderr or ""))[-400:]
-                print(f"[WARN] VideoMerger: FFmpeg outro card concat failed (code={res2.returncode}): {err2}")
+            print(f"[WARN] VideoMerger: FFmpeg outro card concat failed: {err2}")
         except Exception as te:
             print(f"[WARN] VideoMerger: FFmpeg outro card append failed: {te}")
         finally:

@@ -397,12 +397,16 @@ class QAAgent:
             script_summary = ""
             # Smart Sync re-timed the picture: the schedule must use the times of the film the reviewer watches.
             sync = smart_sync.SyncPlan.from_dict(state.sync_plan) if getattr(state, "sync_plan", None) else None
+            # A thumbnail intro in front of the film moves every line later by its length.
+            intro = (float(getattr(state, "thumbnail_intro_seconds", 0.0) or 0.0) if getattr(state, "thumbnail_intro_applied", False) else 0.0)
             for i, block in enumerate(script_blocks):
                 if isinstance(block, dict):
                     start = block.get("start_sec", "?")
                     end = block.get("end_sec", "?")
-                    if sync is not None and isinstance(start, (int, float)) and isinstance(end, (int, float)):
-                        start, end = round(sync.to_output(start), 1), round(sync.to_output(end), 1)
+                    if (sync is not None or intro) and isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                        if sync is not None:
+                            start, end = sync.to_output(start), sync.to_output(end)
+                        start, end = round(start + intro, 1), round(end + intro, 1)
                     narration = block.get("narration", "")[:80]
                     script_summary += f"  Block {i+1}: [{start}s-{end}s] {narration}\n"
 
